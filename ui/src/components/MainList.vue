@@ -75,7 +75,7 @@
 				:key="item.id"
 				:to="item.to"
 				class="group flex h-11 cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-sm text-default transition-colors hover:bg-accented/80"
-				:class="resolvePath(item.to) === currentPath ? 'bg-accented text-highlighted' : ''"
+				:class="isTopItemActive(item) ? 'bg-accented text-highlighted' : ''"
 				role="listitem"
 			>
 				<UIcon :name="item.icon" class="size-6 text-dimmed" />
@@ -533,6 +533,16 @@ export default {
 				return to;
 			}
 			return this.$router.resolve(to).path;
+		},
+		/**
+		 * 顶部入口高亮判定：前缀匹配（设计 § 3）。
+		 * 当前路径等于入口路径本身、或是其子路径时都高亮——
+		 * 让"我的 Claw"在 /claws、/claws/add、/claws/:id/models 等所有 /claws/... 下保持 active。
+		 */
+		isTopItemActive(item) {
+			const target = this.resolvePath(item.to);
+			if (!target) return false;
+			return this.currentPath === target || this.currentPath.startsWith(`${target}/`);
 		},
 	},
 };

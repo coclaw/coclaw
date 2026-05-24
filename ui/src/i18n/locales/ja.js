@@ -537,5 +537,11 @@ export const jaMessages = {
 				success: '{provider} を追加しました。',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'API キーが未設定です。エージェントはまだ会話できません。',
+			noPrimaryWarning: 'プライマリモデルが未設定です。エージェントはまだ会話できません。',
+			invalidPrimaryWarning: 'プライマリモデルが利用できなくなりました。新しく選び直してください。',
+			goConfigure: '設定する',
+		},
 	},
 };

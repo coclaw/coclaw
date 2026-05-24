@@ -28,7 +28,7 @@
 
 			<p v-if="!loading && !claws.length" class="text-sm text-muted">{{ $t('claws.noClaw') }}</p>
 
-			<div v-for="{ claw, dashboard, connDetail, peerDetail, rtcPhase } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
+			<div v-for="{ claw, dashboard, connDetail, peerDetail, rtcPhase, guidanceState } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
 				<!-- Claw card：左侧信息 + 右侧解绑 -->
 				<div class="rounded-xl bg-elevated p-3 mb-3">
 					<div class="flex">
@@ -51,6 +51,18 @@
 												icon="i-lucide-pencil"
 												:disabled="renaming || !claw.online"
 												@click="openRename(claw)"
+											/>
+											<UButton
+												:data-testid="`btn-model-config-${claw.id}`"
+												class="cc-icon-btn shrink-0"
+												variant="ghost"
+												color="primary"
+												size="md"
+												icon="i-lucide-settings"
+												:disabled="!claw.online"
+												:aria-label="$t('modelConfig.title')"
+												:title="$t('modelConfig.title')"
+												@click="goToModels(claw.id)"
 											/>
 										</div>
 										<UBadge color="primary" variant="subtle" size="xs" class="shrink-0">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
@@ -91,6 +103,26 @@
 								{{ $t('claws.remove') }}
 							</UButton>
 						</div>
+					</div>
+
+					<!-- 首次引导橙条：仅在线 + RPC 真返回 + 命中某个引导态时显示（设计 § 6） -->
+					<div
+						v-if="guidanceState"
+						:data-testid="`guidance-${claw.id}`"
+						class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-orange-500/10 px-3 py-2 text-xs text-orange-600 dark:text-orange-400"
+					>
+						<span class="flex min-w-0 items-center gap-1.5">
+							<UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" />
+							<span class="min-w-0">{{ guidanceText(guidanceState) }}</span>
+						</span>
+						<button
+							type="button"
+							:data-testid="`guidance-go-${claw.id}`"
+							class="shrink-0 cursor-pointer font-medium underline underline-offset-2 hover:opacity-80"
+							@click="goToModels(claw.id)"
+						>
+							{{ $t('modelConfig.guidance.goConfigure') }}
+						</button>
 					</div>
 				</div>
 
@@ -162,6 +194,7 @@ import { useClawsStore } from '../stores/claws.store.js';
 import { getReadyConn } from '../stores/get-ready-conn.js';
 import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
+import { pickGuidanceState } from '../utils/guidance-state.js';
 import AgentCard from '../components/AgentCard.vue';
 
 /** 前台恢复刷新的 freshness gate：60s 内不重复 reload */
@@ -243,6 +276,7 @@ export default {
 					connDetail: clawById?.rtcTransportInfo ?? null,
 					peerDetail: clawById?.rtcPeerTransportInfo ?? null,
 					rtcPhase: clawById?.rtcPhase ?? 'idle',
+					guidanceState: this.__guidanceStateFor(claw, this.dashboardStore.getDashboard(id)),
 				};
 			});
 		},
@@ -355,6 +389,27 @@ export default {
 				name: 'chat',
 				params: { clawId: String(clawId), agentId },
 			});
+		},
+		goToModels(clawId) {
+			this.$router.push(`/claws/${String(clawId)}/models`);
+		},
+		/** 计算某台 claw 的引导态：离线 / RPC 未成功返回时返回 null（设计 § 6 + § 7.2 gating） */
+		__guidanceStateFor(claw, dashboard) {
+			if (!claw?.online) return null;
+			// modelConfigFetched=false 表示 RPC 未成功返回，默认值 false/null/false 不可信，不提示
+			if (!dashboard || !dashboard.modelConfigFetched) return null;
+			return pickGuidanceState({
+				hasAny: dashboard.hasAnyProviderAuth,
+				primary: dashboard.primaryModel,
+				effective: dashboard.primaryEffective,
+			});
+		},
+		/** 引导态 → 本地化橙条文案 */
+		guidanceText(state) {
+			if (state === 'noKey') return this.$t('modelConfig.guidance.noKeyWarning');
+			if (state === 'noPrimary') return this.$t('modelConfig.guidance.noPrimaryWarning');
+			if (state === 'invalid') return this.$t('modelConfig.guidance.invalidPrimaryWarning');
+			return '';
 		},
 		async loadData() {
 			if (this.loading) return;

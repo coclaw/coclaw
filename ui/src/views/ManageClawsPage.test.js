@@ -125,6 +125,12 @@ function createWrapper() {
 						'claws.summary.running': `${params?.n} 工作中`,
 						'claws.summary.failed': `${params?.n} 异常`,
 						'dashboard.monthlyCost': 'Monthly cost',
+						'dashboard.agents': 'agents',
+						'modelConfig.title': 'Model settings',
+						'modelConfig.guidance.noKeyWarning': 'GuidanceNoKey',
+						'modelConfig.guidance.noPrimaryWarning': 'GuidanceNoPrimary',
+						'modelConfig.guidance.invalidPrimaryWarning': 'GuidanceInvalid',
+						'modelConfig.guidance.goConfigure': 'GoConfigure',
 					};
 					return map[key] ?? key;
 				},
@@ -1077,3 +1083,193 @@ describe('rename', () => {
 	});
 });
 
+
+// ---- T4：模型设置入口（齿轮）+ 首次引导橙条 + chat 不禁用不变量 ----
+
+/**
+ * 构造一份带 model-config 派生字段的 dashboard。
+ * @param {object} mc - { fetched, hasAny, primary, effective }
+ */
+function dashWithModelConfig(mc, extra = {}) {
+	return {
+		instance: { name: 'Bot1', online: true, channels: [] },
+		agents: [],
+		loading: false,
+		modelConfigFetched: mc.fetched,
+		hasAnyProviderAuth: mc.hasAny,
+		primaryModel: mc.primary,
+		primaryEffective: mc.effective,
+		...extra,
+	};
+}
+
+describe('模型设置入口（齿轮 icon）', () => {
+	test('在线 claw → 渲染齿轮按钮且未禁用', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const gear = wrapper.find('[data-testid="btn-model-config-1"]');
+		expect(gear.exists()).toBe(true);
+		const gearComp = wrapper.findAllComponents(UButtonStub).find((c) => c.attributes('data-testid') === 'btn-model-config-1');
+		// 严格 false（而非仅 falsy）：若 :disabled 绑定被整个移除，prop 会变 undefined → 本断言失败
+		expect(gearComp.props('disabled')).toBe(false);
+	});
+
+	test('离线 claw（else 分支）→ 不渲染齿轮按钮', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: false }];
+		mockGetDashboard.mockReturnValue(null);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="btn-model-config-1"]').exists()).toBe(false);
+	});
+
+	test('齿轮 :disabled 跟随 !claw.online（在线分支但 online=false 时禁用）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: false }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const gear = wrapper.find('[data-testid="btn-model-config-1"]');
+		expect(gear.exists()).toBe(true);
+		const gearComp = wrapper.findAllComponents(UButtonStub).find((c) => c.attributes('data-testid') === 'btn-model-config-1');
+		expect(gearComp.props('disabled')).toBe(true);
+	});
+
+	test('点击齿轮 → 导航到 /claws/:id/models', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		await wrapper.find('[data-testid="btn-model-config-1"]').trigger('click');
+		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');
+	});
+});
+
+describe('首次引导橙条（优先级 + fetch gating）', () => {
+	test('凭据为空 → 显示"未配 API key"橙条（优先级 1）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: false, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="guidance-1"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('GuidanceNoKey');
+	});
+
+	test('有凭据但未设主模型 → 显示"未配主模型"橙条（优先级 2）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="guidance-1"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('GuidanceNoPrimary');
+	});
+
+	test('主模型失效 → 显示"主模型失效"橙条（优先级 3）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="guidance-1"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('GuidanceInvalid');
+	});
+
+	test('凭据齐 + 主模型有效 → 不显示橙条', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(false);
+	});
+
+	test('fetch 失败（modelConfigFetched=false）→ 不显示橙条（关键 gating：默认值不可信）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: false, hasAny: false, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(false);
+	});
+
+	test('claw 离线 → 不显示橙条（即便字段命中引导态）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: false }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: false, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(false);
+	});
+
+	test('点击橙条"去配置" → 导航到 /claws/:id/models', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: false, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		await wrapper.find('[data-testid="guidance-go-1"]').trigger('click');
+		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');
+	});
+});
+
+describe('chat 按钮在引导态下不被禁用（不变量）', () => {
+	test('引导橙条出现时 AgentCard 仍渲染，chat 事件照常导航', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig(
+			{ fetched: true, hasAny: false, primary: null, effective: false },
+			{ agents: [{ id: 'a1', name: 'Agent1', modelTags: [], capabilities: [], totalTokens: 0, activeSessions: 0, lastActivity: null }] },
+		));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(true);
+		const card = wrapper.findComponent(AgentCardStub);
+		expect(card.exists()).toBe(true);
+		card.vm.$emit('chat', 'a1');
+		await flushPromises();
+		expect(wrapper.vm.$router.push).toHaveBeenCalledWith({
+			name: 'chat',
+			params: { clawId: '1', agentId: 'a1' },
+		});
+	});
+
+	test('引导态下挂载真实 AgentCard：chat 按钮无 disabled 绑定（强不变量）', async () => {
+		// 不 stub AgentCard，验证真实组件的 chat 按钮在橙条引导态下也不被禁用
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig(
+			{ fetched: true, hasAny: false, primary: null, effective: false },
+			{ agents: [{ id: 'a1', name: 'Agent1', avatarUrl: null, emoji: null, theme: null, modelTags: [], capabilities: [], totalTokens: 0, activeSessions: 0, lastActivity: null }] },
+		));
+		const wrapper = mount(ManageClawsPage, {
+			global: {
+				plugins: [createPinia()],
+				stubs: {
+					UButton: UButtonStub,
+					UBadge: UBadgeStub,
+					UIcon: { props: ['name'], template: '<i />' },
+				},
+				mocks: {
+					$t: (key) => key,
+					$router: { push: vi.fn() },
+				},
+			},
+		});
+		await flushPromises();
+
+		// 橙条出现（noKey 引导态）
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(true);
+		// 真实 AgentCard 的 chat 按钮存在且未被禁用（btn-chat 无 :disabled 绑定 → prop 为 undefined/falsy）
+		const chatComp = wrapper.findAllComponents(UButtonStub).find((c) => c.attributes('data-testid') === 'btn-chat');
+		expect(chatComp).toBeTruthy();
+		expect(chatComp.props('disabled')).toBeFalsy();
+	});
+});

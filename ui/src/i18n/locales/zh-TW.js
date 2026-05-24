@@ -537,5 +537,11 @@ export const zhTWMessages = {
 				success: '已新增 {provider}',
 			},
 		},
+		guidance: {
+			noKeyWarning: '尚未設定 API key，agent 無法對話',
+			noPrimaryWarning: '尚未設定主模型，agent 無法對話',
+			invalidPrimaryWarning: '主模型已失效，請重新選擇',
+			goConfigure: '前往設定',
+		},
 	},
 };

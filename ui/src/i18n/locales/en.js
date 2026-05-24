@@ -537,5 +537,11 @@ export const enMessages = {
 				success: 'Added {provider}.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'No API key configured. The agent cannot chat yet.',
+			noPrimaryWarning: 'No primary model configured. The agent cannot chat yet.',
+			invalidPrimaryWarning: 'Primary model is no longer available. Please pick a new one.',
+			goConfigure: 'Go configure',
+		},
 	},
 };

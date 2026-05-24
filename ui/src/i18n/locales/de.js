@@ -537,5 +537,11 @@ export const deMessages = {
 				success: '{provider} hinzugefügt.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'Kein API-Schlüssel konfiguriert. Der Agent kann noch nicht chatten.',
+			noPrimaryWarning: 'Kein primäres Modell konfiguriert. Der Agent kann noch nicht chatten.',
+			invalidPrimaryWarning: 'Das primäre Modell ist nicht mehr verfügbar. Bitte wähle ein neues.',
+			goConfigure: 'Einrichten',
+		},
 	},
 };

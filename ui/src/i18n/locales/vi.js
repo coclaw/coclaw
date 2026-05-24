@@ -537,5 +537,11 @@ export const viMessages = {
 				success: 'Đã thêm {provider}.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'Chưa cấu hình API key. Agent chưa thể trò chuyện.',
+			noPrimaryWarning: 'Chưa cấu hình mô hình chính. Agent chưa thể trò chuyện.',
+			invalidPrimaryWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn lại.',
+			goConfigure: 'Đi cấu hình',
+		},
 	},
 };

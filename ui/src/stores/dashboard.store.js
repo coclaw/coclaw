@@ -16,6 +16,7 @@ import { generateModelTags } from '../utils/model-tags.js';
  *   hasAnyProviderAuth: boolean,
  *   primaryModel: string|null,
  *   primaryEffective: boolean,
+ *   modelConfigFetched: boolean,
  * }} DashboardData
  *
  * @typedef {{
@@ -203,6 +204,7 @@ export const useDashboardStore = defineStore('dashboard', {
 					hasAnyProviderAuth: false,
 					primaryModel: null,
 					primaryEffective: false,
+					modelConfigFetched: false,
 				};
 			}
 			// 闭包捕获原 entry 引用：clearDashboard 在 IIFE 跑完前 delete byClaw[id] 时，
@@ -269,10 +271,15 @@ export const useDashboardStore = defineStore('dashboard', {
 					// 外层据此可避免在数据不全时误报橙条引导（设计 § 7.2 / T1 spec）
 					const providerAuthOk = providerAuthResult.status === 'fulfilled';
 					const modelConfigOk = modelConfigResult.status === 'fulfilled';
+					// primaryEffective 依赖 models.list 全量 catalog：catalog 拉不到时无法判定有效性，
+					// 此时不能视为"已成功获取"，否则空 catalog 会把合法 primary 误判失效，外层误报橙条
+					const modelsOk = modelsResult.status === 'fulfilled';
 					if (!providerAuthOk || !modelConfigOk) {
+						// 任一 RPC 失败 → "未知态"：保持默认值且不置 fetched，外层据此不渲染橙条引导
 						entry.hasAnyProviderAuth = false;
 						entry.primaryModel = null;
 						entry.primaryEffective = false;
+						entry.modelConfigFetched = false;
 					}
 					else {
 						const profiles = Array.isArray(providerAuthResult.value?.profiles) ? providerAuthResult.value.profiles : [];
@@ -286,6 +293,8 @@ export const useDashboardStore = defineStore('dashboard', {
 						entry.hasAnyProviderAuth = profiles.length > 0;
 						entry.primaryModel = primaryModel;
 						entry.primaryEffective = computePrimaryEffective(primaryModel, boundProviders, modelCatalogAll);
+						// 仅当 catalog 也拿到才算"数据齐"：否则 primaryEffective 不可信，外层据此不渲染橙条
+						entry.modelConfigFetched = modelsOk;
 					}
 
 					// 构建实例总览
@@ -340,6 +349,9 @@ export const useDashboardStore = defineStore('dashboard', {
 				catch (err) {
 					console.warn('[dashboard] loadDashboard failed for clawId=%s:', id, err?.message);
 					entry.error = err?.message ?? 'load failed';
+					// 硬失败（allSettled 之前的 throw）→ model-config 字段未走成功分支，可能残留上次成功态。
+					// 置 fetched=false 让外层把这台 claw 视为"未知态"、不渲染橙条引导（设计 § 7.2）
+					entry.modelConfigFetched = false;
 				}
 				finally {
 					entry.loading = false;

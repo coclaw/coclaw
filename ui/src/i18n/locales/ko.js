@@ -537,5 +537,11 @@ export const koMessages = {
 				success: '{provider}을(를) 추가했습니다.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'API 키가 설정되지 않았습니다. 에이전트가 아직 대화할 수 없습니다.',
+			noPrimaryWarning: '기본 모델이 설정되지 않았습니다. 에이전트가 아직 대화할 수 없습니다.',
+			invalidPrimaryWarning: '기본 모델을 더 이상 사용할 수 없습니다. 새로 선택하세요.',
+			goConfigure: '설정하기',
+		},
 	},
 };

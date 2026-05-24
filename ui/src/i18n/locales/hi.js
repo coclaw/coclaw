@@ -537,5 +537,11 @@ export const hiMessages = {
 				success: '{provider} जोड़ा गया।',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'कोई API key कॉन्फ़िगर नहीं है. एजेंट अभी चैट नहीं कर सकता.',
+			noPrimaryWarning: 'कोई प्राथमिक मॉडल कॉन्फ़िगर नहीं है. एजेंट अभी चैट नहीं कर सकता.',
+			invalidPrimaryWarning: 'प्राथमिक मॉडल अब उपलब्ध नहीं है. कृपया नया चुनें.',
+			goConfigure: 'कॉन्फ़िगर करें',
+		},
 	},
 };

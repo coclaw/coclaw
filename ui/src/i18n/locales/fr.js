@@ -537,5 +537,11 @@ export const frMessages = {
 				success: '{provider} ajouté.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'Aucune clé API configurée. L’agent ne peut pas encore discuter.',
+			noPrimaryWarning: 'Aucun modèle principal configuré. L’agent ne peut pas encore discuter.',
+			invalidPrimaryWarning: 'Le modèle principal n’est plus disponible. Veuillez en choisir un autre.',
+			goConfigure: 'Configurer',
+		},
 	},
 };

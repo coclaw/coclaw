@@ -537,5 +537,11 @@ export const zhCNMessages = {
 				success: '已添加 {provider}',
 			},
 		},
+		guidance: {
+			noKeyWarning: '未配 API key，agent 无法对话',
+			noPrimaryWarning: '未配主模型，agent 无法对话',
+			invalidPrimaryWarning: '主模型失效，请重新选择',
+			goConfigure: '去配置',
+		},
 	},
 };

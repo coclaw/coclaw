@@ -537,5 +537,11 @@ export const ptMessages = {
 				success: '{provider} adicionado.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'Nenhuma API key configurada. O agente ainda não pode conversar.',
+			noPrimaryWarning: 'Nenhum modelo principal configurado. O agente ainda não pode conversar.',
+			invalidPrimaryWarning: 'O modelo principal não está mais disponível. Escolha um novo.',
+			goConfigure: 'Configurar',
+		},
 	},
 };

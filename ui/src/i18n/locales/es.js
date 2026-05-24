@@ -537,5 +537,11 @@ export const esMessages = {
 				success: '{provider} añadido.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'No hay ninguna API key configurada. El agente aún no puede chatear.',
+			noPrimaryWarning: 'No hay modelo principal configurado. El agente aún no puede chatear.',
+			invalidPrimaryWarning: 'El modelo principal ya no está disponible. Elige uno nuevo.',
+			goConfigure: 'Configurar',
+		},
 	},
 };

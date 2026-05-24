@@ -1276,3 +1276,57 @@ test('clawListKey watcher：loadAllAgents 抛错时 topics/sessions 仍被调（
 	expect(topicsSpy).toHaveBeenCalledTimes(1);
 	expect(sessionsSpy).toHaveBeenCalledTimes(1);
 });
+
+// --- T4：顶部"我的 Claw"入口前缀匹配高亮（设计 § 3）---
+
+describe('topActionItems 前缀匹配高亮', () => {
+	function manageItem(wrapper) {
+		return wrapper.vm.topActionItems[0];
+	}
+
+	test('currentPath=/claws → 高亮（精确匹配基路径）', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws' });
+		await vi.dynamicImportSettled();
+		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(true);
+	});
+
+	test('currentPath=/claws/add → 高亮（子路径）', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws/add' });
+		await vi.dynamicImportSettled();
+		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(true);
+	});
+
+	test('currentPath=/claws/:id/models → 高亮（模型设置子页）', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws/b1/models' });
+		await vi.dynamicImportSettled();
+		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(true);
+	});
+
+	test('currentPath=/topics → 不高亮（无关路径）', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/topics' });
+		await vi.dynamicImportSettled();
+		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(false);
+	});
+
+	test('currentPath=/clawsfoo → 不高亮（前缀边界：必须是 /claws/ 子路径或精确 /claws）', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/clawsfoo' });
+		await vi.dynamicImportSettled();
+		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(false);
+	});
+
+	test('DOM：在 /claws/b1/models 下"我的 Claw"链接带 active class', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws/b1/models' });
+		await vi.dynamicImportSettled();
+		const link = wrapper.findAll('a').find((a) => a.text().includes('我的 Claw'));
+		expect(link).toBeTruthy();
+		expect(link.classes()).toContain('bg-accented');
+	});
+
+	test('DOM：在 /topics 下"我的 Claw"链接无 active class', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/topics' });
+		await vi.dynamicImportSettled();
+		const link = wrapper.findAll('a').find((a) => a.text().includes('我的 Claw'));
+		expect(link).toBeTruthy();
+		expect(link.classes()).not.toContain('bg-accented');
+	});
+});

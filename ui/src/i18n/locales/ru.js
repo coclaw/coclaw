@@ -537,5 +537,11 @@ export const ruMessages = {
 				success: 'Поставщик {provider} добавлен.',
 			},
 		},
+		guidance: {
+			noKeyWarning: 'API-ключ не настроен. Агент пока не может общаться.',
+			noPrimaryWarning: 'Основная модель не настроена. Агент пока не может общаться.',
+			invalidPrimaryWarning: 'Основная модель больше недоступна. Выберите другую.',
+			goConfigure: 'Настроить',
+		},
 	},
 };

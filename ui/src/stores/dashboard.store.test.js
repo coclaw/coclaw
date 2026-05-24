@@ -1348,6 +1348,156 @@ describe('dashboard store', () => {
 			expect(entry.primaryModel).toBeNull();
 			expect(entry.primaryEffective).toBe(false);
 		});
+
+		test('两条 RPC 都成功 → modelConfigFetched=true（外层据此才渲染引导态）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
+				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(true);
+		});
+
+		test('providerAuth.list 失败 → modelConfigFetched=false（未知态，外层不渲染橙条）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': new Error('rpc timeout'),
+				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(false);
+		});
+
+		test('model.list 失败 → modelConfigFetched=false', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
+				'coclaw.model.list': new Error('rpc timeout'),
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(false);
+		});
+
+		test('models.list catalog 失败（providerAuth/model.list 成功）→ modelConfigFetched=false（空 catalog 不可信）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': new Error('catalog down'),
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
+				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+
+			// catalog 拉不到 → 不能视为已成功，否则空 catalog 会让合法 primary 误判失效、外层误报橙条
+			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(false);
+		});
+
+		test('硬失败（loadAgents 抛错触发 catch）→ modelConfigFetched 重置为 false（不残留上次成功态）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			const dashConn = mockConn({
+				'status': {},
+				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
+				'usage.cost': null,
+				'sessions.list': { sessions: [] },
+				'tts.status': {},
+				'channels.status': {},
+				'tools.catalog': { groups: [] },
+				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
+				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+			});
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			await store.loadDashboard('bot-1');
+			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(true);
+
+			// 第二次：强制 loadAgents 抛错 → 进入 catch 分支
+			agentsStore.byClaw['bot-1'].fetched = false;
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			vi.spyOn(agentsStore, 'loadAgents').mockRejectedValue(new Error('boom'));
+			await store.loadDashboard('bot-1');
+			warnSpy.mockRestore();
+
+			expect(store.byClaw['bot-1'].error).toBeTruthy();
+			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(false);
+		});
 	});
 });
 
