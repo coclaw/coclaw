@@ -48,26 +48,13 @@
 **关联 commit**：refactor(ui): unify progress indication with circular ProgressRing
 
 来源:深度 review 4 个 subagent 报告(opus)+ 最终 review。所有问题非阻塞,可在后续迭代中按优先级处理。
-
-### 体验 / 可访问性
-
-1. **进度环 aria-label i18n 化**
-   - 现状:`ProgressRing.vue:81` 默认 `'Progress'` 英文硬编码,三处使用点(`ChatInput`/`FileUploadItem`/`FileListItem`)均未传 `aria-label`。中文读屏用户会听到 "Progress 50 percent" 混读
-   - 修复:调用方传入 `:aria-label="$t('files.uploading')"` 等场景化文案;同步新增 `files.uploading` / `files.downloading` / `chat.attachmentUploading` 等 i18n key 到所有语言
+（注：原 #1 aria-label i18n、#11 Number.isFinite、#13 radius 常量 三项均已被 2026-05-24 那批未 push commit 实修，2026-05-25 review 时核实并清理。）
 
 ### 实现优化
-
-11. **`indeterminate` 用 `Number.isFinite`**
-    - 现状:`return this.value == null || Number.isNaN(this.value)`
-    - 修复:`return !Number.isFinite(this.value)` 一并覆盖 ±Infinity / 字符串 / 非 number 等异常输入
 
 12. **不定态加"呼吸"动画**
     - 现状:固定 25% 弧 + `animate-spin` 匀速旋转,比 Quasar `q-spinner-oval` 单调
     - 修复:可选地添加 `stroke-dashoffset` 关键帧,让弧长在 25%~75% 之间脉动
-
-13. **`radius` 提为模块常量**
-    - 现状:`computed.radius() { return 50; }` 一个 computed 返回常量
-    - 修复:`const RADIUS = 50;` 模块级常量,`circumference()` 直接引用
 
 14. **下载/AI 推理场景接入 ProgressRing**
     - 现状:`ChatFile.vue:22-24` / `ChatImg.vue:22-25` 用 boolean `:loading`,无字节级下载进度;`ChatMsgItem.vue:8` 发送中用 `i-lucide-loader-2 animate-spin`
@@ -214,23 +201,13 @@
 ## 输入区附件 per-chat/topic 隔离 deep-review 第 2 轮发现的非阻塞项（2026-05-03）
 
 来源：第二轮 4 路并发 codex-rescue review。本批未发现真必修业务问题（仅 2 处文档/注释偏差当场修复）；下列为发现的边角与预存问题，登记备查。
-
-1. **`chatStoreManager.dispose()` 部分失败时 instances/topicLru 残留**
-    - 现状：`chat-store-manager.js:86-95` `store.dispose()` 或 `$dispose()` 抛异常时，下面的 `instances.delete()` + `topicLru.splice()` 都跑不到，受害者会留在两个索引里
-    - 已有部分缓解：`__evictTopics`（chat-store-manager.js:140-151）外层有 try/catch + 兜底硬清，但仅覆盖 LRU 淘汰路径；其它调用方（`commit()` 内的 dispose、`disposeAll`）未兜底
-    - 预存问题：本次修复未改 `dispose()` 函数体；该问题在 ba3bf63 之前就存在
-    - 修法方向：把 `instances.delete()` + `topicLru.splice()` 放进 finally，分别对 `store.dispose()` / `$dispose()` 各包 try/catch
+（注：原 #1 chatStoreManager.dispose 索引残留、#3 saveBlobToFile ObjectURL 未 revoke 已分别被 d1bb26a / b3356a3 实修，2026-05-25 review 时核实并清理。）
 
 2. **`__handleNewTopicSend` 各 await 后未检查组件已卸载**
     - 现状：`ChatPage.vue:626-684` 用户在 createTopic / router.replace / sendMessage 任一 await 期间返回 /topics 列表，函数仍继续跑——createTopic resolve 后 promote + router.replace 会强行把用户从 /topics 拽回到 topic chat 页面
     - 现实概率：用户点发送后毫秒级返回（如手机 back swipe）才能触发
     - 这是 Vue Options API + async router 的通用模式问题，不仅限于本次修复，但本次新增 router.replace 让它更明显
     - 修法方向：beforeUnmount 设 `this.__unmounted = true`，每个 await 后早返回 + 已发起的 newStore 主动 dispose
-
-3. **`saveBlobToFile` 异常路径未 revoke ObjectURL**
-    - 现状：`src/utils/file-helper.js:156-169` Web 端创建 ObjectURL 后 a.click → removeChild → revoke 是直链；中间任一步抛异常会跳过 revokeObjectURL
-    - 预存问题：本次修复未触及该函数
-    - 修法：用 try/finally 包住 DOM 操作部分，确保 revokeObjectURL 一定跑
 
 4. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验** — **已评估保持现状（2026-05-24 复核）**
     - 现状：`ChatInput.vue:449-460` 录音文件直接 `chatStore.addFiles([item])`，跳过 `addFiles` 入口的 MAX_UPLOAD_SIZE 检查
@@ -258,18 +235,6 @@
     - 修法：按 `toolCallId` 找回对应 toolCall step（与 #48 共用索引），把 `partialResult` 累计到 step 上的某字段；渲染时优先显示最新 partial，result 到来后替换为终态
 
 
-
-## AddClawPage SSE 改造遗留（2026-05-05 deep review 发现）
-
-1. **`AddClawPage.startBinding` 无 in-flight guard，重复点击可能并发两次创建绑定码**
-    - 现状：`startBinding` 没有"上一次还没结束就忽略本次"的开关；用户快速双击"重新开始"会派出两次 `createBindingCode`，后到的响应会覆盖先到的 `bindingCode`，先到的码变孤儿（仍然在服务端有效，直至自然过期）
-    - 注意：本问题在改造前的轮询版本同样存在，本次 SSE 改造未引入也未放大；归类为预存
-    - 修法（可选）：加 `inflight` 标志或 generation token 序列化两次调用；或简单地按钮 `disabled` 直到上次完成
-
-2. **`AddClawPage.captureBaseline` 无超时，SSE 始终未连通时页面永久卡 "preparing"**
-    - 现状：进页面后 `captureBaseline` 等 `clawsStore.fetched` 翻 true 才放行；若 SSE 永远不连通（极少：服务端可达但 SSE 路由挂掉），spinner 永远不消失
-    - 现实影响低：SSE 是整个 authed 区域的命脉，SSE 死意味着 claws 列表/状态/解绑通知都不工作，用户感知到的不是"加 Claw 卡住"而是"整个 app 都不对劲"
-    - 修法（可选）：加几秒超时，超时 → 走 loadError 错误态展示 retry 按钮；或者直接 fallback 到 `listClaws()` 一次拿底子
 
 ## ChatPage 触屏下拉历史 deep-review 发现的预存问题（2026-05-06）
 
@@ -627,4 +592,16 @@ X4 触及面比 X1 广，需要重新评估：
    - 现状：`ManageClawsPage.vue` claw 卡片标题 h2 在 320px 极窄屏下被同行操作按钮挤窄，依赖 `truncate` 兜底；视觉降级但不破损
    - 修法：调整窄屏 flex/grid 布局让标题独占一行，或为 320px 加专属断点处理
    - 优先级：极低；当前 truncate 已可 cover，列入跟踪
+
+## 未 push commits 第三轮 read-only deep-review 沉淀（2026-05-25）
+
+**发现日期**：2026-05-25
+**关联背景**：发版前 read-only deep-review（4 路 codex-rescue + opus 重派，--read-only 模式），主要结论：无阻障性问题，可发版。Dim B 实例新发现 1 条重要级业务问题，已经主线核实。
+
+1. **AddClawPage `startBinding` 在用户离页后 setInterval 在已卸载实例上孤儿化**
+   - 现状：`AddClawPage.vue:215-247` `startBinding` 是 async，`captureBaseline()` 等 SSE 或 `createBindingCode()` 网络请求 await 期间用户 back / 切走，`beforeUnmount` 跑时 `countdownTimer` 还没建、`stopCountdown` 空跑；REST resolve 后 `bindingCode` 被写、`startCountdown` 在已卸载实例上建 `setInterval`
+   - 后果：内存泄漏几分钟（每秒 tick 直到 binding code 自然过期），其间 `notify.warning("绑定码过期")` 还会在错的页面弹出；不影响数据安全 / 不让页面崩
+   - 修法：`beforeUnmount` 设 `this.__unmounted = true`，`startBinding` 在 `createBindingCode` resolve 之后 + `startCountdown` 之前检查；或为相关 axios 请求接入 AbortController（与"身份纪元 AbortController" 大题对齐时一并做）
+   - 优先级：中；属新发现，相邻于 [[feedback_async_orphan_operation_pattern]] 项目通病
+   - 关联：`980c9a2` 加 in-flight guard 时未覆盖 unmount exit 路径
 
