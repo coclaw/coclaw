@@ -1001,13 +1001,7 @@ export class RealtimeBridge {
 					this.webrtcPeer?.broadcast(payload, rawData);
 				}
 			})().catch((err) => {
-				// 嵌套 try/catch 防 logger.warn 实现层二次抛：catch handler 同步抛会让
-				// IIFE.catch 返回的 promise 进入 rejected 状态，形成 unhandled rejection
-				// 击穿 gateway 进程（与外层注释保护意图对称）
-				try {
-					this.logger.warn?.(`[coclaw] gateway ws message handler error: ${err?.message ?? err}`);
-				}
-				catch { /* 极冷路径：logger 实现自身抛错，本层吞掉即可 */ }
+				this.logger.warn?.(`[coclaw] gateway ws message handler error: ${err?.message ?? err}`);
 			});
 		});
 
