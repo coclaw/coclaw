@@ -596,6 +596,7 @@ describe('ChatInput', () => {
 		const ring = wrapper.find('.cc-progress-ring-stub');
 		expect(ring.exists()).toBe(true);
 		expect(ring.attributes('data-value')).toBe('0.6');
+		expect(ring.attributes('aria-label')).toBe('files.uploading');
 		// 移除按钮不渲染（v-if="!__fileStatus(f.id)"）
 		const removeBtn = wrapper.findAll('button').filter((b) => b.text().includes('i-lucide-x'));
 		expect(removeBtn).toHaveLength(0);

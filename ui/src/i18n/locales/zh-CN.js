@@ -428,6 +428,8 @@ export const zhCNMessages = {
 		titleSuffix: '文件',
 		connecting: '正在连接 Claw…',
 		loading: '正在加载…',
+		uploading: '上传中…',
+		downloading: '下载中…',
 		pending: '等待中…',
 		dropHint: '松开以上传文件',
 		emptyDir: '空目录',

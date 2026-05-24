@@ -428,6 +428,8 @@ export const frMessages = {
 		titleSuffix: 'Fichiers',
 		connecting: 'Connexion à la Claw…',
 		loading: 'Chargement…',
+		uploading: 'Téléversement…',
+		downloading: 'Téléchargement…',
 		pending: 'En attente…',
 		dropHint: 'Déposez les fichiers pour les envoyer',
 		emptyDir: 'Répertoire vide',

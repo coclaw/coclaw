@@ -428,6 +428,8 @@ export const ruMessages = {
 		titleSuffix: 'Файлы',
 		connecting: 'Подключение к Claw…',
 		loading: 'Загрузка…',
+		uploading: 'Отправка…',
+		downloading: 'Скачивание…',
 		pending: 'Ожидание…',
 		dropHint: 'Перетащите файлы для загрузки',
 		emptyDir: 'Папка пуста',

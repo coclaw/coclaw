@@ -14,6 +14,7 @@
 		<ProgressRing
 			v-if="task.status === 'running'"
 			:value="task.progress"
+			:aria-label="$t('files.uploading')"
 		/>
 
 		<!-- 操作 -->

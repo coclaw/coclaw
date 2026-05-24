@@ -428,6 +428,8 @@ export const viMessages = {
 		titleSuffix: 'Tệp',
 		connecting: 'Đang kết nối đến Claw…',
 		loading: 'Đang tải…',
+		uploading: 'Đang tải lên…',
+		downloading: 'Đang tải xuống…',
 		pending: 'Đang chờ…',
 		dropHint: 'Thả tệp để tải lên',
 		emptyDir: 'Thư mục trống',

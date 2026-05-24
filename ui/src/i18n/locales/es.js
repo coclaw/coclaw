@@ -428,6 +428,8 @@ export const esMessages = {
 		titleSuffix: 'Archivos',
 		connecting: 'Conectando al Claw…',
 		loading: 'Cargando…',
+		uploading: 'Subiendo…',
+		downloading: 'Descargando…',
 		pending: 'Pendiente…',
 		dropHint: 'Suelta archivos para subir',
 		emptyDir: 'Directorio vacío',

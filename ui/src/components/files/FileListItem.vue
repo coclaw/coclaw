@@ -23,7 +23,7 @@
 
 		<!-- 下载进度（running 时显示圆形进度 + 取消） -->
 		<div v-if="downloadTask?.status === 'running'" class="flex items-center gap-2">
-			<ProgressRing :value="downloadTask.progress" />
+			<ProgressRing :value="downloadTask.progress" :aria-label="$t('files.downloading')" />
 			<UButton
 				variant="ghost" color="neutral" size="xs"
 				icon="i-lucide-circle-stop" class="cc-icon-btn"

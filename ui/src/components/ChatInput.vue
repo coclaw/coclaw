@@ -45,7 +45,7 @@
 					v-if="__fileStatus(f.id) === 'uploading'"
 					class="absolute inset-0 flex items-center justify-center rounded-md bg-default/60"
 				>
-					<ProgressRing :value="__fileProgress(f.id)" :size="40" />
+					<ProgressRing :value="__fileProgress(f.id)" :size="40" :aria-label="$t('files.uploading')" />
 				</div>
 				<!-- 移除按钮（上传中不显示） -->
 				<button

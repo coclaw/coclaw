@@ -428,6 +428,8 @@ export const deMessages = {
 		titleSuffix: 'Dateien',
 		connecting: 'Verbinde mit Claw…',
 		loading: 'Wird geladen…',
+		uploading: 'Wird hochgeladen…',
+		downloading: 'Wird heruntergeladen…',
 		pending: 'Ausstehend…',
 		dropHint: 'Dateien hier ablegen zum Hochladen',
 		emptyDir: 'Leeres Verzeichnis',

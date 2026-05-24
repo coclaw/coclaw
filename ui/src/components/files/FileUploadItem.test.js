@@ -41,6 +41,7 @@ describe('FileUploadItem', () => {
 		const ring = w.find('.cc-progress-ring-stub');
 		expect(ring.exists()).toBe(true);
 		expect(ring.attributes('data-value')).toBe('0.75');
+		expect(ring.attributes('aria-label')).toBe('files.uploading');
 	});
 
 	test('running 进度为 0 也渲染 ProgressRing', () => {

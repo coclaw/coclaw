@@ -112,6 +112,7 @@ describe('FileListItem', () => {
 			const ring = w.find('.cc-progress-ring-stub');
 			expect(ring.exists()).toBe(true);
 			expect(ring.attributes('data-value')).toBe('0.5');
+			expect(ring.attributes('aria-label')).toBe('files.downloading');
 		});
 
 		test('running 状态隐藏删除按钮', () => {

@@ -428,6 +428,8 @@ export const ptMessages = {
 		titleSuffix: 'Arquivos',
 		connecting: 'Conectando ao Claw…',
 		loading: 'Carregando…',
+		uploading: 'Enviando…',
+		downloading: 'Baixando…',
 		pending: 'Pendente…',
 		dropHint: 'Solte arquivos para fazer upload',
 		emptyDir: 'Diretório vazio',
