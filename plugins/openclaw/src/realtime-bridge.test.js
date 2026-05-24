@@ -4415,6 +4415,55 @@ test('lag probe: __stopLagProbe is exception-safe when summary logger throws', (
 	assert.equal(bridge.__agentLagProbes.size, 0);
 });
 
+test('gateway ws message handler: catch 内 logger.warn 二次抛不应形成 unhandled rejection', async () => {
+	FakeWebSocket.instances.length = 0;
+	const prevGw = process.env.COCLAW_GATEWAY_WS_URL;
+	process.env.COCLAW_GATEWAY_WS_URL = 'ws://gw.nest.test';
+	__pendingCleanups.push(() => {
+		if (prevGw === undefined) delete process.env.COCLAW_GATEWAY_WS_URL;
+		else process.env.COCLAW_GATEWAY_WS_URL = prevGw;
+	});
+	await writeCfg({ token: 't-nest', serverUrl: 'https://server.local' });
+
+	const unhandled = [];
+	const onUnhandled = (err) => unhandled.push(err);
+	process.on('unhandledRejection', onUnhandled);
+
+	const bridge = createBridge();
+	try {
+		const logger = {
+			info() {},
+			debug() {},
+			warn: () => { throw new Error('logger.warn broken'); },
+			error() {},
+		};
+		await bridge.start({ logger, pluginConfig: {} });
+		// 拿到 gateway ws（start 之后是最新 instance），手动设 ready 跳过握手
+		const gateway = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+		gateway.readyState = 1;
+		bridge.gatewayWs = gateway;
+		bridge.gatewayReady = true;
+		// 让兜底广播抛错 → IIFE 冒泡到 catch → catch 内 logger.warn 又抛
+		bridge.webrtcPeer = {
+			broadcast: () => { throw new Error('broadcast broken'); },
+			sendTo: () => Promise.resolve(true),
+			destroy: () => {},
+			closeAll: () => Promise.resolve(),
+		};
+		// 触发一条会走到 (d) 兜底广播的 event message（不在过滤名单、非 agent runId 路由）
+		gateway.emit('message', { data: JSON.stringify({ type: 'event', event: 'unknown.evt', payload: {} }) });
+		// 等几个 microtask：IIFE 完成 + promise 链派发 + node 派发 unhandledRejection
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+
+		assert.equal(unhandled.length, 0, '嵌套 try/catch 应吞掉 logger 二次抛，不冒泡为 unhandled rejection');
+	}
+	finally {
+		await bridge.stop().catch(() => {});
+		process.removeListener('unhandledRejection', onUnhandled);
+	}
+});
+
 test('classifyAgentLagStop: returns null for non-res / non-string id / accepted', () => {
 	assert.equal(classifyAgentLagStop({}), null, 'no type → null');
 	assert.equal(classifyAgentLagStop({ type: 'event', id: 'x' }), null, 'event → null');
