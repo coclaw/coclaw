@@ -243,3 +243,4 @@ Each worker who picks up a subtask MUST:
 
 <!-- workers append "- T<id> done @ <commit-sha>" after deep-review passes -->
 - T1 done @ e592a36
+- T2 done @ ce19032
