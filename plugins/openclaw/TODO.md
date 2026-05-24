@@ -549,23 +549,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - __sendPeerTransport 在 sendTo 返回 false 时打 warn 或一次性 retry（peer-transport 是诊断信息，丢失影响小）
 - 等 Phase B 引入 RpcDropMonitor 后，把这两条 silent drop 也作为 reason 上报
 
-## __pushInstanceInfo 串行等 agentModels 拖累基础字段广播（预存被放大）
-
-**发现日期**：2026-05-24（read-only deep-review m4）
-**锚点**：`plugins/openclaw/src/realtime-bridge.js:580-598` `__pushInstanceInfo`
-
-**问题**：当前实现先算 `{ name, hostName, pluginVersion }`（同步/<1ms），再 `await __collectAgentModels()`，最后**一次性** broadcast 一个 patch。`agents.list` 这条调用在 OpenClaw manifest cache miss 时（issue #80697）需要 ~10s 才回，43fb667 把超时窗口从 10s 拉宽到 30s，意味着采集慢的时候连那 3 个基础字段也跟着被卡 30s 才能到 admin / UI。
-
-**影响**：偏向"显示口"——manifest cache 卡顿时 admin 面板的 plugin 版本 / 名字 / 主机名瞬时空白最长 30s，期间用户可能误以为 plugin 离线 / 未上报。功能本身不挂（patch 一旦到达自然恢复）；触发概率与 OpenClaw cache miss 同频，并不罕见。
-
-**为什么 PRE-EXISTING**：43fb667 之前等待窗口就有 10s，串行设计本身从 `__pushInstanceInfo` 出生那天就在；43fb667 只是把窗口拉宽暴露得更明显。
-
-**修复方向**：拆成两个 patch ——
-1. 先 `broadcastPluginEvent('coclaw.info.updated', { name, hostName, pluginVersion })` 立即发
-2. `__collectAgentModels()` 回来后再 `broadcastPluginEvent('coclaw.info.updated', { agentModels })` 补一次（采集失败仍按 patch 语义省略，保留服务端旧值）
-
-patch 语义本身就允许 + 服务端测试已钉死（commit c1de9a3），改造风险低。
-
 ## claw-paths runtime 改造遗留（2026-05-05 deep-review 抓出，预存）
 
 ### session-manager 不传 entry.sessionFile（PRE-EXISTING）
