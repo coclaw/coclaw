@@ -598,3 +598,28 @@ X4 触及面比 X1 广，需要重新评估：
   - 不要再走 REST 兜底——会回退到撤销前的同一坑
 - 优先级：低；此场景在真正现网命中很窄（SSE 接通本身可靠性较高），不阻塞产品迭代
 
+## 未 push commits 第二轮 deep-review 沉淀（业务代码部分）
+
+**发现日期**：2026-05-24
+**关联背景**：ui 工作区 22 个未 push commit 第二轮 read-only deep-review（5 维度 codex-rescue + opus subagent 补 Dim 4）的业务代码 finding。本会话只处理测试加固，业务代码改动留待后续，先沉淀避免遗忘。
+
+1. **ManageClawsPage rename 笔形按钮缺 aria-label**
+   - 现状：`ManageClawsPage.vue` 笔形（编辑名称）按钮无文本 label，读屏用户听到的是空按钮 / 通用 fallback；按钮在 030df46 引入但本批未触
+   - 修法：给按钮加 `:aria-label="$t('claws.renameAction', { name })"`（带行级上下文），同步 12 语种新增 i18n key
+   - 优先级：低；属预存可访问性缺陷
+
+2. **ChatPage `__handleNewTopicSend` 发消息 catch 不打 console**
+   - 现状：`ChatPage.vue` `__handleNewTopicSend` 中 sendMessage 失败的 catch 只 surface 到 toast，未走 `console.error` / `remoteLog`；远程排查时拿不到栈
+   - 修法：catch 里补一行 `console.error('[chat] send in new-topic flow failed', err)`；若属高频可观测，再决定是否升级到 `remoteLog`
+   - 优先级：低；为预存"远程排查盲点"
+
+3. **ManageClawsPage status dot 仅色相区分（色盲风险）**
+   - 现状：在线 / 离线 / 错误态用绿/灰/红色 dot 区分，未叠加形状或文字辅助；色盲用户（尤其红绿色盲）难分辨
+   - 修法：给 dot 旁加文字状态标签，或在 dot 内叠加图标（如 ✓ / – / ! 形状区分）
+   - 优先级：低；预存 a11y 缺陷，影响色盲用户
+
+4. **file-helper `saveBlobToFile` 双层 finally 错误掩盖**
+   - 现状：`src/utils/file-helper.js` 现版本嵌套两层 try/finally；外层 finally 若也抛错会把内层错误吞掉（诊断保真度损失）；本次重构引入
+   - 修法：合并 finally 逻辑或显式 catch + 再 throw 内层错误（参考 V8 `AggregateError` 模式）
+   - 优先级：低；现网仅影响错误诊断深度，不影响功能
+

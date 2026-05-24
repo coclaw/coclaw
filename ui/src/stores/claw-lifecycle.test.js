@@ -186,11 +186,13 @@ describe('initClawResources', () => {
 			expect.stringContaining('init topics'),
 			expect.stringContaining('init dashboard'),
 		]));
-		// 至少其中一处把 clawId + err 透出
-		const sessionsCall = warnSpy.mock.calls.find((args) => args[0].includes('init sessions'));
-		expect(sessionsCall).toBeDefined();
-		expect(sessionsCall[1]).toBe('bot-5');
-		expect(sessionsCall[2]).toBeInstanceOf(Error);
+		// 三条都把 clawId + err 透出（任何一条丢字段都不算 ok，防止源码个别 catch 漏传参）
+		for (const tag of ['init sessions', 'init topics', 'init dashboard']) {
+			const call = warnSpy.mock.calls.find((args) => args[0].includes(tag));
+			expect(call, `expected warn call for "${tag}"`).toBeDefined();
+			expect(call[1]).toBe('bot-5');
+			expect(call[2]).toBeInstanceOf(Error);
+		}
 	});
 });
 
@@ -229,9 +231,13 @@ describe('refreshClawResources', () => {
 			expect.stringContaining('refresh dashboard'),
 			expect.stringContaining('refresh sessions'),
 		]));
-		const agentsCall = warnSpy.mock.calls.find((args) => args[0].includes('refresh agents'));
-		expect(agentsCall[1]).toBe('bot-6');
-		expect(agentsCall[2]).toBeInstanceOf(Error);
+		// 四条都把 clawId + err 透出（避免源码个别 catch 漏传参 silent 通过）
+		for (const tag of ['refresh agents', 'refresh topics', 'refresh dashboard', 'refresh sessions']) {
+			const call = warnSpy.mock.calls.find((args) => args[0].includes(tag));
+			expect(call, `expected warn call for "${tag}"`).toBeDefined();
+			expect(call[1]).toBe('bot-6');
+			expect(call[2]).toBeInstanceOf(Error);
+		}
 	});
 
 	// agents 仅 gate sessions（避免 sessions 用 ['main'] fallback 漏新加的非 main agent）；

@@ -156,6 +156,18 @@ describe('chatStoreManager', () => {
 				'topic:t1',
 				expect.any(Error),
 			);
+
+			// 顺序断言：源码 try 顺序若反掉（先 $dispose 后 store.dispose）测试照样绿——
+			// 这条钉死 store.dispose 的 warn 必须在 $dispose 的 warn 之前
+			const storeDisposeCallIdx = warnSpy.mock.calls.findIndex(
+				(args) => typeof args[0] === 'string' && args[0].includes('store.dispose threw'),
+			);
+			const pDisposeCallIdx = warnSpy.mock.calls.findIndex(
+				(args) => typeof args[0] === 'string' && args[0].includes('$dispose threw'),
+			);
+			expect(warnSpy.mock.invocationCallOrder[storeDisposeCallIdx])
+				.toBeLessThan(warnSpy.mock.invocationCallOrder[pDisposeCallIdx]);
+
 			warnSpy.mockRestore();
 		});
 	});

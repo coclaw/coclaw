@@ -206,7 +206,8 @@ describe('ManageClawsPage', () => {
 		const costEl = wrapper.find('[data-testid="monthly-cost"]');
 		expect(costEl.exists()).toBe(true);
 		expect(costEl.text()).toContain('Monthly cost');
-		expect(costEl.text()).toMatch(/12\.34/);
+		// 必须带 currency 前缀（$）——源码若退化成 String(total) 会丢符号 + 本地化
+		expect(costEl.text()).toMatch(/\$12\.34/);
 	});
 
 	test('在线 claw + dashboard 无 monthlyCost → 不渲染花费块', async () => {

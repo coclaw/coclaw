@@ -130,6 +130,17 @@ describe('ProgressRing', () => {
 			expect(w.find('[role="progressbar"]').attributes('aria-valuenow')).toBeUndefined();
 		});
 
+		test('value 为字符串 "50" → 不确定态（不被误当成 50% 满环）', () => {
+			// 与 '0.5' 同源问题但走另一种数值字面量：源码若被退化成 parseFloat 强转
+			// 会得到 50 → 越界后 clamp 成满环，误导用户；这条钉死必须保持不确定态
+			const w = mount(ProgressRing, {
+				props: { value: '50' },
+				global: { config: { warnHandler: () => {} } },
+			});
+			expect(w.find('svg').classes()).toContain('animate-spin');
+			expect(w.find('[role="progressbar"]').attributes('aria-valuenow')).toBeUndefined();
+		});
+
 		test('不确定态 dashArray 是 "弧 间隔" 而非整圈', () => {
 			const w = mountRing({ value: null });
 			const arc = w.findAll('circle')[1];

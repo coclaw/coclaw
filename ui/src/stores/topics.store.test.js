@@ -277,7 +277,10 @@ describe('topics store', () => {
 		// plugin 端创建已落库，返回 topicId（持久数据正确）
 		resolveCreate({ topicId: 'orphan-uuid' });
 
-		await expect(p).rejects.toMatchObject({ code: 'CLAW_DISCONNECTED' });
+		// 断成两步：① Error 实例（防止源码退化成 throw 裸对象，丢 stack）② code 字段
+		const err = await p.catch((e) => e);
+		expect(err).toBeInstanceOf(Error);
+		expect(err).toMatchObject({ code: 'CLAW_DISCONNECTED' });
 		// 本地不写"挂在已消失 claw 上"的 dangling 条目
 		expect(store.byId['orphan-uuid']).toBeUndefined();
 	});
