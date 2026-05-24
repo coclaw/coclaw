@@ -41,6 +41,7 @@
 
 - gateway 注入的 logger 是 pino 风格：只有 `.info() / .warn() / .error()`，**没有 `.log()`**。
 - 调用一律用可选链：`logger.info?.(...)` / `logger.warn?.(...)` / `logger.error?.(...)`。**Why:** logger 缺方法或本身为 undefined 时不抛异常中断流程。
+- 日志器调用视为不会抛错，调用点不要再包 try/catch；若真要防御统一放注入层。
 - **禁止** `logger('msg')`（不是函数）/ `logger.log(...)`（不存在）。
 - `remoteLog(text)`（`src/remote-log.js`）：关键诊断推送 server。格式 `<模块>.<事件> key=value`。仅关键事件，**禁止高频**。
 - **禁止在 auto-upgrade worker 进程中调 remoteLog**——worker 是独立 spawn 子进程，无 bridge 连接。
