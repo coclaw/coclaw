@@ -13,10 +13,7 @@ const mockCreateBindingCode = vi.fn().mockResolvedValue({
 
 const mockCancelBindingCode = vi.fn().mockResolvedValue(undefined);
 
-const mockListClaws = vi.fn().mockResolvedValue([]);
-
 vi.mock('../services/claws.api.js', () => ({
-	listClaws: (...args) => mockListClaws(...args),
 	createBindingCode: (...args) => mockCreateBindingCode(...args),
 	cancelBindingCode: (...args) => mockCancelBindingCode(...args),
 }));
@@ -94,7 +91,6 @@ beforeEach(() => {
 		waitToken: 'tok_test',
 	});
 	mockCancelBindingCode.mockReset().mockResolvedValue(undefined);
-	mockListClaws.mockReset().mockResolvedValue([]);
 	mockNotify.success.mockReset();
 	mockNotify.error.mockReset();
 	mockNotify.warning.mockReset();
@@ -302,92 +298,6 @@ test('startBinding inflight guard：上次 await 未结束时再次触发不重�
 	await wrapper.vm.startBinding();
 	await flushPromises();
 	expect(mockCreateBindingCode).toHaveBeenCalledTimes(2);
-});
-
-test('captureBaseline 15s 超时 → fallback 走 listClaws REST 一次性拉列表给 baseline', async () => {
-	vi.useFakeTimers();
-	try {
-		mockListClaws.mockResolvedValueOnce([{ id: 'existing1' }, { id: 'existing2' }]);
-		const pinia = createPinia();
-		setActivePinia(pinia);
-		const clawsStore = useClawsStore();
-		clawsStore.byId = {};
-		clawsStore.fetched = false; // SSE 永远没推第一份 snapshot
-		const wrapper = mount(AddClawPage, {
-			global: {
-				plugins: [pinia],
-				stubs: {
-					UButton: UButtonStub,
-					UIcon: { props: ['name'], template: '<span />' },
-				},
-				mocks: {
-					$t: (key, params) => {
-						if (key === 'claws.expiryLeft') return `有效期剩余 ${params?.time ?? ''}`;
-						return i18nMap[key] ?? key;
-					},
-					$router: { push: vi.fn() },
-				},
-			},
-		});
-
-		// fetched=false 期间还没超时，createBindingCode 未调用
-		await flushPromises();
-		expect(mockCreateBindingCode).not.toHaveBeenCalled();
-		expect(mockListClaws).not.toHaveBeenCalled();
-
-		// 推进 15s 触发超时分支
-		await vi.advanceTimersByTimeAsync(15_000);
-		await flushPromises();
-
-		// listClaws fallback 已用于设置 baseline
-		expect(mockListClaws).toHaveBeenCalled();
-		expect(wrapper.vm.baselineClawIds).toBeInstanceOf(Set);
-		expect(wrapper.vm.baselineClawIds.has('existing1')).toBe(true);
-		expect(wrapper.vm.baselineClawIds.has('existing2')).toBe(true);
-		// baseline 拿到后 createBindingCode 才被调
-		expect(mockCreateBindingCode).toHaveBeenCalled();
-	}
-	finally {
-		vi.useRealTimers();
-	}
-});
-
-test('captureBaseline 15s 超时 + listClaws 也失败 → baseline 兜底为空集合，继续走 createBindingCode', async () => {
-	vi.useFakeTimers();
-	try {
-		mockListClaws.mockRejectedValueOnce(new Error('rest down'));
-		const pinia = createPinia();
-		setActivePinia(pinia);
-		const clawsStore = useClawsStore();
-		clawsStore.byId = {};
-		clawsStore.fetched = false;
-		const wrapper = mount(AddClawPage, {
-			global: {
-				plugins: [pinia],
-				stubs: { UButton: UButtonStub, UIcon: { props: ['name'], template: '<span />' } },
-				mocks: {
-					$t: (key, params) => {
-						if (key === 'claws.expiryLeft') return `有效期剩余 ${params?.time ?? ''}`;
-						return i18nMap[key] ?? key;
-					},
-					$router: { push: vi.fn() },
-				},
-			},
-		});
-
-		await flushPromises();
-		await vi.advanceTimersByTimeAsync(15_000);
-		await flushPromises();
-
-		expect(mockListClaws).toHaveBeenCalled();
-		expect(wrapper.vm.baselineClawIds).toBeInstanceOf(Set);
-		expect(wrapper.vm.baselineClawIds.size).toBe(0);
-		// 即使 REST 挂了，createBindingCode 仍被调用（不卡死）
-		expect(mockCreateBindingCode).toHaveBeenCalled();
-	}
-	finally {
-		vi.useRealTimers();
-	}
 });
 
 test('should defer baseline capture until store.fetched flips true', async () => {

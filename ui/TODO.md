@@ -572,3 +572,15 @@ X4 触及面比 X1 广，需要重新评估：
    - 现状：`stroke-dashoffset` transition + `animate-spin` 在 Android Chrome 90+ WebView 表现未实测
    - 修复：Capacitor 构建后在 Android 真机/模拟器跑一次完整上传流程，确认动画 / 弧长过渡正常
 
+## AddClawPage：SSE 一直未推首份 claw 快照时的用户引导
+
+**发现日期**：2026-05-24
+**关联背景**：980c9a2 曾经加过一条"15s 超时 → REST `listClaws()` 兜底"路径来缓解此场景，2026-05-24 已撤回——理由是项目里 claws 数据全靠 SSE 推送，单独让本页走 REST 自救违背全局架构（其他页面同样瞎），且该 fallback 自身又引入了快速离页留孤儿绑定码的新风险。
+
+- 现状：`captureBaseline` 在 `clawsStore.fetched=false` 时无限等待 SSE 翻 true，期间页面停留在 "Preparing..." spinner。如果 SSE 通道始终未建立（登录态异常 / 网络中断 / server SSE endpoint 故障），用户感受到"页面卡住，无任何提示"
+- 修复方向（待设计）：
+  - 给等待加一个软超时（比如 15–20s）转入显式错误态，提示"未能连接到服务器，请检查网络或重试"，复用现有 `loadError` + "重试" 按钮的状态机
+  - 或者在更上层（App 级）surface SSE 连接状态徽标，由全局信号驱动，AddClawPage 只读不自救
+  - 不要再走 REST 兜底——会回退到撤销前的同一坑
+- 优先级：低；此场景在真正现网命中很窄（SSE 接通本身可靠性较高），不阻塞产品迭代
+
