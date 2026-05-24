@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import nodePath from 'node:path';
 import os from 'node:os';
 import { after, test } from 'node:test';
@@ -798,7 +799,9 @@ test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async (
 			'bind 应取消进行中的 enroll',
 		);
 
-		// 3) 再发起 enroll，然后 unbind 也应取消之
+		// 3) 清掉 bind 写入的本地 token，再发起 enroll；否则 enrollClaw 会因 ALREADY_BOUND
+		// 抛错，新行为下 activeEnrollAbort 不再被 set，unbind 无可取消 → 计数不增。
+		await fs.rm(nodePath.join(dir, 'coclaw', 'bindings.json'), { force: true });
 		await new Promise((resolve) => {
 			handlers.get('coclaw.enroll')({
 				params: { serverUrl: mock.baseUrl },
@@ -816,6 +819,86 @@ test('coclaw.bind 与 coclaw.unbind 进入时取消进行中的 enroll', async (
 			2,
 			'unbind 应取消进行中的 enroll',
 		);
+	}
+	finally {
+		await stopRealtimeBridge({ forceCleanup: true }).catch(() => {});
+		process.chdir(prevCwd);
+		if (prevHome === undefined) delete process.env.HOME;
+		else process.env.HOME = prevHome;
+		await mock.close();
+	}
+});
+
+test('coclaw.enroll: enrollClaw 抛错时不残留 activeEnrollAbort', async () => {
+	const prevCwd = process.cwd();
+	const prevHome = process.env.HOME;
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-enroll-no-residue-'));
+	process.env.OPENCLAW_CONFIG_PATH = nodePath.join(dir, 'openclaw.json');
+	await fs.writeFile(process.env.OPENCLAW_CONFIG_PATH, '{}', 'utf8');
+	process.env.HOME = nodePath.join(dir, 'home');
+	await fs.mkdir(process.env.HOME, { recursive: true });
+	process.chdir(dir);
+	setRuntime({ state: { resolveStateDir: () => dir } });
+
+	// 借一个端口然后立刻关掉：第一次 enroll 指向它必拿 ECONNREFUSED，让 enrollClaw 抛错
+	const dummy = http.createServer();
+	await new Promise((resolve) => dummy.listen(0, '127.0.0.1', resolve));
+	const deadUrl = `http://127.0.0.1:${dummy.address().port}`;
+	await new Promise((resolve) => dummy.close(resolve));
+
+	// 第二次 enroll 用真实 mock；waitDelayMs=10000 让 wait 挂着，便于在收尾时观察 cancel 行为
+	const mock = await createMockServer({ waitDelayMs: 10_000 });
+	const infoLogs = [];
+	const handlers = new Map();
+	plugin.register({
+		registrationMode: 'full',
+		pluginConfig: { serverUrl: mock.baseUrl },
+		runtime: { state: { resolveStateDir: () => dir } },
+		logger: {
+			info(msg) { infoLogs.push(String(msg)); },
+			warn() {},
+			error() {},
+		},
+		registerChannel() {},
+		registerCli() {},
+		registerService() {},
+		registerCommand() {},
+		registerGatewayMethod(name, handler) { handlers.set(name, handler); },
+	});
+
+	try {
+		// 1) 第一次 enroll 指向死端口：enrollClaw 必抛 → 之前的实现会让 activeEnrollAbort 残留
+		let firstOut;
+		await new Promise((resolve) => {
+			handlers.get('coclaw.enroll')({
+				params: { serverUrl: deadUrl },
+				respond(ok, payload, error) { firstOut = { ok, payload, error }; resolve(); },
+			});
+		});
+		assert.equal(firstOut.ok, false, 'enroll 指向死端口必失败');
+
+		// 2) 第二次 enroll 走真实 mock：进入时若 activeEnrollAbort 残留，cancelActiveEnroll 会打一行 info
+		const beforeCount = infoLogs.filter((l) => l.includes('cancelling active enroll')).length;
+		await new Promise((resolve) => {
+			handlers.get('coclaw.enroll')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
+		const afterCount = infoLogs.filter((l) => l.includes('cancelling active enroll')).length;
+		assert.equal(
+			afterCount,
+			beforeCount,
+			'enrollClaw 失败的上一次 enroll 不应残留 activeEnrollAbort',
+		);
+
+		// 收尾：触发 cancelActiveEnroll 让挂在 mock 上的 wait 被 abort，避免拖垮 mock.close
+		await new Promise((resolve) => {
+			handlers.get('coclaw.unbind')({
+				params: { serverUrl: mock.baseUrl },
+				respond() { resolve(); },
+			});
+		});
 	}
 	finally {
 		await stopRealtimeBridge({ forceCleanup: true }).catch(() => {});

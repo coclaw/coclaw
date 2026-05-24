@@ -398,10 +398,12 @@ const plugin = {
 				// 取消前一个 enroll（与 doBind/doUnbind 共享 helper）
 				cancelActiveEnroll();
 				const abortController = new AbortController();
-				activeEnrollAbort = abortController;
 
 				const serverUrl = params?.serverUrl ?? api.pluginConfig?.serverUrl;
 				const result = await enrollClaw({ serverUrl });
+				// 仅 waitForClaimAndSave 消费 signal；挂到 active 上挪到 enrollClaw 成功后，
+				// 同步抛错时不留残留 controller（下一次 enroll 的 cancelActiveEnroll 不会空跑）
+				activeEnrollAbort = abortController;
 
 				const rawMinutes = Math.round(
 					(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
@@ -828,10 +830,11 @@ const plugin = {
 						// 并发控制：取消前一个 enroll（与 RPC 路径共享 helper）
 						cancelActiveEnroll();
 						const abortController = new AbortController();
-						activeEnrollAbort = abortController;
 
 						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;
 						const result = await enrollClaw({ serverUrl });
+						// 同 RPC 路径：挂 active 挪到 enrollClaw 成功后，避免抛错时残留
+						activeEnrollAbort = abortController;
 						const rawMinutes = Math.round(
 							(new Date(result.expiresAt).getTime() - Date.now()) / 60_000,
 						);
