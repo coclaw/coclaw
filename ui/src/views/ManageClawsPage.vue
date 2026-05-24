@@ -84,7 +84,8 @@
 							<UButton
 								color="error"
 								variant="soft"
-								:loading="unbindingId === claw.id"
+								:loading="!!unbindingMap[claw.id]"
+								:disabled="!!unbindingMap[claw.id]"
 								@click="confirmRemove(claw.id)"
 							>
 								{{ $t('claws.remove') }}
@@ -146,7 +147,7 @@
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
 					<UButton variant="ghost" color="neutral" @click="removeConfirmOpen = false">{{ $t('common.cancel') }}</UButton>
-					<UButton color="error" :loading="!!unbindingId" @click="onConfirmRemove">{{ $t('common.confirm') }}</UButton>
+					<UButton color="error" @click="onConfirmRemove">{{ $t('common.confirm') }}</UButton>
 				</div>
 			</template>
 		</UModal>
@@ -184,7 +185,9 @@ export default {
 	data() {
 		return {
 			loading: false,
-			unbindingId: '',
+			// per-claw in-flight tracker：key=clawId，value=true 表示 unbind 正在跑
+			// 写入/删除均只在 onConfirmRemove 内（写在 await 前的同步段、删在 finally）
+			unbindingMap: {},
 			removeConfirmOpen: false,
 			removeTargetId: '',
 			renameOpen: false,
@@ -429,20 +432,35 @@ export default {
 		},
 		async onConfirmRemove() {
 			const clawId = this.removeTargetId;
-			if (!clawId || this.unbindingId) return;
-			this.unbindingId = clawId;
+			if (!clawId) return;
+			// 同 claw 重入挡掉；不同 claw 允许并发（per-claw map）
+			if (this.unbindingMap[clawId]) return;
+			// 先关弹窗，再发 API：用户点确认后 modal 立刻消失，操作走后台
+			this.removeConfirmOpen = false;
+			this.unbindingMap[clawId] = true;
+			// server 视角是否已无此 claw（success 或 404 都视为"已无"）
+			let serverGone = false;
 			try {
 				await unbindClawByUser(clawId);
-				this.removeConfirmOpen = false;
-				this.dashboardStore.clearDashboard(clawId);
-				await this.loadData();
+				serverGone = true;
 			}
 			catch (err) {
 				console.warn('[ManageClawsPage] onConfirmRemove failed:', err);
 				this.notify.error(err?.response?.data?.message ?? err?.message ?? this.$t('claws.removeFailed'));
+				// 404 = server 视角已无此 claw，等同 unbind 成功；SSE 不会推 claw.unbound，需主动剔除
+				const code = err?.response?.data?.code;
+				const status = err?.response?.status;
+				if (code === 'CLAW_NOT_FOUND' || status === 404) {
+					serverGone = true;
+					this.clawsStore.removeClawById(clawId);
+				}
 			}
 			finally {
-				this.unbindingId = '';
+				delete this.unbindingMap[clawId];
+			}
+			if (serverGone) {
+				this.dashboardStore.clearDashboard(clawId);
+				await this.loadData();
 			}
 		},
 	},

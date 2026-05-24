@@ -33,6 +33,8 @@ vi.mock('../stores/get-ready-conn.js', () => ({
 	getReadyConn: (...args) => mockGetReadyConn(...args),
 }));
 
+const mockRemoveClawById = vi.fn();
+
 vi.mock('../stores/claws.store.js', () => ({
 	useClawsStore: () => ({
 		get items() { return mockBots; },
@@ -42,6 +44,7 @@ vi.mock('../stores/claws.store.js', () => ({
 			return map;
 		},
 		fetched: true, // SSE 快照已到达
+		removeClawById: mockRemoveClawById,
 	}),
 }));
 
@@ -339,7 +342,7 @@ describe('ManageClawsPage', () => {
 		warnSpy.mockRestore();
 	});
 
-	test('onConfirmRemove 异常时 log warning 并 notify error', async () => {
+	test('onConfirmRemove 异常时 log warning 并 notify error；弹窗始终关闭；非 404 不剔本地', async () => {
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue(null);
@@ -349,12 +352,194 @@ describe('ManageClawsPage', () => {
 		await flushPromises();
 
 		wrapper.vm.removeTargetId = '1';
+		wrapper.vm.removeConfirmOpen = true;
 		await wrapper.vm.onConfirmRemove();
 
 		expect(warnSpy).toHaveBeenCalledWith('[ManageClawsPage] onConfirmRemove failed:', err);
 		expect(mockNotify.error).toHaveBeenCalled();
-		expect(wrapper.vm.unbindingId).toBe('');
+		expect(wrapper.vm.unbindingMap).toEqual({});
+		// 弹窗即便出错也必须关，避免 modal 卡住
+		expect(wrapper.vm.removeConfirmOpen).toBe(false);
+		// 非 404 错误不应主动剔本地 claw / 清 dashboard
+		expect(mockRemoveClawById).not.toHaveBeenCalled();
+		expect(mockClearDashboard).not.toHaveBeenCalled();
 		warnSpy.mockRestore();
+	});
+
+	test('onConfirmRemove server 返回 404（CLAW_NOT_FOUND）→ 视为成功：关弹窗 + 本地剔除 + 清 dashboard', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(null);
+		const err = Object.assign(new Error('Request failed with status code 404'), {
+			response: { status: 404, data: { code: 'CLAW_NOT_FOUND', message: 'claw not found' } },
+		});
+		unbindClawByUser.mockRejectedValueOnce(err);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.removeTargetId = '1';
+		wrapper.vm.removeConfirmOpen = true;
+		await wrapper.vm.onConfirmRemove();
+
+		expect(mockNotify.error).toHaveBeenCalled();
+		expect(wrapper.vm.removeConfirmOpen).toBe(false);
+		expect(wrapper.vm.unbindingMap).toEqual({});
+		// 404 路径：主动剔本地 + 清 dashboard，避免僵尸卡片
+		expect(mockRemoveClawById).toHaveBeenCalledWith('1');
+		expect(mockClearDashboard).toHaveBeenCalledWith('1');
+		warnSpy.mockRestore();
+	});
+
+	test('onConfirmRemove 点确认后先关弹窗再调 API（用户体验：modal 立刻消失）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(null);
+		let resolveUnbind;
+		let modalStateAtApiCall;
+		unbindClawByUser.mockImplementationOnce((id) => {
+			// API 被调用时弹窗应当已经关闭
+			modalStateAtApiCall = wrapper.vm.removeConfirmOpen;
+			return new Promise((r) => { resolveUnbind = () => r({ clawId: id, status: 'unbound' }); });
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.removeTargetId = '1';
+		wrapper.vm.removeConfirmOpen = true;
+		const pending = wrapper.vm.onConfirmRemove();
+		// 同步路径走完时，弹窗已被关闭、API 已被调用
+		expect(wrapper.vm.removeConfirmOpen).toBe(false);
+		expect(unbindClawByUser).toHaveBeenCalledWith('1');
+		expect(modalStateAtApiCall).toBe(false);
+
+		resolveUnbind();
+		await pending;
+	});
+
+	test('卡片 Remove 按钮在 unbind in-flight 期间同时反映 loading + disabled（钉住 :disabled 不被误砍）', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true },
+			{ id: '2', name: 'Bot2', online: true },
+		];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [] },
+			agents: [],
+			loading: false,
+		});
+		let resolveA;
+		unbindClawByUser.mockImplementationOnce(() => new Promise((r) => { resolveA = () => r({ clawId: '1', status: 'unbound' }); }));
+
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		// 触发 claw 1 的 unbind 让它 in-flight；不 await，让 unbindClawByUser 卡住
+		wrapper.vm.removeTargetId = '1';
+		wrapper.vm.removeConfirmOpen = true;
+		const pending = wrapper.vm.onConfirmRemove();
+		await wrapper.vm.$nextTick();
+
+		// 在所有 UButton stub 实例里过滤出 Remove 按钮（按 text 锁定）
+		// 不依赖渲染顺序——sortedClaws 同优先级按 lastAliveAt 排序，位置不可控
+		const allBtns = wrapper.findAllComponents(UButtonStub);
+		const removeBtns = allBtns.filter(b => b.text() === 'Remove');
+		expect(removeBtns.length).toBe(2);
+
+		// in-flight 那个 Remove 按钮：loading + disabled 同时为 true（双保险都要在）
+		const blocked = removeBtns.filter(b => b.props('loading') === true);
+		expect(blocked.length).toBe(1);
+		expect(blocked[0].props('disabled')).toBe(true);
+
+		// 另一个 Remove 按钮：loading + disabled 同时为 false（不受 claw 1 影响）
+		const open = removeBtns.filter(b => b.props('loading') === false);
+		expect(open.length).toBe(1);
+		expect(open[0].props('disabled')).toBe(false);
+
+		// 收尾
+		resolveA();
+		await pending;
+	});
+
+	test('onConfirmRemove 不同 claw 可并发 unbind（per-claw map 不互相阻塞）', async () => {
+		mockBots = [
+			{ id: '1', name: 'Bot1', online: true },
+			{ id: '2', name: 'Bot2', online: true },
+		];
+		mockGetDashboard.mockReturnValue(null);
+
+		// claw 1 的 unbind 卡住不返回；claw 2 的 unbind 直接成功
+		let resolveA;
+		unbindClawByUser.mockImplementationOnce(() => new Promise((r) => { resolveA = () => r({ clawId: '1', status: 'unbound' }); }));
+		unbindClawByUser.mockResolvedValueOnce({ clawId: '2', status: 'unbound' });
+
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		// 触发 A 的 unbind（不 await，模拟 in-flight）
+		wrapper.vm.removeTargetId = '1';
+		wrapper.vm.removeConfirmOpen = true;
+		const pendingA = wrapper.vm.onConfirmRemove();
+		// A 的 in-flight 标记建立、A 卡片按钮 :loading + :disabled 都会反映这一点
+		expect(wrapper.vm.unbindingMap['1']).toBe(true);
+		expect(wrapper.vm.unbindingMap['2']).toBeUndefined();
+		expect(wrapper.vm.removeConfirmOpen).toBe(false);
+
+		// A 还没回执时，对 B 走同一流程：必须能进，不被 A 的 in-flight 阻塞
+		wrapper.vm.removeTargetId = '2';
+		wrapper.vm.removeConfirmOpen = true;
+		await wrapper.vm.onConfirmRemove();
+
+		// B 已完成：弹窗关闭、B 不再在 map 里；A 仍在 map 里（pending）
+		expect(wrapper.vm.removeConfirmOpen).toBe(false);
+		expect(wrapper.vm.unbindingMap['2']).toBeUndefined();
+		expect(wrapper.vm.unbindingMap['1']).toBe(true);
+		expect(mockClearDashboard).toHaveBeenCalledWith('2');
+
+		// 收尾 A
+		resolveA();
+		await pendingA;
+		expect(wrapper.vm.unbindingMap['1']).toBeUndefined();
+		expect(mockClearDashboard).toHaveBeenCalledWith('1');
+	});
+
+	test('onConfirmRemove 同 claw 重入被守卫挡掉（不重复发 API、弹窗状态不被破坏）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(null);
+		let resolveA;
+		unbindClawByUser.mockImplementationOnce(() => new Promise((r) => { resolveA = () => r({ clawId: '1', status: 'unbound' }); }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.removeTargetId = '1';
+		wrapper.vm.removeConfirmOpen = true;
+		const pendingA = wrapper.vm.onConfirmRemove();
+
+		expect(unbindClawByUser).toHaveBeenCalledTimes(1);
+		expect(wrapper.vm.unbindingMap['1']).toBe(true);
+
+		// 同 claw 再次触发：guard 早返回，API 不被重复调用
+		wrapper.vm.removeTargetId = '1';
+		await wrapper.vm.onConfirmRemove();
+		expect(unbindClawByUser).toHaveBeenCalledTimes(1);
+
+		resolveA();
+		await pendingA;
+	});
+
+	test('onConfirmRemove 成功路径不主动 removeClawById（让 SSE claw.unbound 接管），但清 dashboard 并 reload', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(null);
+		unbindClawByUser.mockResolvedValueOnce({ clawId: '1', status: 'unbound' });
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		wrapper.vm.removeTargetId = '1';
+		wrapper.vm.removeConfirmOpen = true;
+		await wrapper.vm.onConfirmRemove();
+
+		expect(wrapper.vm.removeConfirmOpen).toBe(false);
+		expect(wrapper.vm.unbindingMap).toEqual({});
+		expect(mockClearDashboard).toHaveBeenCalledWith('1');
+		// 成功路径下不自己剔，等 SSE 推 claw.unbound 触发 removeClawById
+		expect(mockRemoveClawById).not.toHaveBeenCalled();
 	});
 
 	// ---- 状态摘要栏 ----

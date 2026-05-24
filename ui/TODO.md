@@ -2,6 +2,23 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## ManageClawsPage unbind 修复 review 后续
+
+**发现日期**：2026-05-25
+**关联 commit**：fix(ui): unbind dialog dismiss + per-claw concurrency + 404 self-heal
+
+来源：unbind 弹窗卡住 / 本地僵尸卡片修复的深度 review（codex-rescue + opus subagent 各一）。两条预存问题，与本次修改无直接因果，本次未恶化也未修复。
+
+1. **server `/api/v1/claws/unbind-by-user` 404 假阳性会强制本地清在线 claw**
+   - 现状：UI 修复后，server 返 404 时主动调 `clawsStore.removeClawById(clawId)` 把本地全清（含 RTC 断连、retry/probe state、topics/dashboard cache、connections）。这依赖 server 端 404 真的表示"该用户无此 claw"。如果运维误触 / DB 短暂不一致 / 鉴权切换等场景下 server 错误返了 404，用户实际还绑着的 claw 会被本地强清，需要用户重新绑才能恢复。
+   - 修复方向：server 侧确保 `unbind-by-user` 的 404 路径有清晰幂等性边界——只有"该用户当前确实无此 claw"才返 404；任何"暂时查不到"用 5xx 或 503。或 UI 侧加重试 + 降级（先 GET claws 二次确认才本地清）——但代价高，当前 trade-off 用户已确认接受。
+   - 触发概率极低，但属已知风险，记录追踪。
+
+2. **ManageClawsPage 组件 unmount 后 await 仍跑、写已销毁 reactive state**
+   - 现状：`onConfirmRemove` 异步路径里 `await unbindClawByUser` / `await loadData` 跑到一半组件被卸载（用户跳页 / 登出），post-finally 的 `delete this.unbindingMap[clawId]` / `dashboardStore.clearDashboard` / `loadData` 仍会跑，写已销毁实例的 reactive state（如 `this.loading`）。
+   - 修复方向：组件 onBeforeUnmount 绑 AbortController.signal，async 路径检查 signal 短路；或仅在 inflight 数量为 0 时允许卸载。pre-existing 问题，本次未恶化。
+   - 触发概率低、副作用小（store 是 singleton），登记跟踪。
+
 ## sessions.list dedup deep-review 发现的预存问题
 
 **发现日期**：2026-05-11

@@ -82,24 +82,32 @@ test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
 	await expect(clawCard).toBeVisible({ timeout: 5000 });
 
 	// ================================================================
-	// UNBIND
+	// UNBIND（通过 Remove 确认 modal）
 	// ================================================================
 
-	// 点击新 claw 卡片中的解绑按钮
-	const unbindBtn = clawCard.locator('button[color="error"], button.text-error').first();
-	// 如果上面选择器不准确，用最后一个 button（解绑按钮在卡片右侧）
-	const btnCount = await clawCard.locator('button').count();
-	const actualUnbindBtn = btnCount > 0 ? clawCard.locator('button').last() : unbindBtn;
-	await actualUnbindBtn.click();
+	// 1) 点卡片里的 Remove 按钮 → 打开确认 modal
+	const removeBtn = clawCard.getByRole('button', { name: 'Remove' });
+	await expect(removeBtn).toBeVisible({ timeout: 5_000 });
+	await removeBtn.click();
 
-	// 等待解绑完成（claw 卡片消失或 claw 列表更新）
+	// 2) modal 出现（标题 "Remove Claw"），点 Confirm
+	const removeModalTitle = page.getByText('Remove Claw', { exact: true });
+	await expect(removeModalTitle).toBeVisible({ timeout: 5_000 });
+	const confirmBtn = page.getByRole('button', { name: 'Confirm' });
+	await expect(confirmBtn).toBeVisible({ timeout: 5_000 });
+	await confirmBtn.click();
+
+	// 3) modal 同步关闭（修复点：之前出错时 modal 会卡住）
+	await expect(removeModalTitle).not.toBeVisible({ timeout: 5_000 });
+
+	// 4) claw 列表中不再包含该 id
 	await expect(async () => {
 		const currentIds = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
 		expect(currentIds).not.toContain(newClawId);
 	}).toPass({ timeout: 15_000 });
 
-	// 验证 claw 卡片不再可见
-	await expect(clawCard).not.toBeVisible({ timeout: 5000 });
+	// 5) 验证 claw 卡片不再可见
+	await expect(clawCard).not.toBeVisible({ timeout: 5_000 });
 
 	// ================================================================
 	// REBIND（恢复环境，避免后续测试因无 claw 而失败）
@@ -129,4 +137,64 @@ test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
 	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 
 	console.log('[e2e] claw bind/unbind flow completed, environment restored');
+});
+
+/**
+ * 解绑 404 self-heal：当 server 返回 404（CLAW_NOT_FOUND）时，UI 应：
+ *   - modal 同步关闭（不卡住）
+ *   - 本地 claw 卡片仍消失（不需要刷新）
+ *
+ * 修复前的 bug：modal 保持打开，claw 卡片不消失，必须刷新浏览器才能恢复同步。
+ *
+ * 实现：用 page.route() mock /api/v1/claws/unbind-by-user 返回 404。
+ * 后续清理：server 实际未解绑，本地清理后服务端状态仍正常，下次登录走 SSE 自愈。
+ */
+test('Claw 解绑：server 返回 404 时仍本地剔除并关闭 modal @bind', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	await page.goto('/claws');
+	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
+	await page.waitForTimeout(1000);
+
+	// 需要至少一个已绑定 claw（依赖上一条测试 rebind 后的环境）
+	const clawIds = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
+	if (clawIds.length === 0) {
+		test.skip(true, 'No bound claw to test 404 self-heal; previous bind test must have left one');
+		return;
+	}
+	const targetId = clawIds[0];
+	const targetCard = page.getByTestId('claw-' + targetId);
+	await expect(targetCard).toBeVisible();
+
+	// mock server 返 404 CLAW_NOT_FOUND
+	await page.route('**/api/v1/claws/unbind-by-user', async (route) => {
+		await route.fulfill({
+			status: 404,
+			contentType: 'application/json',
+			body: JSON.stringify({ code: 'CLAW_NOT_FOUND', message: 'claw not found' }),
+		});
+	});
+
+	// 点 Remove → modal 出现
+	await targetCard.getByRole('button', { name: 'Remove' }).click();
+	const removeModalTitle = page.getByText('Remove Claw', { exact: true });
+	await expect(removeModalTitle).toBeVisible({ timeout: 5_000 });
+
+	// 点 Confirm → mock 返 404
+	await page.getByRole('button', { name: 'Confirm' }).click();
+
+	// 修复点 A：modal 同步关闭（即便 server 返错）
+	await expect(removeModalTitle).not.toBeVisible({ timeout: 3_000 });
+
+	// 修复点 B：404 self-heal 路径 — 本地仍剔除该 claw
+	await expect(targetCard).not.toBeVisible({ timeout: 5_000 });
+	await expect(async () => {
+		const ids = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
+		expect(ids).not.toContain(targetId);
+	}).toPass({ timeout: 5_000 });
+
+	await page.unroute('**/api/v1/claws/unbind-by-user');
+	console.log('[e2e] claw 404 self-heal verified; server-side binding untouched');
 });
