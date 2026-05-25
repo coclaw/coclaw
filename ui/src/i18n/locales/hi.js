@@ -501,7 +501,6 @@ export const hiMessages = {
 			invalidWarning: 'मुख्य मॉडल अब उपलब्ध नहीं है। कृपया एक नया चुनें।',
 			changeButton: 'बदलें',
 			selectButton: 'मुख्य चुनें',
-			changeSuccess: 'मुख्य मॉडल अपडेट किया गया।',
 			pickerTitle: 'मुख्य मॉडल चुनें',
 			pickerSearchPlaceholder: 'मॉडल खोजें…',
 			pickerEmpty: 'कोई मॉडल उपलब्ध नहीं है। पहले कम-से-कम एक प्रदाता के लिए API कुंजी जोड़ें।',

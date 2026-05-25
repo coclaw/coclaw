@@ -501,7 +501,6 @@ export const ptMessages = {
 			invalidWarning: 'O modelo principal não está mais disponível. Escolha um novo.',
 			changeButton: 'Alterar',
 			selectButton: 'Selecionar principal',
-			changeSuccess: 'Modelo principal atualizado.',
 			pickerTitle: 'Selecionar modelo principal',
 			pickerSearchPlaceholder: 'Buscar modelos…',
 			pickerEmpty: 'Nenhum modelo disponível. Adicione primeiro uma chave de API para pelo menos um provedor.',

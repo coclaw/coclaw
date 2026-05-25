@@ -501,7 +501,6 @@ export const viMessages = {
 			invalidWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn mô hình mới.',
 			changeButton: 'Đổi',
 			selectButton: 'Chọn mô hình chính',
-			changeSuccess: 'Đã cập nhật mô hình chính.',
 			pickerTitle: 'Chọn mô hình chính',
 			pickerSearchPlaceholder: 'Tìm mô hình…',
 			pickerEmpty: 'Không có mô hình nào khả dụng. Hãy thêm khóa API cho ít nhất một nhà cung cấp trước.',

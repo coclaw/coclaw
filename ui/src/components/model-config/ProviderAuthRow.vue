@@ -1,5 +1,5 @@
 <template>
-	<div class="flex min-h-12 items-center gap-3 px-4 py-2 border-b border-default last:border-b-0">
+	<div class="flex min-h-12 items-center gap-3 px-3 py-2 border-b border-default last:border-b-0">
 		<!-- 品牌名 + 凭据预览 -->
 		<div class="min-w-0 flex-1">
 			<p class="truncate text-sm font-medium">{{ displayName }}</p>
@@ -10,8 +10,7 @@
 		<UButton
 			v-if="removable"
 			data-testid="btn-remove-provider"
-			size="xs"
-			variant="ghost"
+			variant="soft"
 			color="error"
 			:disabled="disabled"
 			@click="onRemove"

@@ -4,7 +4,7 @@
 		<MobilePageHeader :title="pageTitle" fallback="/claws" />
 
 		<!-- 桌面端 header -->
-		<header class="z-10 hidden shrink-0 min-h-12 items-center border-b border-default bg-elevated pl-2 py-1 md:flex">
+		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-elevated pl-2 py-1 md:flex">
 			<!-- 注意：icon-only 返回按钮无 aria-label——与 FileManagerPage 等姊妹页面一致；
 			     a11y 改进作为统一项见仓库 TODO -->
 			<UButton
@@ -20,7 +20,7 @@
 
 		<!-- 内容区 -->
 		<main class="flex-1 min-h-0 overflow-y-auto">
-			<div class="mx-auto w-full max-w-2xl px-4 py-5">
+			<div class="mx-auto w-full max-w-2xl px-3 py-5 sm:px-4 lg:px-5">
 				<!-- claw 离线提示：所有动作 disabled，按 design § 10 -->
 				<div
 					v-if="offline"
@@ -57,17 +57,16 @@
 
 					<!-- A. 默认主模型区 -->
 					<section class="mb-6 rounded border border-default bg-default">
-						<div class="flex items-center justify-between border-b border-default px-4 py-2">
+						<div class="flex items-center justify-between border-b border-default px-3 py-2">
 							<h2 class="text-sm font-medium">{{ $t('modelConfig.primary.title') }}</h2>
 						</div>
-						<div class="px-4 py-3">
+						<div class="px-3 py-2">
 							<!-- 已配且有效 -->
 							<div v-if="primaryState === 'effective' && primary" class="flex flex-wrap items-center justify-between gap-2">
 								<span data-testid="primary-current" class="font-mono text-sm">{{ primary }}</span>
 								<UButton
 									data-testid="btn-primary-change"
-									size="sm"
-									variant="outline"
+									variant="soft"
 									color="primary"
 									:disabled="!actionsEnabled"
 									@click="onChangePrimary"
@@ -86,7 +85,7 @@
 								</p>
 								<UButton
 									data-testid="btn-primary-select"
-									size="sm"
+									variant="soft"
 									color="primary"
 									:disabled="!actionsEnabled"
 									@click="onSelectPrimary"
@@ -99,14 +98,12 @@
 
 					<!-- B. API 凭据区 -->
 					<section class="rounded border border-default bg-default">
-						<div class="flex items-center justify-between border-b border-default px-4 py-2">
+						<div class="flex items-center justify-between border-b border-default px-3 py-2">
 							<h2 class="text-sm font-medium">{{ $t('modelConfig.providerAuth.title') }}</h2>
 							<UButton
 								data-testid="btn-add-provider"
-								size="xs"
-								variant="ghost"
+								variant="soft"
 								color="primary"
-								icon="i-lucide-plus"
 								:disabled="!actionsEnabled"
 								@click="onAddProvider"
 							>
@@ -115,10 +112,10 @@
 						</div>
 						<!-- providers RPC 失败 → 不要假装"无 provider"，给一个 placeholder；
 						     全 3 RPC 失败时 fullyFailed banner 已在上方暴露 retry 入口 -->
-						<div v-if="!loadOk.profiles && !profiles.length" data-testid="provider-load-failed" class="px-4 py-6 text-center text-sm text-muted">
+						<div v-if="!loadOk.profiles && !profiles.length" data-testid="provider-load-failed" class="px-3 py-6 text-center text-sm text-muted">
 							—
 						</div>
-						<div v-else-if="!profiles.length" data-testid="provider-empty" class="px-4 py-6 text-center text-sm text-muted">
+						<div v-else-if="!profiles.length" data-testid="provider-empty" class="px-3 py-6 text-center text-sm text-muted">
 							{{ $t('modelConfig.providerAuth.emptyState') }}
 						</div>
 						<div v-else>
@@ -490,7 +487,7 @@ export default {
 			if (info?.primary) this.primary = info.primary;
 			await this.refreshAfterWrite();
 			if (this.__unmounted || this.clawId !== target) return;
-			this.notify.success(this.$t('modelConfig.primary.changeSuccess'));
+			// 成功不 notify：主模型区会立即刷新成新模型，用户可直接分辨；失败才提示
 			try {
 				await this.dashboardStore.loadDashboard(target, { force: true });
 			}

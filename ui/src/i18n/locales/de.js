@@ -501,7 +501,6 @@ export const deMessages = {
 			invalidWarning: 'Das Hauptmodell ist nicht mehr verfügbar. Bitte wähle ein neues aus.',
 			changeButton: 'Ändern',
 			selectButton: 'Hauptmodell wählen',
-			changeSuccess: 'Hauptmodell aktualisiert.',
 			pickerTitle: 'Hauptmodell auswählen',
 			pickerSearchPlaceholder: 'Modelle suchen…',
 			pickerEmpty: 'Keine Modelle verfügbar. Füge zuerst einen API-Schlüssel für mindestens einen Provider hinzu.',

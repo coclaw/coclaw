@@ -501,7 +501,6 @@ export const zhTWMessages = {
 			invalidWarning: '主模型已失效，請重新選擇',
 			changeButton: '更換',
 			selectButton: '選擇主模型',
-			changeSuccess: '主模型已更新',
 			pickerTitle: '選擇主模型',
 			pickerSearchPlaceholder: '搜尋模型…',
 			pickerEmpty: '暫無可選模型，請先為至少一個 provider 設定 API key',

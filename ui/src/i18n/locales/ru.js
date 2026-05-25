@@ -501,7 +501,6 @@ export const ruMessages = {
 			invalidWarning: 'Основная модель больше не доступна. Пожалуйста, выберите новую.',
 			changeButton: 'Изменить',
 			selectButton: 'Выбрать основную',
-			changeSuccess: 'Основная модель обновлена.',
 			pickerTitle: 'Выбор основной модели',
 			pickerSearchPlaceholder: 'Поиск моделей…',
 			pickerEmpty: 'Нет доступных моделей. Сначала добавьте ключ API хотя бы для одного поставщика.',

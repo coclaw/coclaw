@@ -526,7 +526,7 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 		w.unmount();
 	});
 
-	test('PrimaryModelPickerDialog "picked" event updates local primary + dashboard reload + notify', async () => {
+	test('PrimaryModelPickerDialog "picked" event updates local primary + dashboard reload (no success notify)', async () => {
 		primedAuthList();
 		const w = makeWrapper();
 		await flushPromises();
@@ -548,8 +548,8 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 		expect(w.vm.primary).toBe('groq/llama-3.3-70b-versatile');
 		// dashboard reload with force
 		expect(mockLoadDashboard).toHaveBeenCalledWith('claw1', { force: true });
-		// success notify
-		expect(mockNotify.success).toHaveBeenCalled();
+		// 成功不 notify（主模型区刷新即可让用户分辨）
+		expect(mockNotify.success).not.toHaveBeenCalled();
 		w.unmount();
 	});
 

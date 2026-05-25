@@ -501,7 +501,6 @@ export const frMessages = {
 			invalidWarning: 'Le modèle principal n\'est plus disponible. Veuillez en choisir un nouveau.',
 			changeButton: 'Modifier',
 			selectButton: 'Choisir le principal',
-			changeSuccess: 'Modèle principal mis à jour.',
 			pickerTitle: 'Choisir le modèle principal',
 			pickerSearchPlaceholder: 'Rechercher des modèles…',
 			pickerEmpty: 'Aucun modèle disponible. Ajoutez d\'abord une clé API pour au moins un fournisseur.',

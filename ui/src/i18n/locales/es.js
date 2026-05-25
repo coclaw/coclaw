@@ -501,7 +501,6 @@ export const esMessages = {
 			invalidWarning: 'El modelo principal ya no está disponible. Elige uno nuevo.',
 			changeButton: 'Cambiar',
 			selectButton: 'Seleccionar principal',
-			changeSuccess: 'Modelo principal actualizado.',
 			pickerTitle: 'Seleccionar modelo principal',
 			pickerSearchPlaceholder: 'Buscar modelos…',
 			pickerEmpty: 'No hay modelos disponibles. Primero añade una clave de API para al menos un proveedor.',

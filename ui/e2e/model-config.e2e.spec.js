@@ -229,10 +229,7 @@ test('模型配置 S3：切换主模型——无二次确认→toast→子页与
 	await expect(page.getByTestId('primary-picker-dialog')).not.toBeVisible({ timeout: 15_000 });
 	// 负向断言：picker 关闭后不存在任何对话框（含二次确认 modal）——锁死"选完即存、无二次确认"
 	await expect(page.getByRole('dialog')).toHaveCount(0);
-	// toast（exact 只命中可见 title，避开 a11y live-region 那份 "Notification […]" 文本）
-	await expect(page.getByText(await tr(page, 'modelConfig.primary.changeSuccess'), { exact: true }).first())
-		.toBeVisible({ timeout: 5_000 });
-	// 子页即时更新
+	// 成功不弹 toast：主模型区即时刷新成新模型即是反馈（用户可直接分辨）
 	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY_ALT);
 
 	// 仍在子页时断言 store 已被写回调（onPrimaryPicked）的 loadDashboard(force) 刷成新主模型——

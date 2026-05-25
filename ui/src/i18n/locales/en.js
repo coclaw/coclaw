@@ -501,7 +501,6 @@ export const enMessages = {
 			invalidWarning: 'Primary model is no longer available. Please pick a new one.',
 			changeButton: 'Change',
 			selectButton: 'Select primary',
-			changeSuccess: 'Primary model updated.',
 			pickerTitle: 'Select primary model',
 			pickerSearchPlaceholder: 'Search models…',
 			pickerEmpty: 'No models available. Add an API key for at least one provider first.',
