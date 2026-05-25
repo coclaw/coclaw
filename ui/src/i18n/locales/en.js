@@ -497,7 +497,7 @@ export const enMessages = {
 		},
 		primary: {
 			title: 'Default primary model',
-			notSetWarning: 'No primary model configured. The agent cannot chat yet.',
+			notSetWarning: 'No primary model set — agent cannot chat.',
 			invalidWarning: 'Primary model is no longer available. Please pick a new one.',
 			changeButton: 'Change',
 			selectButton: 'Select primary',
@@ -511,7 +511,6 @@ export const enMessages = {
 			removeButton: 'Remove',
 			emptyState: 'No provider configured yet. Add an API key to get started.',
 			loadFailed: 'Failed to load. Please retry.',
-			removeSuccess: 'Removed {provider}.',
 			removeFailed: 'Failed to remove {provider}.',
 			remove: {
 				title: 'Remove {provider}?',
@@ -537,8 +536,8 @@ export const enMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'No API key configured. The agent cannot chat yet.',
-			noPrimaryWarning: 'No primary model configured. The agent cannot chat yet.',
+			noKeyWarning: 'No API key set — agent cannot chat.',
+			noPrimaryWarning: 'No primary model set — agent cannot chat.',
 			invalidPrimaryWarning: 'Primary model is no longer available. Please pick a new one.',
 			goConfigure: 'Go configure',
 		},

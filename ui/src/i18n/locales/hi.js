@@ -497,7 +497,7 @@ export const hiMessages = {
 		},
 		primary: {
 			title: 'डिफ़ॉल्ट मुख्य मॉडल',
-			notSetWarning: 'कोई मुख्य मॉडल कॉन्फ़िगर नहीं है। एजेंट अभी चैट नहीं कर सकता।',
+			notSetWarning: 'कोई प्राथमिक मॉडल नहीं — एजेंट चैट नहीं कर सकता.',
 			invalidWarning: 'मुख्य मॉडल अब उपलब्ध नहीं है। कृपया एक नया चुनें।',
 			changeButton: 'बदलें',
 			selectButton: 'मुख्य चुनें',
@@ -511,7 +511,6 @@ export const hiMessages = {
 			removeButton: 'हटाएँ',
 			emptyState: 'अभी तक कोई प्रदाता कॉन्फ़िगर नहीं है। आरंभ करने के लिए एक API कुंजी जोड़ें।',
 			loadFailed: 'लोड करना विफल। कृपया पुनः प्रयास करें।',
-			removeSuccess: '{provider} हटाया गया।',
 			removeFailed: '{provider} को हटाने में विफल।',
 			remove: {
 				title: 'क्या {provider} हटाएँ?',
@@ -537,9 +536,9 @@ export const hiMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'कोई API key कॉन्फ़िगर नहीं है. एजेंट अभी चैट नहीं कर सकता.',
-			noPrimaryWarning: 'कोई प्राथमिक मॉडल कॉन्फ़िगर नहीं है. एजेंट अभी चैट नहीं कर सकता.',
-			invalidPrimaryWarning: 'प्राथमिक मॉडल अब उपलब्ध नहीं है. कृपया नया चुनें.',
+			noKeyWarning: 'कोई API key नहीं — एजेंट चैट नहीं कर सकता.',
+			noPrimaryWarning: 'कोई प्राथमिक मॉडल नहीं — एजेंट चैट नहीं कर सकता.',
+			invalidPrimaryWarning: 'मुख्य मॉडल अब उपलब्ध नहीं है। कृपया एक नया चुनें।',
 			goConfigure: 'कॉन्फ़िगर करें',
 		},
 	},

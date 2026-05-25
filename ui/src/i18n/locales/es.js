@@ -497,7 +497,7 @@ export const esMessages = {
 		},
 		primary: {
 			title: 'Modelo principal predeterminado',
-			notSetWarning: 'No hay un modelo principal configurado. El agente aún no puede conversar.',
+			notSetWarning: 'Sin modelo principal — el agente no puede chatear.',
 			invalidWarning: 'El modelo principal ya no está disponible. Elige uno nuevo.',
 			changeButton: 'Cambiar',
 			selectButton: 'Seleccionar principal',
@@ -511,7 +511,6 @@ export const esMessages = {
 			removeButton: 'Eliminar',
 			emptyState: 'Aún no hay ningún proveedor configurado. Añade una clave de API para empezar.',
 			loadFailed: 'Error al cargar. Por favor reintenta.',
-			removeSuccess: '{provider} eliminado.',
 			removeFailed: 'Error al eliminar {provider}.',
 			remove: {
 				title: '¿Eliminar {provider}?',
@@ -537,8 +536,8 @@ export const esMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'No hay ninguna API key configurada. El agente aún no puede chatear.',
-			noPrimaryWarning: 'No hay modelo principal configurado. El agente aún no puede chatear.',
+			noKeyWarning: 'Sin API key — el agente no puede chatear.',
+			noPrimaryWarning: 'Sin modelo principal — el agente no puede chatear.',
 			invalidPrimaryWarning: 'El modelo principal ya no está disponible. Elige uno nuevo.',
 			goConfigure: 'Configurar',
 		},

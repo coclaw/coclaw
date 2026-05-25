@@ -497,7 +497,7 @@ export const viMessages = {
 		},
 		primary: {
 			title: 'Mô hình chính mặc định',
-			notSetWarning: 'Chưa cấu hình mô hình chính. Agent chưa thể trò chuyện.',
+			notSetWarning: 'Chưa có mô hình chính — agent không thể trò chuyện.',
 			invalidWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn mô hình mới.',
 			changeButton: 'Đổi',
 			selectButton: 'Chọn mô hình chính',
@@ -511,7 +511,6 @@ export const viMessages = {
 			removeButton: 'Gỡ',
 			emptyState: 'Chưa có nhà cung cấp nào. Thêm khóa API để bắt đầu.',
 			loadFailed: 'Tải thất bại. Vui lòng thử lại.',
-			removeSuccess: 'Đã gỡ {provider}.',
 			removeFailed: 'Gỡ {provider} thất bại.',
 			remove: {
 				title: 'Gỡ {provider}?',
@@ -537,9 +536,9 @@ export const viMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'Chưa cấu hình API key. Agent chưa thể trò chuyện.',
-			noPrimaryWarning: 'Chưa cấu hình mô hình chính. Agent chưa thể trò chuyện.',
-			invalidPrimaryWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn lại.',
+			noKeyWarning: 'Chưa có API key — agent không thể trò chuyện.',
+			noPrimaryWarning: 'Chưa có mô hình chính — agent không thể trò chuyện.',
+			invalidPrimaryWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn mô hình mới.',
 			goConfigure: 'Đi cấu hình',
 		},
 	},

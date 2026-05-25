@@ -497,7 +497,7 @@ export const zhCNMessages = {
 		},
 		primary: {
 			title: '默认主模型',
-			notSetWarning: '未配主模型，agent 无法对话',
+			notSetWarning: '未配主模型，无法对话',
 			invalidWarning: '主模型已失效，请重新选择',
 			changeButton: '更换',
 			selectButton: '选择主模型',
@@ -511,7 +511,6 @@ export const zhCNMessages = {
 			removeButton: '撤销',
 			emptyState: '还没配任何模型服务商，先添加一个 API key',
 			loadFailed: '加载失败，请重试',
-			removeSuccess: '已撤销 {provider}',
 			removeFailed: '撤销 {provider} 失败',
 			remove: {
 				title: '撤销 {provider}？',
@@ -537,9 +536,9 @@ export const zhCNMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: '未配 API key，agent 无法对话',
-			noPrimaryWarning: '未配主模型，agent 无法对话',
-			invalidPrimaryWarning: '主模型失效，请重新选择',
+			noKeyWarning: '未配 API key，无法对话',
+			noPrimaryWarning: '未配主模型，无法对话',
+			invalidPrimaryWarning: '主模型已失效，请重新选择',
 			goConfigure: '去配置',
 		},
 	},

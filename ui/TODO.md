@@ -640,3 +640,15 @@ X4 触及面比 X1 广，需要重新评估：
    - 优先级：中；属新发现，相邻于 [[feedback_async_orphan_operation_pattern]] 项目通病
    - 关联：`980c9a2` 加 in-flight guard 时未覆盖 unmount exit 路径
 
+## 模型设置：写后刷新失败时"提示成功但列表还旧"
+
+**发现日期**：2026-05-26
+**来源**：model-config 异常验证（临时注入 refreshAfterWrite 失败）
+
+- 现状：`ModelConfigPage.vue` 加服务商 / 撤销服务商成功后会跑一次局部刷新 `refreshAfterWrite` 重拉列表，但这次刷新失败是**完全静默吞掉**（仅 console.warn，不弹错/不出横幅）。失败时失败那部分保留旧数据，于是：加完新 provider 不出现在列表、撤完旧 provider 还留在列表，而写本身已成功（加服务商还照样弹"已添加成功"）。
+- 设计本意（`onProviderAdded` 注释「先 refresh 再 notify 成功，避免提示成功但列表还旧」）在刷新失败这条路上落空。
+- 设主模型不受影响：它在 `refreshAfterWrite` 之前已从 picked 事件直接写本地 `primary`，刷新失不失败都能看到新值。
+- 严重度：低。服务端实际已写成功，退出重进子页 `loadAll` 重拉即自愈，仅暂时性困惑（"提示成功了怎么没看到"）。
+- 修复方向：`refreshAfterWrite` 失败时给一个轻提示（如"列表可能未刷新，稍后重进"）或失败自动重试一次；二选一需带 trade-off 评估。
+- 用户已明确**本期不处理**，仅登记。
+

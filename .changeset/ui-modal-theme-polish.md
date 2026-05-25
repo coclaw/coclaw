@@ -39,6 +39,14 @@ model configuration feature and tightens dialog chrome app-wide.
 - **Primary-model change**: dropped the success toast (the model region
   updates immediately, so the result is self-evident); the error toast on
   failure is kept.
+- **Remove-provider dialog**: likewise dropped the success toast (the row
+  disappears from the credential list, so the result is self-evident; the
+  error toast on failure is kept). The remove flow now also swallows an
+  explicit `ERR_CANCELED` the same way the add / primary dialogs already
+  do — silent close, no error toast — so a canceled remove no longer
+  surfaces a spurious failure.
+- **/claws guidance bar**: tightened the model-config guidance bar padding
+  (`px-3 py-2` → `px-2 py-1.5`).
 - **Model picker dialogs**: in fullscreen the provider/model list now
   grows to fill the screen height (was capped at `60vh`, leaving dead
   space below) and the body scrollbar is hidden (reuses the main-list
@@ -75,4 +83,12 @@ model configuration feature and tightens dialog chrome app-wide.
   search and empty states in `zh-CN`/`zh-TW` (the other 11 locales already
   translated it); renamed the credentials section heading from "API
   credentials" to "API keys" across all 12 locales (each in its own key
-  term, matching the add-flow wording).
+  term, matching the add-flow wording). Shortened the model-config
+  guidance / warning copy so it fits a single mobile line: the /claws
+  guidance bar (no-API-key / no-primary-model) and the in-page
+  primary-model warnings drop the filler sentence ("...configured. The
+  agent cannot chat yet." → "... — agent cannot chat."; CJK drop the bare
+  "agent"), and the in-page no-primary / invalid-primary warnings are
+  aligned word-for-word to the /claws bar so the two surfaces read
+  identically. Removed the now-dead `removeSuccess` key across all 12
+  locales (its success toast was dropped, see above).

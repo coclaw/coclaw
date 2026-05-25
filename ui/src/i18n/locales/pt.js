@@ -497,7 +497,7 @@ export const ptMessages = {
 		},
 		primary: {
 			title: 'Modelo principal padrão',
-			notSetWarning: 'Nenhum modelo principal configurado. O agente ainda não pode conversar.',
+			notSetWarning: 'Sem modelo principal — o agente não pode conversar.',
 			invalidWarning: 'O modelo principal não está mais disponível. Escolha um novo.',
 			changeButton: 'Alterar',
 			selectButton: 'Selecionar principal',
@@ -511,7 +511,6 @@ export const ptMessages = {
 			removeButton: 'Remover',
 			emptyState: 'Nenhum provedor configurado ainda. Adicione uma chave de API para começar.',
 			loadFailed: 'Falha ao carregar. Tente novamente.',
-			removeSuccess: '{provider} removido.',
 			removeFailed: 'Falha ao remover {provider}.',
 			remove: {
 				title: 'Remover {provider}?',
@@ -537,8 +536,8 @@ export const ptMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'Nenhuma API key configurada. O agente ainda não pode conversar.',
-			noPrimaryWarning: 'Nenhum modelo principal configurado. O agente ainda não pode conversar.',
+			noKeyWarning: 'Sem API key — o agente não pode conversar.',
+			noPrimaryWarning: 'Sem modelo principal — o agente não pode conversar.',
 			invalidPrimaryWarning: 'O modelo principal não está mais disponível. Escolha um novo.',
 			goConfigure: 'Configurar',
 		},

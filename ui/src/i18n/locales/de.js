@@ -497,7 +497,7 @@ export const deMessages = {
 		},
 		primary: {
 			title: 'Standard-Hauptmodell',
-			notSetWarning: 'Kein Hauptmodell konfiguriert. Der Agent kann noch nicht chatten.',
+			notSetWarning: 'Kein primäres Modell — Agent kann nicht chatten.',
 			invalidWarning: 'Das Hauptmodell ist nicht mehr verfügbar. Bitte wähle ein neues aus.',
 			changeButton: 'Ändern',
 			selectButton: 'Hauptmodell wählen',
@@ -511,7 +511,6 @@ export const deMessages = {
 			removeButton: 'Entfernen',
 			emptyState: 'Noch kein Provider konfiguriert. Füge einen API-Schlüssel hinzu, um zu beginnen.',
 			loadFailed: 'Laden fehlgeschlagen. Bitte erneut versuchen.',
-			removeSuccess: '{provider} entfernt.',
 			removeFailed: 'Entfernen von {provider} fehlgeschlagen.',
 			remove: {
 				title: '{provider} entfernen?',
@@ -537,9 +536,9 @@ export const deMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'Kein API-Schlüssel konfiguriert. Der Agent kann noch nicht chatten.',
-			noPrimaryWarning: 'Kein primäres Modell konfiguriert. Der Agent kann noch nicht chatten.',
-			invalidPrimaryWarning: 'Das primäre Modell ist nicht mehr verfügbar. Bitte wähle ein neues.',
+			noKeyWarning: 'Kein API-Schlüssel — Agent kann nicht chatten.',
+			noPrimaryWarning: 'Kein primäres Modell — Agent kann nicht chatten.',
+			invalidPrimaryWarning: 'Das Hauptmodell ist nicht mehr verfügbar. Bitte wähle ein neues aus.',
 			goConfigure: 'Einrichten',
 		},
 	},

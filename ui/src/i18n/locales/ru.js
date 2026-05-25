@@ -497,7 +497,7 @@ export const ruMessages = {
 		},
 		primary: {
 			title: 'Основная модель по умолчанию',
-			notSetWarning: 'Основная модель не настроена. Агент пока не может общаться.',
+			notSetWarning: 'Основная модель не задана — агент не может общаться.',
 			invalidWarning: 'Основная модель больше не доступна. Пожалуйста, выберите новую.',
 			changeButton: 'Изменить',
 			selectButton: 'Выбрать основную',
@@ -511,7 +511,6 @@ export const ruMessages = {
 			removeButton: 'Удалить',
 			emptyState: 'Ещё нет ни одного поставщика. Добавьте ключ API, чтобы начать.',
 			loadFailed: 'Не удалось загрузить. Попробуйте ещё раз.',
-			removeSuccess: 'Поставщик {provider} удалён.',
 			removeFailed: 'Не удалось удалить {provider}.',
 			remove: {
 				title: 'Удалить {provider}?',
@@ -537,9 +536,9 @@ export const ruMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'API-ключ не настроен. Агент пока не может общаться.',
-			noPrimaryWarning: 'Основная модель не настроена. Агент пока не может общаться.',
-			invalidPrimaryWarning: 'Основная модель больше недоступна. Выберите другую.',
+			noKeyWarning: 'API-ключ не задан — агент не может общаться.',
+			noPrimaryWarning: 'Основная модель не задана — агент не может общаться.',
+			invalidPrimaryWarning: 'Основная модель больше не доступна. Пожалуйста, выберите новую.',
 			goConfigure: 'Настроить',
 		},
 	},

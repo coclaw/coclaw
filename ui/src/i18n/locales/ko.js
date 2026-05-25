@@ -497,7 +497,7 @@ export const koMessages = {
 		},
 		primary: {
 			title: '기본 주 모델',
-			notSetWarning: '주 모델이 설정되지 않았습니다. 에이전트가 아직 대화할 수 없습니다.',
+			notSetWarning: '기본 모델 미설정 — 대화 불가.',
 			invalidWarning: '주 모델을 더 이상 사용할 수 없습니다. 새로 선택해 주세요.',
 			changeButton: '변경',
 			selectButton: '주 모델 선택',
@@ -511,7 +511,6 @@ export const koMessages = {
 			removeButton: '제거',
 			emptyState: '아직 등록된 공급자가 없습니다. API 키를 추가해 시작하세요.',
 			loadFailed: '로드 실패. 다시 시도해 주세요.',
-			removeSuccess: '{provider}을(를) 제거했습니다.',
 			removeFailed: '{provider} 제거에 실패했습니다.',
 			remove: {
 				title: '{provider}을(를) 제거할까요?',
@@ -537,9 +536,9 @@ export const koMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'API 키가 설정되지 않았습니다. 에이전트가 아직 대화할 수 없습니다.',
-			noPrimaryWarning: '기본 모델이 설정되지 않았습니다. 에이전트가 아직 대화할 수 없습니다.',
-			invalidPrimaryWarning: '기본 모델을 더 이상 사용할 수 없습니다. 새로 선택하세요.',
+			noKeyWarning: 'API 키 미설정 — 대화 불가.',
+			noPrimaryWarning: '기본 모델 미설정 — 대화 불가.',
+			invalidPrimaryWarning: '주 모델을 더 이상 사용할 수 없습니다. 새로 선택해 주세요.',
 			goConfigure: '설정하기',
 		},
 	},

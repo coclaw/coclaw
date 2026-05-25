@@ -109,7 +109,7 @@
 					<div
 						v-if="guidanceState"
 						:data-testid="`guidance-${claw.id}`"
-						class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-orange-500/10 px-3 py-2 text-xs text-orange-600 dark:text-orange-400"
+						class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-orange-500/10 px-2 py-1.5 text-xs text-orange-600 dark:text-orange-400"
 					>
 						<span class="flex min-w-0 items-center gap-1.5">
 							<UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" />

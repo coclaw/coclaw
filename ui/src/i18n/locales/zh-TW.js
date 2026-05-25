@@ -497,7 +497,7 @@ export const zhTWMessages = {
 		},
 		primary: {
 			title: '預設主模型',
-			notSetWarning: '未設定主模型，agent 無法對話',
+			notSetWarning: '尚未設定主模型，無法對話',
 			invalidWarning: '主模型已失效，請重新選擇',
 			changeButton: '更換',
 			selectButton: '選擇主模型',
@@ -511,7 +511,6 @@ export const zhTWMessages = {
 			removeButton: '撤銷',
 			emptyState: '尚未設定任何模型服務商，先新增一個 API key',
 			loadFailed: '載入失敗，請重試',
-			removeSuccess: '已撤銷 {provider}',
 			removeFailed: '撤銷 {provider} 失敗',
 			remove: {
 				title: '撤銷 {provider}？',
@@ -537,8 +536,8 @@ export const zhTWMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: '尚未設定 API key，agent 無法對話',
-			noPrimaryWarning: '尚未設定主模型，agent 無法對話',
+			noKeyWarning: '尚未設定 API key，無法對話',
+			noPrimaryWarning: '尚未設定主模型，無法對話',
 			invalidPrimaryWarning: '主模型已失效，請重新選擇',
 			goConfigure: '前往設定',
 		},

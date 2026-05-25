@@ -121,6 +121,15 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 "失效"定义:当前 primary 字符串对应的 provider 已被撤销,或对应 model 不在 catalog 里。判断由前端在选择器关闭后 / 子页加载时做一次一致性校验。
 
+**为什么 UI 能判"失效"（启发式判断，但有据可依）**：这不是前端自行臆测——判定标准与**插件 `coclaw.model.set` 接受一个主模型时的校验同源**。插件在写入 primary 时就会拒绝"provider 无可用凭据"或"model 不在全量 catalog"的值（见 `plugins/openclaw/docs/model-config-api.md`）。因此凡是已落库的 primary，写入时一定满足这两条；UI 只是在子页加载 / 选择器关闭后把同一套校验再跑一遍，判断它"现在是否仍成立"。两种真实失效场景及可靠性：
+
+- **provider 凭据被撤**（最常见，如撤销了 primary 所在 provider 的 key）：凭据由 CoChat 侧自管，撤没撤完全可知，判定**可靠**。
+- **model 从 catalog 消失**（上游下架 / 改名）：以 `models.list view:"all"` 全量目录比对——刻意用全量而非登录态过滤版，避免把合法 model 误判失效。
+
+**保守闸门**：仅当 `providerAuth.list` 与全量 catalog 都成功拿到时才敢判"失效"；任一未拿到则保守视为有效（同 § 7.2「未知态不显示橙条」），杜绝"明明配好了怎么说失效"的误报。
+
+**残余风险**：判定本质是启发式——若全量 catalog 本身不全 / 不新鲜，理论上可能误报某个其实合法的 model 失效。靠"用全量目录 + 数据不全不判"两道兜底，一期 model 范围内够用。
+
 ### B. API 凭据区（下方）
 
 每行一个 provider profile:

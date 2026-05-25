@@ -497,7 +497,7 @@ export const frMessages = {
 		},
 		primary: {
 			title: 'Modèle principal par défaut',
-			notSetWarning: 'Aucun modèle principal configuré. L\'agent ne peut pas encore discuter.',
+			notSetWarning: 'Aucun modèle principal — l’agent ne peut pas discuter.',
 			invalidWarning: 'Le modèle principal n\'est plus disponible. Veuillez en choisir un nouveau.',
 			changeButton: 'Modifier',
 			selectButton: 'Choisir le principal',
@@ -511,7 +511,6 @@ export const frMessages = {
 			removeButton: 'Supprimer',
 			emptyState: 'Aucun fournisseur configuré pour l\'instant. Ajoutez une clé API pour commencer.',
 			loadFailed: 'Échec du chargement. Veuillez réessayer.',
-			removeSuccess: '{provider} supprimé.',
 			removeFailed: 'Échec de la suppression de {provider}.',
 			remove: {
 				title: 'Supprimer {provider} ?',
@@ -537,9 +536,9 @@ export const frMessages = {
 			},
 		},
 		guidance: {
-			noKeyWarning: 'Aucune clé API configurée. L’agent ne peut pas encore discuter.',
-			noPrimaryWarning: 'Aucun modèle principal configuré. L’agent ne peut pas encore discuter.',
-			invalidPrimaryWarning: 'Le modèle principal n’est plus disponible. Veuillez en choisir un autre.',
+			noKeyWarning: 'Aucune clé API — l’agent ne peut pas discuter.',
+			noPrimaryWarning: 'Aucun modèle principal — l’agent ne peut pas discuter.',
+			invalidPrimaryWarning: 'Le modèle principal n\'est plus disponible. Veuillez en choisir un nouveau.',
 			goConfigure: 'Configurer',
 		},
 	},

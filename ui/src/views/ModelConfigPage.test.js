@@ -790,7 +790,7 @@ describe('ModelConfigPage — remove flow', () => {
 		w.unmount();
 	});
 
-	test('Confirm: calls remove RPC, refreshes local + triggers dashboard reload (force), notifies success', async () => {
+	test('Confirm: calls remove RPC, refreshes local + triggers dashboard reload (force), no success notify', async () => {
 		primedRequest();
 		const w = makeWrapper();
 		await flushPromises();
@@ -825,8 +825,8 @@ describe('ModelConfigPage — remove flow', () => {
 		expect(w.vm.primary).toBe('groq/llama-3.3-70b-versatile');
 		// dashboard.store reload 被触发，force=true
 		expect(mockLoadDashboard).toHaveBeenCalledWith('claw1', { force: true });
-		// success notify
-		expect(mockNotify.success).toHaveBeenCalled();
+		// 撤销成功不弹 success notify（列表刷掉该行，UI 自明）
+		expect(mockNotify.success).not.toHaveBeenCalled();
 		// dialog 关闭
 		expect(w.find('.remove-dialog').exists()).toBe(false);
 		w.unmount();
@@ -928,6 +928,29 @@ describe('ModelConfigPage — remove flow', () => {
 		w.unmount();
 	});
 
+	test('Confirm failure with ERR_CANCELED → silent close, no error notify', async () => {
+		primedRequest();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.findAllComponents({ name: 'ProviderAuthRow' })
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+		await w.vm.$nextTick();
+
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.remove') throw Object.assign(new Error('aborted'), { code: 'ERR_CANCELED' });
+			return {};
+		});
+		await w.find('.rd-confirm').trigger('click');
+		await flushPromises();
+		// 显式取消：不报错、不弹成功、对话框静默关闭、target 清空（与加 provider / 设主模型对齐）
+		expect(mockNotify.error).not.toHaveBeenCalled();
+		expect(mockNotify.success).not.toHaveBeenCalled();
+		expect(w.vm.removeOpen).toBe(false);
+		expect(w.vm.removeTarget).toBe('');
+		expect(w.find('.remove-dialog').exists()).toBe(false);
+		w.unmount();
+	});
+
 	test('Remove dispatch ignored when providerId is empty', async () => {
 		primedRequest();
 		const w = makeWrapper();
@@ -971,8 +994,8 @@ describe('ModelConfigPage — remove flow', () => {
 		mockLoadDashboard.mockRejectedValueOnce(new Error('dashboard boom'));
 		await w.find('.rd-confirm').trigger('click');
 		await flushPromises();
-		// 主流程仍 notify 成功
-		expect(mockNotify.success).toHaveBeenCalled();
+		// 撤销成功不弹 success notify（列表刷掉该行，UI 自明）
+		expect(mockNotify.success).not.toHaveBeenCalled();
 		// error notify 没被触发（dashboard 错误吞掉）
 		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
@@ -994,8 +1017,8 @@ describe('ModelConfigPage — remove flow', () => {
 		});
 		await w.find('.rd-confirm').trigger('click');
 		await flushPromises();
-		// success notify 仍触发；error notify 不触发
-		expect(mockNotify.success).toHaveBeenCalled();
+		// 撤销成功不弹 success notify；error notify 也不触发
+		expect(mockNotify.success).not.toHaveBeenCalled();
 		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
 	});

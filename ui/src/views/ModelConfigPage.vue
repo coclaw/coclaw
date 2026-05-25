@@ -178,7 +178,7 @@ import { useClawsStore } from '../stores/claws.store.js';
 import { useDashboardStore, computePrimaryEffective } from '../stores/dashboard.store.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
 import { useNotify } from '../composables/use-notify.js';
-import { mapModelConfigErrorKey } from '../utils/model-config-errors.js';
+import { mapModelConfigErrorKey, isCanceledError } from '../utils/model-config-errors.js';
 
 const RPC_TIMEOUT = 60_000;
 
@@ -526,7 +526,7 @@ export default {
 				await conn.request('coclaw.providerAuth.remove', { provider }, { timeout: RPC_TIMEOUT });
 				if (this.__unmounted || id !== this.clawId) return; // 切页 / 切 claw 后只静默退出
 				this.removeOpen = false;
-				this.notify.success(this.$t('modelConfig.providerAuth.removeSuccess', { provider }));
+				// 成功不 notify：撤销后列表会刷掉该行，用户可直接分辨（与设主模型同精神，失败才提示）
 				// 先局部刷新（页面立即一致）；再触发 dashboard.store 重拉（外层一致性）
 				await this.refreshAfterWrite();
 				if (this.__unmounted || id !== this.clawId) return;
@@ -542,6 +542,12 @@ export default {
 			}
 			catch (err) {
 				if (this.__unmounted || id !== this.clawId) return;
+				if (isCanceledError(err)) {
+					// 显式取消：默默关闭，不报错（与加 provider / 设主模型两弹窗对齐）
+					this.removeOpen = false;
+					this.removeTarget = '';
+					return;
+				}
 				// 错误码 → i18n key 走共享 util；fallback 是 removeFailed（带 provider 参数）
 				// 注意：mapModelConfigErrorKey 不带参数，所以 fallback 自带 {provider} 参数时
 				// 仍需在调用方把 provider 注入；下方对 fallback 与公共 key 分别处理
