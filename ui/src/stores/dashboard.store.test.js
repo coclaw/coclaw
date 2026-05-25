@@ -1071,7 +1071,7 @@ describe('dashboard store', () => {
 			expect(item.updatedAt).toBe(1730_000_000_000);
 		});
 
-		test('force=true 并发：合流到同一 force 飞行（不重复触发）', async () => {
+		test('force→force 并发：2nd force 不合流，等 1st 完成后串行启动独立重载（sessions.list 两次）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1097,8 +1097,74 @@ describe('dashboard store', () => {
 
 			await Promise.all([p1, p2]);
 
-			// 两个并发 force 调用合流到同一飞行：sessions.list 只调一次
-			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(1);
+			// 2nd force 不再被合流吞掉：等 1st force 飞行结束后串行启动独立的一轮重载，
+			// force 透传到 sessionsStore 绕过 raw 缓存 → sessions.list 共两次
+			expect(dashConn.request.mock.calls.filter(([m]) => m === 'sessions.list')).toHaveLength(2);
+			// 飞行中守卫最终清空（串行链终止）
+			expect(_loadingByClaw.has('bot-1')).toBe(false);
+		});
+
+		// 陈旧快照回归 pin：add-provider → pick-primary 急促序列里，1st force 的飞行在“选主模型”
+		// 写入之前已取快照（真实 status RPC ~10s manifest-cache 卡顿），2nd force 若复用该飞行就会
+		// 把终态停在“无主模型”的陈旧值。修复后 2nd force 必须串一轮独立重载，落到选主后的最新数据。
+		test('force→force：2nd force 不复用 1st 飞行快照，串独立重载落最新数据（防陈旧快照）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+
+			const agentConn = mockAgentConn([{ id: 'main' }]);
+			setConn('bot-1', agentConn);
+			const agentsStore = useAgentsStore();
+			await agentsStore.loadAgents('bot-1');
+
+			// primary 模拟用户写入：先无主模型（add-provider 后），后选定主模型（pick-primary 后）。
+			// coclaw.model.list 的返回值在每次 request() 调用时点求值 primary，从而区分两轮快照。
+			let primary = null;
+			// status 用 deferred：卡住第 1 个 force 的飞行，模拟真实 status RPC 的 manifest-cache 卡顿，
+			// 让“选主模型”有机会发生在第 1 轮取快照之后、第 2 轮重载之前。
+			let resolveStatus;
+			const statusPromise = new Promise((r) => { resolveStatus = r; });
+			const dashConn = {
+				request: vi.fn().mockImplementation((method) => {
+					if (method === 'status') return statusPromise;
+					if (method === 'models.list') {
+						return Promise.resolve({ models: [{ id: 'llama-3.3-70b-versatile', provider: 'groq' }] });
+					}
+					if (method === 'coclaw.providerAuth.list') {
+						return Promise.resolve({ profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] });
+					}
+					if (method === 'coclaw.model.list') {
+						return Promise.resolve({ default: { primary }, agents: {} });
+					}
+					if (method === 'sessions.list') return Promise.resolve({ sessions: [] });
+					if (method === 'tools.catalog') return Promise.resolve({ groups: [] });
+					return Promise.resolve({});
+				}),
+				on: vi.fn(),
+				off: vi.fn(),
+			};
+			setConn('bot-1', dashConn);
+
+			const store = useDashboardStore();
+			// 1st force：同步发出全部 RPC，coclaw.model.list 此刻捕获 primary=null（中间态），卡在 deferred status
+			const p1 = store.loadDashboard('bot-1', { force: true });
+			// 2nd force：当前飞行也是 force → 必须串一轮独立重载，不复用 1st 的 null 快照
+			const p2 = store.loadDashboard('bot-1', { force: true });
+
+			// 用户在两次 load 之间选定了主模型
+			primary = 'groq/llama-3.3-70b-versatile';
+
+			// 放行 1st 飞行；2nd 的串行重载随后在 microtask 中跑，此时 primary 已是最新值
+			resolveStatus({});
+			await p1;
+			await p2;
+
+			const entry = store.byClaw['bot-1'];
+			// 终态必须是选主后的最新数据，而非 1st 飞行的陈旧 null 快照
+			expect(entry.primaryModel).toBe('groq/llama-3.3-70b-versatile');
+			expect(entry.primaryEffective).toBe(true);
+			// 2nd force 确实启动了独立重载：coclaw.model.list 被调两次（不是复用一次）
+			expect(dashConn.request.mock.calls.filter(([m]) => m === 'coclaw.model.list')).toHaveLength(2);
+			expect(_loadingByClaw.has('bot-1')).toBe(false);
 		});
 	});
 

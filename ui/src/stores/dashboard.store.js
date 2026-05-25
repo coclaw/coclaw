@@ -174,16 +174,22 @@ export const useDashboardStore = defineStore('dashboard', {
 		 * 通过 WS RPC 并行调用多个 gateway 方法，聚合结果
 		 * @param {string} clawId
 		 * @param {{ force?: boolean }} [opts] - force=true 时强制重拉 sessions raw（重连恢复 / 用户主动刷新场景），
-		 *   不影响其他 dashboard RPC；force 调用进入时若当前飞行非 force，会等其完成再启动新一轮，避免被合流吞掉
+		 *   不影响其他 dashboard RPC；force 调用进入时若当前已有飞行（无论 force 与否），都会等其完成再启动新一轮，
+		 *   确保终态反映 force 时刻的最新数据，不复用更早飞行的陈旧快照
 		 */
 		async loadDashboard(clawId, { force = false } = {}) {
 			const id = String(clawId);
 
-			// 飞行中守卫：同一 claw 的并发调用复用已有 promise
-			// 例外：当前飞行非 force、新调用是 force → 等当前飞行结束再启动新一轮（force 不被合流吞掉）
+			// 飞行中守卫：
+			// - 新调用非 force → 复用已有飞行 promise（乐于拿现成快照，合流省一批 RPC）
+			// - 新调用是 force → 不复用任何在飞快照，等当前飞行结束再启动独立的一轮新 load。
+			//   含 force→force：第 1 个 force 的飞行可能在 force 触发动作（如选主模型）之前就已取快照，
+			//   复用它会让终态停留在写入前的陈旧值，必须串一轮新 load 才能落到最新数据。
+			//   串行链终止性：每个 force 调用最多触发一轮真实 load，N 个突发 force 串成 ≤N 轮顺序重载，
+			//   不会自我递归无界增长（链式 load 只在“仍有在飞”时再串一次，而在飞只由真实 load 产生，受 N 约束）
 			const inflight = _loadingByClaw.get(id);
 			if (inflight) {
-				if (force && !inflight.force) {
+				if (force) {
 					return inflight.p
 						.catch(() => {})
 						.then(() => this.loadDashboard(id, { force: true }));
