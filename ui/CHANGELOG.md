@@ -1,5 +1,229 @@
 # @coclaw/ui
 
+## 0.26.0
+
+### Minor Changes
+
+- bf3cd1a: feat(ui): per-claw model configuration
+
+  Add a "model settings" feature so users can make a freshly-bound claw
+  usable: configure LLM provider API keys and pick a default primary
+  model, all from the UI. This is the core first-run step — after binding
+  a claw you must configure a key before you can chat.
+
+  - **Entry**: a gear icon on each `ManageClawsPage` claw card (aligned
+    with the existing rename pencil), plus a three-state guidance bar on
+    the card that walks the user through onboarding (no API key → no
+    primary model → primary invalid, mutually exclusive by priority). The
+    bar is suppressed when the per-claw dashboard fetch failed, so a
+    transient RPC error never surfaces a false "no key" warning. The chat
+    button is never disabled — users can always enter; the plugin reports
+    the error on send.
+  - **Subpage** (`/claws/:clawId/models`): a default-primary-model section
+    and an API-credentials section. Mobile-first (bottom-sheet dialogs),
+    with a desktop header + centered modals.
+  - **Flows**: add a provider via a single stepper dialog (pick provider →
+    enter key), pick/switch the primary model (click-to-save, no second
+    confirm), and remove a provider (with a strong-warning variant when it
+    carries the current primary; the primary is intentionally left to be
+    re-picked via the "invalid" guidance bar rather than auto-cleared).
+  - **Data**: `dashboard.store` gains `hasAnyProviderAuth` / `primaryModel`
+    / `primaryEffective` derived per claw, fed by two new RPCs
+    (`coclaw.providerAuth.list`, `coclaw.model.list`) in the existing
+    parallel fetch; the subpage self-fetches its detail and force-reloads
+    the store after every write so the outer card stays coherent.
+  - **Security**: raw API keys never reach logs, error messages, thrown
+    exceptions, or any UI cache — the input is cleared synchronously before
+    the RPC await, and only the plugin-side masked `keyPreview` is ever
+    displayed.
+  - **i18n**: new `modelConfig.*` namespace added across all 12 locales.
+
+  Consumes the already-merged plugin RPC contract
+  (`plugins/openclaw/docs/model-config-api.md`). Out of scope this release:
+  OAuth login, per-agent overrides, fallback chains, key liveness probing,
+  model aliases, and multi-profile.
+
+  Tests: unit coverage for the helpers, store fields/derivation, error-code
+  mapping, guidance precedence, and every dialog/row; a 4-scenario E2E
+  suite (onboarding, primary-carrier removal, model switch, desktop
+  back-button) mocked at the `ClawConnection.request` boundary.
+
+### Patch Changes
+
+- e556cd1: feat(ui): add desktop back button to file manager + highlight its agent in sidebar
+
+  Align the file manager subpage with the model-config subpage's desktop
+  treatment.
+
+  - **Desktop header back button**: the file manager desktop header now
+    leads with an `i-lucide-arrow-left` button (mirroring `ModelConfigPage`:
+    `pl-2` + `gap-1`, back button before the title, upload action stays
+    right). It reuses the shared `navBack` helper with a fallback to the
+    owning agent's chat page (`/chat/:clawId/:agentId`), so a cold-start /
+    deep-link entry with no history still lands somewhere sensible. The
+    mobile `MobilePageHeader` now uses the same fallback for consistent
+    back behavior across both layouts.
+  - **Sidebar highlight**: `MainList`'s active-agent resolution now also
+    matches the `files` route (not only `chat`), so opening the file
+    manager keeps the corresponding agent item highlighted in the desktop
+    sidebar.
+  - **Title separator**: the file manager title now joins the agent name
+    and the "Files" suffix with a middle dot (`name · Files`), matching the
+    model-config page (`name · Model settings`).
+  - **Add-claw sidebar entry**: the add-claw page is a standalone entry
+    (with its own sidebar shortcut), not a sub-view of the claws manager.
+    The "My Claws" top entry no longer highlights on `/claws/add` (it still
+    highlights for `/claws/:id/models`); instead the bottom "Add Claw"
+    action now highlights when on `/claws/add`. The exclusion is derived
+    from the add-action items' own `activePath`, so the two stay mutually
+    exclusive.
+
+- fe1ca4b: fix(ui): unify dialog modal chrome + polish model-config layout
+
+  Consolidate the per-dialog modal padding/safe-area overrides that had
+  drifted apart into a single global modal theme, and tidy the
+  model-config page/dialog spacing. Refines the still-unreleased per-claw
+  model configuration feature and tightens dialog chrome app-wide.
+
+  - **Global modal theme** (`constants/modal-theme.js`, injected via
+    `vite.config.js`): compact 52px header (was 64px) with an inline close
+    button, two-tier responsive horizontal padding, and fullscreen
+    safe-area handling that auto-targets the bottom-most slot — footer when
+    present, otherwise the body (`:last-child` guarded). Uses
+    `max(floor, env-inset)` so desktop/non-fullscreen degrade to the plain
+    floor with no side effects. Applies to every `UModal`, so the
+    web-agent picker and user settings/profile dialogs inherit the same
+    chrome and drop their bespoke per-dialog overrides.
+  - **Dialog cleanup**: the primary-model picker is pick-to-save with no
+    footer (dismiss via close button / overlay / Esc, in-flight-save guard
+    intact). Removed the now-redundant per-dialog `modalUi`/`safeAreaUi`.
+  - **Add-provider dialog — confirm style**: Step 2 (API-key entry) now
+    adopts the shared confirm chrome (`promptModalUi`): narrowed to
+    `max-w-sm`, divider-less, with a right-aligned ghost-`Cancel` +
+    primary-`Submit` footer replacing the former inline full-width submit
+    button; on mobile it renders as a centered card instead of fullscreen
+    (Step 1's provider list stays fullscreen on mobile). The standalone
+    `API key` label is dropped in favour of the input placeholder plus an
+    `aria-label`, and the "create a key" hint wraps onto its own line. The
+    key field is wrapped in a `<form>` (submit handled, Enter still submits)
+    to clear Chrome's "password field is not contained in a form" DOM
+    warning.
+  - **Model-config page**: aligned action-button size/variant and section
+    padding with `ManageClawsPage`; the credential-row revoke button now
+    matches the claw unbind button. The desktop header gained trailing
+    padding so a long title no longer hugs the right edge, and the page's
+    region gaps (offline banner / retry / both sections) are unified to a
+    single `space-y-5` rhythm matching the body's top padding (replacing the
+    ad-hoc `mb-4`/`mb-6`).
+  - **Primary-model change**: dropped the success toast (the model region
+    updates immediately, so the result is self-evident); the error toast on
+    failure is kept.
+  - **Remove-provider dialog**: likewise dropped the success toast (the row
+    disappears from the credential list, so the result is self-evident; the
+    error toast on failure is kept). The remove flow now also swallows an
+    explicit `ERR_CANCELED` the same way the add / primary dialogs already
+    do — silent close, no error toast — so a canceled remove no longer
+    surfaces a spurious failure.
+  - **/claws guidance bar**: tightened the model-config guidance bar padding
+    (`px-3 py-2` → `px-2 py-1.5`).
+  - **Model picker dialogs**: in fullscreen the provider/model list now
+    grows to fill the screen height (was capped at `60vh`, leaving dead
+    space below) and the body scrollbar is hidden (reuses the main-list
+    `.scrollbar-hide` pattern); desktop/non-fullscreen layout is unchanged.
+    List rows use a `min-h-10` floor with `py-1` instead of a fixed `h-11`:
+    as flex children of the scroll container the fixed height was shrinkable
+    and silently collapsed once the list overflowed, whereas `min-height` is
+    a hard floor; the tighter `py-1` leaves more of the 40px floor for the
+    text to grow into on zoom / large-text. Rows show the raw OpenClaw
+    provider/model id directly and drop the mapped `displayName` (the
+    mapping is incomplete and largely duplicates the id, and using the name
+    would have to be mirrored across both dialogs — deferred to a later
+    name-only pass). The picker group headings and the add-provider Step 2
+    title / dashboard hint also use the raw id; search and sort still match
+    the mapped name internally for now. Rows are single-line `truncate`,
+    tightened to `gap-2`, and gained `cursor-pointer` (the global pointer
+    cursor only covers `UButton`, not these native `<button>`s). In the
+    picker the current-model check moved from the row head to the tail
+    (sharing the slot with the save spinner) so the head text aligns
+    vertically across rows; group headings use a uniform `pt-1`. Both search
+    boxes bulge 2px past each edge via a `-mx-0.5` wrapper.
+  - **Input baseline**: a global input theme now standardizes inputs to a
+    16px font, 1.5 line-height and `py-2`, and keeps the font-size at 16px
+    across all breakpoints by overriding Nuxt UI's built-in shrink to 14px
+    at `md` and up (re-asserting `md:text-base` through compound variants).
+    That width-based shrink leaks the iOS focus-zoom trap on landscape
+    iPhone / iPad (still iOS Safari, where a sub-16px input font auto-zooms
+    the page on focus). Removed the now-redundant per-instance
+    `leading-normal` overrides on the admin search inputs.
+  - **Modal close button**: widened the header close-icon negative-margin
+    compensation to `-me-2.5`.
+  - **i18n**: localized the bare English word "provider" to Chinese
+    (`模型服务商` / `模型服務商`) across the provider-select dialog title,
+    search and empty states in `zh-CN`/`zh-TW` (the other 11 locales already
+    translated it); renamed the credentials section heading from "API
+    credentials" to "API keys" across all 12 locales (each in its own key
+    term, matching the add-flow wording). Shortened the model-config
+    guidance / warning copy so it fits a single mobile line: the /claws
+    guidance bar (no-API-key / no-primary-model) and the in-page
+    primary-model warnings drop the filler sentence ("...configured. The
+    agent cannot chat yet." → "... — agent cannot chat."; CJK drop the bare
+    "agent"), and the in-page no-primary / invalid-primary warnings are
+    aligned word-for-word to the /claws bar so the two surfaces read
+    identically. Removed the now-dead `removeSuccess` key across all 12
+    locales (its success toast was dropped, see above).
+
+- bf78759: style(ui): lift popup menus and non-fullscreen dialogs off the background
+
+  @nuxt/ui's popovers, selects and modals ship with `shadow-lg` + a faint
+  `ring-default`, but in dark mode the black shadow is all but invisible and
+  the low-contrast ring lets the panels blend into the backdrop. Borrowing
+  the Quasar treatment already used by the chat scroll-to-bottom button,
+  apply a global elevation recipe (no per-dialog overrides):
+
+  - **Popup menus** (`UPopover`, `USelect`, via `vite.config.js`) and
+    **non-fullscreen dialogs** (`UModal`, via `constants/modal-theme.js`)
+    get Quasar-style multi-layer Material shadows in light mode — `shadow-2`
+    for menus, one tier higher (`shadow-4`) for dialogs — replacing the flat
+    `shadow-lg`. The recipe lives in `constants/popup-elevation.js`.
+  - In dark mode the black shadow is invisible, so a soft white glow
+    (`dark:shadow-[…rgba(255,255,255,0.10)]`, same technique as the chat
+    scroll-to-bottom button) plus a faint `dark:ring-white/10` edge do the
+    separating. Tuned softer than the button (0.10 / ring-10 vs 0.14 /
+    ring-15) to match Quasar's understated diffuse halo, since a full-size
+    panel's perimeter reads heavier than a small button's. Light-mode
+    sizing, rounding and the default ring are untouched (base-slot
+    concatenation; the fullscreen-content red line is preserved).
+  - The modal overlay keeps Nuxt UI's default dimming — the glow already
+    separates dialogs from the background, so no extra darkening is applied.
+  - The desktop sidebar's user menu drops its bespoke `bg-elevated` panel
+    background so it inherits the same `bg-default` + glow as every other
+    popup menu (the old elevated, square-cornered inner fought the global
+    ring/glow in dark mode).
+
+  Also rides along in `vite.config.js` (a separate input-field tweak that
+  shares the file): a global text-input baseline on every size variant —
+  `text-base` locks the font at 1rem to stop iOS focus auto-zoom, `leading-normal`
+  loosens the too-tight built-in line height that clipped tall glyphs, and
+  `py-2` gives the field a touch more vertical room.
+
+- d28e82f: style(ui): align settings password and clear-chats dialogs to shared confirm style
+
+  Apply the shared `promptModalUi` look to the change-password and
+  clear-chats confirm dialogs in `UserSettingsPanel` so they match the
+  prompt/confirm style used elsewhere: narrower width, no dividers, and a
+  right-aligned footer with a neutral cancel button. The clear-chats
+  danger description moves from the header into the body, matching the
+  delete-dir confirm pattern.
+
+- ff6c59d: fix(ui): wrap change-password fields in a form to clear DOM warning
+
+  The change-password dialog's current/new/confirm password inputs were not
+  contained in a `<form>`, so Chrome logged a "Password field is not contained
+  in a form" DOM warning and password managers couldn't reason about the fields.
+  Wrap the three inputs in a `<form>` (submit handled, Enter still submits via a
+  hidden submit button) and add `autocomplete` hints (`current-password` /
+  `new-password`), matching the add-provider dialog's existing fix.
+
 ## 0.25.6
 
 ### Patch Changes
