@@ -25,7 +25,7 @@ export const MODAL_THEME = {
 	slots: {
 		header: 'flex items-center justify-between gap-1.5 px-4 py-1 sm:px-5 min-h-13',
 		wrapper: 'flex-1 min-w-0',
-		close: 'static -me-2 cc-icon-btn-lg',
+		close: 'static -me-2.5 cc-icon-btn-lg',
 		body: 'flex-1 px-4 sm:px-5 pt-4 sm:pt-5 pb-5 sm:pb-5',
 		footer: 'flex items-center gap-1.5 px-4 sm:px-5 py-2',
 		content: MODAL_ELEVATION,
