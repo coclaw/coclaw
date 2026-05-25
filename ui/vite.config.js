@@ -71,6 +71,9 @@ export default defineConfig({
 				//   leading-normal  内置行高过紧（text-sm/4 · text-base/5）会切高字形头尾，抬到 1.5
 				//   py-2        默认 py-1.5 偏挤，抬到 py-2 更舒展
 				// px / gap 仍按各 size 内置值保留。
+				// fixed:true 关掉内置「md+ 缩到 text-sm/xs」的响应式字号——那套按"宽度≥768=桌面"判断，
+				// 但横屏 iPhone / iPad 也命中 md 却仍是 iOS Safari，缩到 14px 会触发聚焦缩放；
+				// fixed 只挂字号缩小那 4 条规则，不碰 py/px/gap，翻 true 后全断点稳在 16px。
 				input: {
 					variants: {
 						size: {
@@ -81,6 +84,7 @@ export default defineConfig({
 							xl: { base: 'text-base leading-normal py-2' },
 						},
 					},
+					defaultVariants: { fixed: true },
 				},
 			},
 		}),

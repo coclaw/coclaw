@@ -14,7 +14,6 @@
 					icon="i-lucide-search"
 					size="lg"
 					class="w-full md:w-80"
-					:ui="{ base: 'leading-normal' }"
 				/>
 
 				<p v-if="adminStore.users.error" class="text-sm text-error">{{ adminStore.users.error }}</p>
