@@ -33,7 +33,9 @@
 				</UButton>
 
 				<template #content>
-					<div class="bg-elevated p-2" :style="{ width: (uiStore.drawerWidth - 16) + 'px' }">
+					<!-- 不自带 bg：沿用 popover content 的 bg-default + 全局投影/描边，与其它动作菜单一致；
+					     之前的 bg-elevated 是局部覆盖，方角 + 与背景同色会和全局光晕/ring 打架（暗色下方角露底） -->
+					<div class="p-2" :style="{ width: (uiStore.drawerWidth - 16) + 'px' }">
 						<template v-for="item in userMenuItems" :key="item.id">
 							<div v-if="item.separator" class="my-1 border-t border-default" />
 							<button

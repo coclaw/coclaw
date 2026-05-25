@@ -4,6 +4,7 @@ import ui from '@nuxt/ui/vite';
 import compression from 'vite-plugin-compression';
 import { defineConfig } from 'vite';
 import { MODAL_THEME } from './src/constants/modal-theme.js';
+import { MENU_ELEVATION } from './src/constants/popup-elevation.js';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
@@ -62,6 +63,25 @@ export default defineConfig({
 					},
 				},
 				modal: MODAL_THEME,
+				// 弹出菜单脱离背景：quasar 多层投影 + 暗色提亮描边，叠在内置 content 上（shadow-lg 被去重换掉）
+				popover: { slots: { content: MENU_ELEVATION } },
+				select: { slots: { content: MENU_ELEVATION } },
+				// 输入框全局基线（落在 size 变体的 base 上——覆盖 slots.base 会被变体类去重吃掉，tv 实测）：
+				//   text-base   字体锁 1rem，防 iOS 聚焦自动缩放（字体 <16px 时 Safari 会放大页面）
+				//   leading-normal  内置行高过紧（text-sm/4 · text-base/5）会切高字形头尾，抬到 1.5
+				//   py-2        默认 py-1.5 偏挤，抬到 py-2 更舒展
+				// px / gap 仍按各 size 内置值保留。
+				input: {
+					variants: {
+						size: {
+							xs: { base: 'text-base leading-normal py-2' },
+							sm: { base: 'text-base leading-normal py-2' },
+							md: { base: 'text-base leading-normal py-2' },
+							lg: { base: 'text-base leading-normal py-2' },
+							xl: { base: 'text-base leading-normal py-2' },
+						},
+					},
+				},
 			},
 		}),
 	],

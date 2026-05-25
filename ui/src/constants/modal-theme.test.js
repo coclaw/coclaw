@@ -37,6 +37,16 @@ describe('MODAL_THEME — 全局 modal 主题覆盖形态', () => {
 		expect(slots.close).toContain('cc-icon-btn-lg');
 	});
 
+	test('content：base slot 叠 quasar 多层投影 + 暗色柔和白光晕/淡描边（脱离背景）', () => {
+		expect(slots.content).toContain('shadow-[');
+		expect(slots.content).toContain('dark:shadow-[');
+		expect(slots.content).toContain('dark:ring-white/10');
+	});
+
+	test('overlay：不覆盖，保持 nuxt 内置 /75（之前的加深偏暗，光晕已足够脱离背景）', () => {
+		expect(slots.overlay).toBeUndefined();
+	});
+
 	test('红线：variants.fullscreen.true 绝不能带 content 键（否则 defu 会顶掉内置 inset-0、全屏画错）', () => {
 		expect(variants.fullscreen.true).toBeDefined();
 		expect(Object.keys(variants.fullscreen.true)).not.toContain('content');
