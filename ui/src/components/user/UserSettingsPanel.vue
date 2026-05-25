@@ -26,6 +26,8 @@
 			<template #body>
 				<!-- 用 form 包裹密码框：消除浏览器“password 不在 form 内”告警；原生回车走 onSubmit -->
 				<form class="grid gap-3" @submit.prevent="onSubmitPasswordChange">
+					<!-- 隐藏 username 字段：消除“改密表单应含 username 字段”告警，并让密码管理器把新密码关联到当前账号 -->
+					<input type="text" :value="loginName" autocomplete="username" class="hidden" aria-hidden="true" tabindex="-1" readonly />
 					<UInput v-model="pwdForm.currentPassword" type="password" autocomplete="current-password" :placeholder="$t('settings.currentPassword')" />
 					<UInput v-model="pwdForm.newPassword" type="password" autocomplete="new-password" :placeholder="$t('settings.newPassword')" />
 					<UInput v-model="pwdForm.confirmPassword" type="password" autocomplete="new-password" :placeholder="$t('settings.confirmPassword')" />
@@ -35,8 +37,8 @@
 			</template>
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
-					<UButton variant="ghost" color="neutral" @click="passwordModalOpen = false">{{ $t('common.cancel') }}</UButton>
-					<UButton @click="onSubmitPasswordChange">{{ $t('settings.change') }}</UButton>
+					<UButton variant="ghost" color="neutral" :disabled="pwdSubmitting" @click="passwordModalOpen = false">{{ $t('common.cancel') }}</UButton>
+					<UButton :loading="pwdSubmitting" :disabled="pwdSubmitting" @click="onSubmitPasswordChange">{{ $t('settings.change') }}</UButton>
 				</div>
 			</template>
 		</UModal>
@@ -60,6 +62,7 @@
 import { useAuthStore } from '../../stores/auth.store.js';
 import { useNotify } from '../../composables/use-notify.js';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
+import { getUserLoginName } from '../../utils/user-profile.js';
 
 export default {
 	name: 'UserSettingsPanel',
@@ -77,6 +80,7 @@ export default {
 				lang: 'zh-CN',
 			},
 			passwordModalOpen: false,
+			pwdSubmitting: false,
 			pwdForm: {
 				currentPassword: '',
 				newPassword: '',
@@ -113,6 +117,10 @@ export default {
 		isLocalAuth() {
 			return this.authStore.user?.authType === 'local';
 		},
+		// 当前账号登录名：作为改密表单隐藏 username 字段的值，供密码管理器关联
+		loginName() {
+			return getUserLoginName(this.authStore.user);
+		},
 	},
 	watch: {
 		'authStore.user': {
@@ -134,6 +142,8 @@ export default {
 			}
 		},
 		async onSubmitPasswordChange() {
+			// 在途守卫：回车与点按钮可能叠触发，提交中直接忽略，避免改密请求发两次
+			if (this.pwdSubmitting) return;
 			if (!this.pwdForm.currentPassword || !this.pwdForm.newPassword) {
 				this.notify.warning(this.$t('settings.needPassword'));
 				return;
@@ -142,21 +152,26 @@ export default {
 				this.notify.warning(this.$t('settings.passwordNotMatch'));
 				return;
 			}
-			const ok = await this.authStore.changePassword({
-				oldPassword: this.pwdForm.currentPassword,
-				newPassword: this.pwdForm.newPassword,
-			});
-			if (ok) {
-				this.notify.success(this.$t('settings.passwordChanged'));
-			} else {
-				this.notify.error(this.authStore.errorMessage);
+			this.pwdSubmitting = true;
+			try {
+				const ok = await this.authStore.changePassword({
+					oldPassword: this.pwdForm.currentPassword,
+					newPassword: this.pwdForm.newPassword,
+				});
+				if (ok) {
+					this.notify.success(this.$t('settings.passwordChanged'));
+				} else {
+					this.notify.error(this.authStore.errorMessage);
+				}
+				this.passwordModalOpen = false;
+				this.pwdForm = {
+					currentPassword: '',
+					newPassword: '',
+					confirmPassword: '',
+				};
+			} finally {
+				this.pwdSubmitting = false;
 			}
-			this.passwordModalOpen = false;
-			this.pwdForm = {
-				currentPassword: '',
-				newPassword: '',
-				confirmPassword: '',
-			};
 		},
 		onConfirmClearChats() {
 			this.notify.info({
