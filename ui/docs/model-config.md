@@ -1,7 +1,7 @@
 # 模型配置（UI 侧）
 
 > 创建时间：2026-05-25
-> 状态：设计中（未实施）
+> 状态：已实施（过程稿，完结归档；当前真相以代码为准）
 > 范围：CoClaw UI 端"模型配置"功能的产品定义与 UX 设计，覆盖 API key 凭据管理 + 默认主模型设置
 > 前置依赖：`plugins/openclaw/docs/model-config-api.md`（API 契约）
 > 不含：OAuth、per-agent 主模型覆盖、白名单、多账号顺序
@@ -195,7 +195,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - "常用"分组的 provider 由 UI 端硬编码（一期人工维护一份"热门 provider"清单，按用户分布 + 国内外平衡选取）
 - displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）
 
-**Step 2 输入 API key**：
+**Step 2 输入 API key**（移动端为居中 confirm 小卡片、非全屏；桌面端为模态。输 key 步套用项目统一 confirm 弹窗样式，不随 Step 1 全屏）：
 
 ```
 ┌────────────────────────────────────────┐
@@ -416,7 +416,8 @@ export const PROVIDER_META = {
 | 维度 | 移动端 | 桌面端 |
 |---|---|---|
 | Header | `MobilePageHeader`，左返回 + 标题 | 自有 header，左返回 + 标题（`{claw 名} · 模型设置`） |
-| 添加 provider | Bottom sheet 全屏 | UModal 居中 |
+| 添加 provider（选 provider 步） | Bottom sheet 全屏 | UModal 居中 |
+| 添加 provider（输 key 步） | 居中 confirm 小卡片（非全屏） | UModal 居中 |
 | 主模型选择器 | Bottom sheet 全屏 | UModal 居中 |
 | 撤销确认 | UModal（小尺寸） | UModal（小尺寸） |
 | 内容宽度 | 占满 | 居中，最大宽 `max-w-2xl`（对齐 ManageClawsPage） |
