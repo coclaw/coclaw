@@ -7,7 +7,7 @@
 		@update:open="onModalOpenChange"
 	>
 		<template #body>
-			<div data-testid="primary-picker-dialog" class="flex min-h-0 flex-col gap-3">
+			<div data-testid="primary-picker-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
 				<UInput
 					v-model="searchText"
 					data-testid="primary-picker-search"
@@ -18,7 +18,7 @@
 					:disabled="busy"
 				/>
 
-				<div data-testid="primary-picker-list" class="-mx-2 flex max-h-[60vh] flex-col overflow-y-auto md:max-h-96">
+				<div data-testid="primary-picker-list" class="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hide md:max-h-96 md:flex-none">
 					<div
 						v-if="!groups.length"
 						data-testid="primary-picker-empty"

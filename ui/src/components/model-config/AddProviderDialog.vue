@@ -7,9 +7,9 @@
 		@update:open="onModalOpenChange"
 	>
 		<template #body>
-			<div data-testid="add-provider-dialog" class="flex min-h-0 flex-col gap-3">
-				<!-- Step 1: 选 provider -->
-				<div v-if="step === 'select'" class="flex min-h-0 flex-col gap-3">
+			<div data-testid="add-provider-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
+				<!-- Step 1: 选 provider（全屏下 flex-1 填满，桌面端 md:flex-none 维持紧凑） -->
+				<div v-if="step === 'select'" class="flex min-h-0 flex-1 flex-col gap-3 md:flex-none">
 					<UInput
 						v-model="searchText"
 						data-testid="add-provider-search"
@@ -19,8 +19,8 @@
 						class="w-full"
 					/>
 
-					<!-- 列表区：限高 + 内部滚动；为空时给提示 -->
-					<div data-testid="add-provider-list" class="-mx-2 flex max-h-[60vh] flex-col overflow-y-auto md:max-h-96">
+					<!-- 列表区：全屏下填满高度、桌面端 md:max-h-96 限高；内部滚动且隐藏滚动条（与主列表一致） -->
+					<div data-testid="add-provider-list" class="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hide md:max-h-96 md:flex-none">
 						<template v-if="popularList.length">
 							<p class="px-2 pt-1 pb-1 text-xs font-medium text-muted">
 								{{ $t('modelConfig.providerAuth.add.groupPopular') }}
