@@ -193,7 +193,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 - 列表数据源：`models.list view:"all"` 返回的 provider 字段去重
 - "常用"分组的 provider 由 UI 端硬编码（一期人工维护一份"热门 provider"清单，按用户分布 + 国内外平衡选取）
-- displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）
+- displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**展示暂缓**：provider 选择列表 / 主模型选择器当前直接用原生 provider id 占位，displayName 映射暂未接入这两处展示；displayName 仍是最终目标，后续接入
 
 **Step 2 输入 API key**（移动端为居中 confirm 小卡片、非全屏；桌面端为模态。输 key 步套用项目统一 confirm 弹窗样式，不随 Step 1 全屏）：
 
