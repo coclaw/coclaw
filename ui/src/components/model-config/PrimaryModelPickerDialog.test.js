@@ -246,13 +246,13 @@ describe('PrimaryModelPickerDialog — click to save (immediate, no second confi
 		await flushPromises();
 	});
 
-	test('Cancel ignored while busy', async () => {
+	test('mask / Esc close ignored while busy', async () => {
 		let resolveSet;
 		const setPrimary = vi.fn(() => new Promise(res => { resolveSet = res; }));
 		const w = makeWrapper({ setPrimary });
 		await w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').trigger('click');
 		await Promise.resolve();
-		await w.find('[data-testid="primary-picker-cancel"]').trigger('click');
+		w.findComponent(UModalStub).vm.$emit('update:open', false);
 		await Promise.resolve();
 		const openEvents = w.emitted('update:open');
 		expect(openEvents?.some(e => e[0] === false)).not.toBe(true);
@@ -268,15 +268,7 @@ describe('PrimaryModelPickerDialog — click to save (immediate, no second confi
 	});
 });
 
-describe('PrimaryModelPickerDialog — cancel / mask close', () => {
-	test('Cancel button emits update:open=false', async () => {
-		const w = makeWrapper();
-		await w.find('[data-testid="primary-picker-cancel"]').trigger('click');
-		const events = w.emitted('update:open');
-		expect(events).toBeTruthy();
-		expect(events[events.length - 1]).toEqual([false]);
-	});
-
+describe('PrimaryModelPickerDialog — mask / Esc close', () => {
 	test('UModal close (mask / Esc) = cancel', async () => {
 		const w = makeWrapper();
 		w.findComponent(UModalStub).vm.$emit('update:open', false);

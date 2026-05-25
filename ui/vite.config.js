@@ -3,6 +3,7 @@ import vue from '@vitejs/plugin-vue';
 import ui from '@nuxt/ui/vite';
 import compression from 'vite-plugin-compression';
 import { defineConfig } from 'vite';
+import { MODAL_THEME } from './src/constants/modal-theme.js';
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 
@@ -60,13 +61,7 @@ export default defineConfig({
 						viewport: 'mt-[var(--safe-area-inset-top)] mb-[var(--safe-area-inset-bottom)]',
 					},
 				},
-				modal: {
-					slots: {
-						header: 'flex items-center justify-between gap-1.5 px-4 py-1 sm:px-6 min-h-16',
-						wrapper: 'flex-1 min-w-0',
-						close: 'static -me-2 cc-icon-btn-lg',
-					},
-				},
+				modal: MODAL_THEME,
 			},
 		}),
 	],

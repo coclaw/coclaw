@@ -4,7 +4,6 @@
 		:title="title"
 		description=" "
 		:fullscreen="isMobile"
-		:ui="modalUi"
 		@update:open="onModalOpenChange"
 	>
 		<template #body>
@@ -107,31 +106,19 @@
 							{{ $t('modelConfig.providerAuth.add.dashboardLink', { provider: providerDisplayName }) }}
 						</a>
 					</div>
-				</div>
-			</div>
-		</template>
 
-		<template #footer>
-			<div class="flex w-full items-center justify-end gap-2">
-				<UButton
-					data-testid="add-provider-cancel"
-					variant="ghost"
-					color="neutral"
-					:disabled="submitting"
-					@click="onCancel"
-				>
-					{{ $t('common.cancel') }}
-				</UButton>
-				<UButton
-					v-if="step === 'configure'"
-					data-testid="add-provider-submit"
-					color="primary"
-					:loading="submitting"
-					:disabled="submitting"
-					@click="onSubmit"
-				>
-					{{ $t('modelConfig.providerAuth.add.submitButton') }}
-				</UButton>
+					<!-- 提交按钮：无 footer，提交动作内嵌于 Step 2 表单底部（取消走 X / 遮罩 / Esc） -->
+					<UButton
+						data-testid="add-provider-submit"
+						block
+						color="primary"
+						:loading="submitting"
+						:disabled="submitting"
+						@click="onSubmit"
+					>
+						{{ $t('modelConfig.providerAuth.add.submitButton') }}
+					</UButton>
+				</div>
 			</div>
 		</template>
 	</UModal>
@@ -234,16 +221,6 @@ export default {
 		dashboardUrl() {
 			return PROVIDER_META[this.selectedProvider]?.dashboardUrl ?? '';
 		},
-		modalUi() {
-			if (this.isMobile) {
-				const pbSafe = 'pb-[max(1rem,var(--safe-area-inset-bottom))] sm:pb-[max(1rem,var(--safe-area-inset-bottom))]';
-				return {
-					header: 'pt-[max(0.25rem,var(--safe-area-inset-top))]',
-					body: `pt-3 sm:pt-3 ${pbSafe}`,
-				};
-			}
-			return { body: 'pt-3 sm:pt-3 pb-4 sm:pb-4' };
-		},
 		/**
 		 * catalog 派生的 provider id 集合，剔除已绑的
 		 * 返回 [{ id, displayName, popular }]，按 displayName 字典序排
@@ -303,13 +280,8 @@ export default {
 		closeAll() {
 			this.$emit('update:open', false);
 		},
-		onCancel() {
-			// busy 期间忽略 cancel（cancel/Esc/遮罩三处共享）
-			if (this.submitting) return;
-			this.closeAll();
-		},
 		onModalOpenChange(value) {
-			// UModal 自身 close（遮罩 / Esc）等价于 cancel
+			// UModal close（X / 遮罩 / Esc）等价于取消；submitting 期间忽略
 			if (!value) {
 				if (this.submitting) return;
 				this.closeAll();

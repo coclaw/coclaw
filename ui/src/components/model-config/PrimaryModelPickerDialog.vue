@@ -4,7 +4,6 @@
 		:title="$t('modelConfig.primary.pickerTitle')"
 		description=" "
 		:fullscreen="isMobile"
-		:ui="modalUi"
 		@update:open="onModalOpenChange"
 	>
 		<template #body>
@@ -29,11 +28,13 @@
 					</div>
 
 					<template
-						v-for="g in groups"
+						v-for="(g, gi) in groups"
 						:key="g.provider"
 					>
+						<!-- 首个分组标题贴近搜索框（pt-1），其余分组之间留 pt-3 分隔；与 AddProviderDialog 一致 -->
 						<p
-							class="px-2 pt-3 pb-1 text-xs font-medium text-muted"
+							class="px-2 pb-1 text-xs font-medium text-muted"
+							:class="gi === 0 ? 'pt-1' : 'pt-3'"
 							:data-testid="`primary-picker-group-${g.provider}`"
 						>
 							{{ g.displayName }}
@@ -71,20 +72,6 @@
 						</button>
 					</template>
 				</div>
-			</div>
-		</template>
-
-		<template #footer>
-			<div class="flex w-full justify-end">
-				<UButton
-					data-testid="primary-picker-cancel"
-					variant="ghost"
-					color="neutral"
-					:disabled="busy"
-					@click="onCancel"
-				>
-					{{ $t('common.cancel') }}
-				</UButton>
 			</div>
 		</template>
 	</UModal>
@@ -164,16 +151,6 @@ export default {
 		busy() {
 			return !!this.pendingTarget;
 		},
-		modalUi() {
-			if (this.isMobile) {
-				const pbSafe = 'pb-[max(1rem,var(--safe-area-inset-bottom))] sm:pb-[max(1rem,var(--safe-area-inset-bottom))]';
-				return {
-					header: 'pt-[max(0.25rem,var(--safe-area-inset-top))]',
-					body: `pt-3 sm:pt-3 ${pbSafe}`,
-				};
-			}
-			return { body: 'pt-3 sm:pt-3 pb-4 sm:pb-4' };
-		},
 		/**
 		 * 当前主模型的 provider/model 拆分，纯计算
 		 * @returns {{ provider: string, model: string }|null}
@@ -240,10 +217,6 @@ export default {
 		},
 		closeAll() {
 			this.$emit('update:open', false);
-		},
-		onCancel() {
-			if (this.busy) return;
-			this.closeAll();
 		},
 		onModalOpenChange(value) {
 			if (!value) {

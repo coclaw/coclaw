@@ -48,6 +48,7 @@ const UModalStub = {
 		:data-title="title"
 		:data-ui-body="ui?.body ?? ''"
 		:data-ui-header="ui?.header ?? ''"
+		:data-ui-footer="ui?.footer ?? ''"
 	>
 		<header class="modal-header">{{ title }}</header>
 		<div class="modal-body"><slot name="body" /></div>
@@ -138,15 +139,7 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);
 	});
 
-	test('Cancel on Step 1 closes the entire dialog (no step-back)', async () => {
-		const w = makeWrapper();
-		await w.find('[data-testid="add-provider-cancel"]').trigger('click');
-		const events = w.emitted('update:open');
-		expect(events).toBeTruthy();
-		expect(events[events.length - 1]).toEqual([false]);
-	});
-
-	test('UModal close (mask / Esc) on Step 1 also closes the dialog', async () => {
+	test('UModal close (mask / Esc / X) on Step 1 closes the dialog (no footer cancel)', async () => {
 		const w = makeWrapper();
 		const modal = w.findComponent(UModalStub);
 		modal.vm.$emit('update:open', false);
@@ -184,22 +177,15 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		expect(openExternalUrlMock).toHaveBeenCalledWith('https://console.groq.com/keys');
 	});
 
-	test('Cancel on Step 2 closes the entire dialog (does NOT go back to Step 1)', async () => {
-		const w = await goToStep2(makeWrapper());
-		await w.find('[data-testid="add-provider-cancel"]').trigger('click');
-		const events = w.emitted('update:open');
-		expect(events).toBeTruthy();
-		expect(events[events.length - 1]).toEqual([false]);
-		// 也不该触发任何 setApiKey 调用
-		expect(w.vm.$props.setApiKey).not.toHaveBeenCalled();
-	});
-
-	test('UModal close on Step 2 = cancel = close entire dialog', async () => {
+	test('UModal close (mask / Esc / X) on Step 2 closes the dialog without calling RPC', async () => {
 		const w = await goToStep2(makeWrapper());
 		const modal = w.findComponent(UModalStub);
 		modal.vm.$emit('update:open', false);
 		await w.vm.$nextTick();
 		expect(w.emitted('update:open')).toBeTruthy();
+		expect(w.emitted('update:open')[w.emitted('update:open').length - 1]).toEqual([false]);
+		// 关闭不该触发任何 setApiKey 调用
+		expect(w.vm.$props.setApiKey).not.toHaveBeenCalled();
 	});
 
 	test('submit with empty key shows inline INVALID_ARGS error and does NOT call RPC', async () => {
@@ -315,15 +301,15 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		await flushPromises();
 	});
 
-	test('Cancel ignored while submitting', async () => {
+	test('mask / Esc close ignored while submitting', async () => {
 		let resolveSet;
 		const setApiKey = vi.fn(() => new Promise(res => { resolveSet = res; }));
 		const w = await goToStep2(makeWrapper({ setApiKey }));
 		await w.find('[data-testid="add-provider-key-input"]').setValue('gsk_abc');
 		await w.find('[data-testid="add-provider-submit"]').trigger('click');
 		await Promise.resolve();
-		// Cancel during busy: should be no-op
-		await w.find('[data-testid="add-provider-cancel"]').trigger('click');
+		// 提交中 mask/Esc 关闭：应被 submitting 守卫挡下（onModalOpenChange）
+		w.findComponent(UModalStub).vm.$emit('update:open', false);
 		await Promise.resolve();
 		// 没有发出 false 的 update:open（除非 RPC 完成后）
 		const openEvents = w.emitted('update:open');
@@ -405,20 +391,17 @@ describe('AddProviderDialog — open/close lifecycle', () => {
 });
 
 describe('AddProviderDialog — mobile / desktop layout', () => {
-	test('mobile (ltMd=true): UModal fullscreen=true + safe-area-inset header/body', () => {
+	// 布局/安全区现由全局 modal 主题统一提供（见 constants/modal-theme.js + 其单测），
+	// 本组件只负责 fullscreen 开关；不再在实例 ui 上设 padding/safe-area。
+	test('mobile (ltMd=true): UModal fullscreen=true', () => {
 		envState.screen.ltMd = true;
 		const w = makeWrapper();
-		const modal = w.find('.u-modal-stub');
-		expect(modal.attributes('data-fullscreen')).toBe('true');
-		expect(modal.attributes('data-ui-header')).toContain('var(--safe-area-inset-top)');
-		expect(modal.attributes('data-ui-body')).toContain('var(--safe-area-inset-bottom)');
+		expect(w.find('.u-modal-stub').attributes('data-fullscreen')).toBe('true');
 	});
 
-	test('desktop (ltMd=false): fullscreen=false + no safe-area', () => {
+	test('desktop (ltMd=false): fullscreen=false', () => {
 		envState.screen.ltMd = false;
 		const w = makeWrapper();
-		const modal = w.find('.u-modal-stub');
-		expect(modal.attributes('data-fullscreen')).toBe('false');
-		expect(modal.attributes('data-ui-body')).not.toContain('safe-area-inset');
+		expect(w.find('.u-modal-stub').attributes('data-fullscreen')).toBe('false');
 	});
 });

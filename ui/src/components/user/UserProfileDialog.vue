@@ -4,7 +4,6 @@
 		:title="$t('layout.menu.profile')"
 		description=" "
 		:fullscreen="isMobile"
-		:ui="isMobile ? safeAreaUi : undefined"
 		@after:leave="$emit('after:leave')"
 	>
 		<template #body>
@@ -32,14 +31,6 @@ export default {
 	emits: ['update:open', 'after:leave'],
 	setup() {
 		return { envStore: useEnvStore() };
-	},
-	data() {
-		return {
-			safeAreaUi: {
-				header: 'pt-[max(0.25rem,var(--safe-area-inset-top))]',
-				body: 'pb-[var(--safe-area-inset-bottom)]',
-			},
-		};
 	},
 	computed: {
 		isMobile() {
