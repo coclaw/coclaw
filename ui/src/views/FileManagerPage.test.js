@@ -4,7 +4,7 @@ import { createPinia } from 'pinia';
 
 // --- mock 子组件 ---
 vi.mock('../components/MobilePageHeader.vue', () => ({
-	default: { name: 'MobilePageHeader', props: ['title'], template: '<div><slot name="actions" /></div>' },
+	default: { name: 'MobilePageHeader', props: ['title', 'fallback'], template: '<div><slot name="actions" /></div>' },
 }));
 vi.mock('../components/files/FileBreadcrumb.vue', () => ({
 	default: { name: 'FileBreadcrumb', props: ['path'], template: '<div />' },
@@ -100,6 +100,57 @@ describe('FileManagerPage', () => {
 
 	afterEach(() => {
 		vi.useRealTimers();
+	});
+
+	// ===================================================================
+	// 桌面端返回按钮
+	// ===================================================================
+	describe('桌面端返回按钮', () => {
+		function mountWithRouter(routerMock, route = mockRoute) {
+			return mount(FileManagerPage, {
+				global: {
+					plugins: [createPinia()],
+					mocks: {
+						$route: route,
+						$router: routerMock,
+						$t: (key, params) => (params?.name ? `${key}:${params.name}` : key),
+					},
+					stubs: {
+						UButton: { props: { disabled: Boolean }, template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot /></button>' },
+						UModal: { template: '<div v-if="$attrs.open"><slot name="body" /><slot name="footer" /></div>', inheritAttrs: true },
+						UCheckbox: { template: '<input type="checkbox" />' },
+						URadioGroup: { props: ['modelValue', 'items'], template: '<div class="radio-group" />' },
+						UIcon: { template: '<span />' },
+						UInput: { template: '<input />' },
+					},
+				},
+			});
+		}
+
+		test('backFallback 指向该 agent 的对话页', () => {
+			const wrapper = mountWithRouter({ back: vi.fn(), replace: vi.fn() });
+			expect(wrapper.vm.backFallback).toBe('/chat/claw1/main');
+		});
+
+		test('有上一页时 goBack 走 router.back', () => {
+			const back = vi.fn();
+			const replace = vi.fn();
+			history.pushState({ back: '/somewhere' }, '');
+			const wrapper = mountWithRouter({ back, replace });
+			wrapper.vm.goBack();
+			expect(back).toHaveBeenCalled();
+			expect(replace).not.toHaveBeenCalled();
+		});
+
+		test('无上一页（冷启 deep link）goBack 退回该 agent 对话页', () => {
+			const back = vi.fn();
+			const replace = vi.fn();
+			history.replaceState({}, '');
+			const wrapper = mountWithRouter({ back, replace });
+			wrapper.vm.goBack();
+			expect(replace).toHaveBeenCalledWith('/chat/claw1/main');
+			expect(back).not.toHaveBeenCalled();
+		});
 	});
 
 	// ===================================================================

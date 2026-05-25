@@ -1,7 +1,7 @@
 <template>
 	<div class="relative flex h-full flex-col overflow-hidden">
 		<!-- 移动端 header -->
-		<MobilePageHeader :title="pageTitle">
+		<MobilePageHeader :title="pageTitle" :fallback="backFallback">
 			<template #actions>
 				<UButton
 					class="cc-icon-btn-lg" variant="ghost" color="primary"
@@ -12,7 +12,15 @@
 		</MobilePageHeader>
 
 		<!-- 桌面端 header -->
-		<header class="z-10 hidden shrink-0 min-h-12 items-center border-b border-default bg-elevated pl-4 py-1 md:flex">
+		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-elevated pl-2 py-1 md:flex">
+			<UButton
+				class="cc-icon-btn-lg shrink-0"
+				size="xl"
+				variant="ghost"
+				color="neutral"
+				icon="i-lucide-arrow-left"
+				@click="goBack"
+			/>
 			<h1 class="text-base">{{ pageTitle }}</h1>
 			<div class="ml-auto flex items-center gap-1 pr-2">
 				<UButton
@@ -203,6 +211,7 @@ import { useClawConnections } from '../services/claw-connection-manager.js';
 import { listFiles, deleteFile, mkdirFiles, MAX_UPLOAD_SIZE } from '../services/file-transfer.js';
 import { useNotify } from '../composables/use-notify.js';
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
+import { navBack } from '../utils/nav-back.js';
 
 // workspace 根目录下受保护的文件/目录 → i18n key 映射
 const PROTECTED_FILE_KEYS = {
@@ -255,13 +264,15 @@ export default {
 	computed: {
 		clawId() { return this.$route.params.clawId; },
 		agentId() { return this.$route.params.agentId; },
+		// 返回 fallback：冷启动 deep link 无 history 时退回该 agent 的对话页
+		backFallback() { return `/chat/${this.clawId}/${this.agentId}`; },
 		connReady() {
 			const claw = this.clawsStore.byId[this.clawId];
 			return !!claw?.dcReady;
 		},
 		pageTitle() {
 			const display = this.agentsStore.getAgentDisplay(this.clawId, this.agentId);
-			return `${display.name} ${this.$t('files.titleSuffix')}`;
+			return `${display.name} · ${this.$t('files.titleSuffix')}`;
 		},
 		sortedEntries() {
 			// 过滤掉与活跃上传任务同名的条目（覆盖上传期间隐藏旧条目）
@@ -346,6 +357,9 @@ export default {
 		this.$el.removeEventListener('drop', this.__onDrop);
 	},
 	methods: {
+		goBack() {
+			navBack(this.$router, this.backFallback);
+		},
 		resetAndLoad() {
 			this.__cancelInFlight();
 			this.currentDir = '';

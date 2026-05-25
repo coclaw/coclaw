@@ -790,6 +790,31 @@ test('agent item 在 main session 路由下被高亮', async () => {
 	expect(item.active).toBe(true);
 });
 
+test('agent item 在 files 子页路由下按所属 agent 高亮', async () => {
+	const pinia = createPinia();
+	setActivePinia(pinia);
+	const wrapper = mount(MainList, {
+		props: { currentPath: '/files/b1/main' },
+		global: {
+			plugins: [pinia],
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, UPopover: UPopoverStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' }, WebAgentItemActions: { template: '<div />' } },
+			mocks: {
+				$t: (key) => ({ 'layout.addClaw': '添加 Claw', 'layout.addWebAgent': '添加 Web Agent', 'topic.newTopic': '新话题' }[key] ?? key),
+				$route: { name: 'files', params: { clawId: 'b1', agentId: 'main' }, query: {} },
+				$router: { resolve: (to) => ({ path: typeof to === 'string' ? to : `/chat/${to.params?.clawId ?? ''}/${to.params?.agentId ?? ''}` }) },
+			},
+		},
+	});
+	await vi.dynamicImportSettled();
+
+	const clawsStore = useClawsStore();
+	clawsStore.setClaws([{ id: 'b1', name: 'Bot', online: true }]);
+	await wrapper.vm.$nextTick();
+
+	const item = wrapper.vm.mixedAgentItems.find((i) => i.type === 'claw');
+	expect(item.active).toBe(true);
+});
+
 // --- Web agent 项（在混排中）---
 
 test('web agent: lastClickedAt=null 不渲染', async () => {
@@ -1290,10 +1315,10 @@ describe('topActionItems 前缀匹配高亮', () => {
 		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(true);
 	});
 
-	test('currentPath=/claws/add → 高亮（子路径）', async () => {
+	test('currentPath=/claws/add → 不高亮"我的 Claw"（添加 Claw 是独立入口）', async () => {
 		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws/add' });
 		await vi.dynamicImportSettled();
-		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(true);
+		expect(wrapper.vm.isTopItemActive(manageItem(wrapper))).toBe(false);
 	});
 
 	test('currentPath=/claws/:id/models → 高亮（模型设置子页）', async () => {
@@ -1328,5 +1353,40 @@ describe('topActionItems 前缀匹配高亮', () => {
 		const link = wrapper.findAll('a').find((a) => a.text().includes('我的 Claw'));
 		expect(link).toBeTruthy();
 		expect(link.classes()).not.toContain('bg-accented');
+	});
+});
+
+// --- 底部"添加 Claw"入口高亮（独立入口，非 /claws 子页）---
+
+describe('底部"添加 Claw"入口高亮', () => {
+	function addClawItem(wrapper) {
+		return wrapper.vm.addActionItems.find((i) => i.id === 'add-claw');
+	}
+
+	test('currentPath=/claws/add → 添加 Claw 项高亮', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws/add' });
+		await vi.dynamicImportSettled();
+		expect(wrapper.vm.isAddItemActive(addClawItem(wrapper))).toBe(true);
+	});
+
+	test('currentPath=/claws → 添加 Claw 项不高亮', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws' });
+		await vi.dynamicImportSettled();
+		expect(wrapper.vm.isAddItemActive(addClawItem(wrapper))).toBe(false);
+	});
+
+	test('添加 Web Agent（无 activePath）任何路径都不高亮', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws/add' });
+		await vi.dynamicImportSettled();
+		const webItem = wrapper.vm.addActionItems.find((i) => i.id === 'add-web-agent');
+		expect(wrapper.vm.isAddItemActive(webItem)).toBe(false);
+	});
+
+	test('DOM：在 /claws/add 下底部"添加 Claw"按钮带 active class', async () => {
+		const wrapper = createWrapper({ scrollable: true, currentPath: '/claws/add' });
+		await vi.dynamicImportSettled();
+		const btn = wrapper.find('[data-testid="bottom-action-add-claw"]');
+		expect(btn.exists()).toBe(true);
+		expect(btn.classes()).toContain('bg-accented');
 	});
 });

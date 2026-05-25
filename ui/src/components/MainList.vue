@@ -212,6 +212,7 @@
 				type="button"
 				:data-testid="instance === 'main' ? `bottom-action-${item.id}` : null"
 				class="group flex h-11 w-full cursor-pointer items-center gap-3 rounded-lg pl-2 pr-1 py-1 text-left text-sm text-default transition-colors hover:bg-accented/80"
+				:class="isAddItemActive(item) ? 'bg-accented text-highlighted' : ''"
 				@click="onAddAction(item.id)"
 			>
 				<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-6" :class="item.iconClass" />
@@ -316,11 +317,11 @@ export default {
 		hasUnreachableClaws() {
 			return Boolean(this.clawsStore?.unreachableClaws.length);
 		},
-		/** 当前路由上下文解析出的活跃 agentId（仅 main session 路由时高亮 agent） */
+		/** 当前路由上下文解析出的活跃 agentId（chat 与 files 子页都按所属 agent 高亮） */
 		activeAgentKey() {
 			const route = this.$route;
 			if (!route) return '';
-			if (route.name === 'chat') {
+			if (route.name === 'chat' || route.name === 'files') {
 				const clawId = route.params?.clawId;
 				const agentId = route.params?.agentId;
 				if (clawId && agentId) return `${clawId}:${agentId}`;
@@ -346,7 +347,8 @@ export default {
 		/** 底部组 + capacitor header 下拉菜单共用：添加 Claw / 添加 Web Agent */
 		addActionItems() {
 			return [
-				{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: this.addClawIcon, iconType: 'svg' },
+				// 添加 Claw 是独立入口（非 /claws 子页），有自己的路由用于高亮判定
+				{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: this.addClawIcon, iconType: 'svg', activePath: '/claws/add' },
 				{ id: 'add-web-agent', label: this.$t('layout.addWebAgent'), icon: 'i-lucide-globe', iconType: 'lucide', iconClass: 'text-teal-600' },
 			];
 		},
@@ -537,12 +539,19 @@ export default {
 		/**
 		 * 顶部入口高亮判定：前缀匹配（设计 § 3）。
 		 * 当前路径等于入口路径本身、或是其子路径时都高亮——
-		 * 让"我的 Claw"在 /claws、/claws/add、/claws/:id/models 等所有 /claws/... 下保持 active。
+		 * 让"我的 Claw"在 /claws、/claws/:id/models 等 /claws/... 下保持 active。
+		 * 例外：带独立侧边栏入口的子路径（如 /claws/add）归该入口自己高亮，不归顶部入口。
 		 */
 		isTopItemActive(item) {
 			const target = this.resolvePath(item.to);
 			if (!target) return false;
-			return this.currentPath === target || this.currentPath.startsWith(`${target}/`);
+			if (this.currentPath === target) return true;
+			if (!this.currentPath.startsWith(`${target}/`)) return false;
+			return !this.addActionItems.some((a) => a.activePath === this.currentPath);
+		},
+		/** 底部 action 入口高亮判定：仅带 activePath 的项（如 添加 Claw）在其路由下 active */
+		isAddItemActive(item) {
+			return Boolean(item.activePath) && this.currentPath === item.activePath;
 		},
 	},
 };

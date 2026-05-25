@@ -98,7 +98,7 @@ test.describe('文件浏览器 @file', () => {
 		await expect(h1).toBeVisible();
 		const titleText = await h1.innerText();
 		expect(titleText).toMatch(/文件|Files/);
-		// 不应是 "Agent 文件"（应为具体 agent 名如 "小点 文件" 或 "main 文件"）
+		// 不应是 "Agent 文件"（应为具体 agent 名如 "小点 · 文件" 或 "main · 文件"）
 		expect(titleText).not.toMatch(/^Agent /);
 	});
 
