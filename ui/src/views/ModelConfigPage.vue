@@ -4,7 +4,7 @@
 		<MobilePageHeader :title="pageTitle" fallback="/claws" />
 
 		<!-- 桌面端 header -->
-		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-elevated pl-2 py-1 md:flex">
+		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-elevated pl-2 pr-4 py-1 md:flex">
 			<!-- 注意：icon-only 返回按钮无 aria-label——与 FileManagerPage 等姊妹页面一致；
 			     a11y 改进作为统一项见仓库 TODO -->
 			<UButton
@@ -20,12 +20,13 @@
 
 		<!-- 内容区 -->
 		<main class="flex-1 min-h-0 overflow-y-auto">
-			<div class="mx-auto w-full max-w-2xl px-3 py-5 sm:px-4 lg:px-5">
+			<!-- space-y-5 统一各区域纵向间距（与 body py-5 顶距一致）；离线 banner / retry / 两个 section 均按此节奏 -->
+			<div class="mx-auto w-full max-w-2xl space-y-5 px-3 py-5 sm:px-4 lg:px-5">
 				<!-- claw 离线提示：所有动作 disabled，按 design § 10 -->
 				<div
 					v-if="offline"
 					data-testid="claw-offline-banner"
-					class="mb-4 rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning"
+					class="rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning"
 				>
 					{{ $t('modelConfig.common.clawOffline') }}
 				</div>
@@ -40,7 +41,7 @@
 					<div
 						v-if="fullyFailed"
 						data-testid="load-failed"
-						class="mb-4 flex items-center justify-between rounded border border-default bg-elevated px-3 py-2 text-sm"
+						class="flex items-center justify-between rounded border border-default bg-elevated px-3 py-2 text-sm"
 					>
 						<span class="text-muted">{{ $t('modelConfig.providerAuth.loadFailed') }}</span>
 						<UButton
@@ -56,7 +57,7 @@
 					</div>
 
 					<!-- A. 默认主模型区 -->
-					<section class="mb-6 rounded border border-default bg-default">
+					<section class="rounded border border-default bg-default">
 						<div class="flex items-center justify-between border-b border-default px-3 py-2">
 							<h2 class="text-sm font-medium">{{ $t('modelConfig.primary.title') }}</h2>
 						</div>

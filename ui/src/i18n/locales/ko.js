@@ -506,7 +506,7 @@ export const koMessages = {
 			pickerEmpty: '사용 가능한 모델이 없습니다. 먼저 최소 하나의 공급자에 API 키를 추가하세요.',
 		},
 		providerAuth: {
-			title: 'API 자격 증명',
+			title: 'API 키',
 			addButton: '추가',
 			removeButton: '제거',
 			emptyState: '아직 등록된 공급자가 없습니다. API 키를 추가해 시작하세요.',

@@ -506,7 +506,7 @@ export const jaMessages = {
 			pickerEmpty: '利用可能なモデルがありません。まずは少なくとも 1 つのプロバイダに API キーを追加してください。',
 		},
 		providerAuth: {
-			title: 'API 認証情報',
+			title: 'API キー',
 			addButton: '追加',
 			removeButton: '削除',
 			emptyState: 'まだプロバイダが設定されていません。API キーを追加して始めましょう。',

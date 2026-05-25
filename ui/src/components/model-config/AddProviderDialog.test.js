@@ -14,6 +14,7 @@ vi.mock('../../stores/env.store.js', () => ({
 }));
 
 import AddProviderDialog from './AddProviderDialog.vue';
+import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 
 const UButtonStub = {
 	props: { disabled: { type: Boolean, default: false }, loading: { type: Boolean, default: false } },
@@ -186,6 +187,32 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		expect(w.emitted('update:open')[w.emitted('update:open').length - 1]).toEqual([false]);
 		// 关闭不该触发任何 setApiKey 调用
 		expect(w.vm.$props.setApiKey).not.toHaveBeenCalled();
+	});
+
+	test('footer Cancel button closes the dialog without calling RPC', async () => {
+		const setApiKey = vi.fn().mockResolvedValue({});
+		const w = await goToStep2(makeWrapper({ setApiKey }));
+		await w.find('[data-testid="add-provider-cancel"]').trigger('click');
+		expect(setApiKey).not.toHaveBeenCalled();
+		const openEvents = w.emitted('update:open');
+		expect(openEvents[openEvents.length - 1]).toEqual([false]);
+	});
+
+	test('footer Cancel is ignored while submitting (RPC in-flight)', async () => {
+		let resolveSet;
+		const setApiKey = vi.fn(() => new Promise(res => { resolveSet = res; }));
+		const w = await goToStep2(makeWrapper({ setApiKey }));
+		await w.find('[data-testid="add-provider-key-input"]').setValue('gsk_abc');
+		await w.find('[data-testid="add-provider-submit"]').trigger('click');
+		await Promise.resolve();
+		// 提交中点取消：应被 submitting 守卫挡下
+		await w.find('[data-testid="add-provider-cancel"]').trigger('click');
+		await Promise.resolve();
+		const openEvents = w.emitted('update:open');
+		expect(openEvents?.some(e => e[0] === false)).not.toBe(true);
+		// settle 让 unmount 别孤儿
+		resolveSet({ profileId: 'groq:default' });
+		await flushPromises();
 	});
 
 	test('submit with empty key shows inline INVALID_ARGS error and does NOT call RPC', async () => {
@@ -403,5 +430,24 @@ describe('AddProviderDialog — mobile / desktop layout', () => {
 		envState.screen.ltMd = false;
 		const w = makeWrapper();
 		expect(w.find('.u-modal-stub').attributes('data-fullscreen')).toBe('false');
+	});
+
+	test('Step 2 (configure) is never fullscreen, even on mobile (confirm card)', async () => {
+		envState.screen.ltMd = true;
+		const w = makeWrapper();
+		// Step 1 在移动端全屏
+		expect(w.find('.u-modal-stub').attributes('data-fullscreen')).toBe('true');
+		// 进 Step 2 → 切到 confirm 小卡片，不全屏
+		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
+		expect(w.find('.u-modal-stub').attributes('data-fullscreen')).toBe('false');
+	});
+
+	test('Step 1 uses default modal ui; Step 2 adopts the shared confirm ui (promptModalUi)', async () => {
+		const w = makeWrapper();
+		// Step 1：不注入 :ui（走默认更宽的弹窗）
+		expect(w.find('.u-modal-stub').attributes('data-ui-body')).toBe('');
+		// Step 2：注入 confirm 弹窗样式
+		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
+		expect(w.find('.u-modal-stub').attributes('data-ui-body')).toBe(promptModalUi.body);
 	});
 });

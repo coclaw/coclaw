@@ -506,7 +506,7 @@ export const frMessages = {
 			pickerEmpty: 'Aucun modèle disponible. Ajoutez d\'abord une clé API pour au moins un fournisseur.',
 		},
 		providerAuth: {
-			title: 'Identifiants API',
+			title: 'Clés API',
 			addButton: 'Ajouter',
 			removeButton: 'Supprimer',
 			emptyState: 'Aucun fournisseur configuré pour l\'instant. Ajoutez une clé API pour commencer.',

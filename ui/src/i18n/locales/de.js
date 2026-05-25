@@ -506,7 +506,7 @@ export const deMessages = {
 			pickerEmpty: 'Keine Modelle verfügbar. Füge zuerst einen API-Schlüssel für mindestens einen Provider hinzu.',
 		},
 		providerAuth: {
-			title: 'API-Anmeldedaten',
+			title: 'API-Schlüssel',
 			addButton: 'Hinzufügen',
 			removeButton: 'Entfernen',
 			emptyState: 'Noch kein Provider konfiguriert. Füge einen API-Schlüssel hinzu, um zu beginnen.',

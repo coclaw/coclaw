@@ -506,7 +506,7 @@ export const ruMessages = {
 			pickerEmpty: 'Нет доступных моделей. Сначала добавьте ключ API хотя бы для одного поставщика.',
 		},
 		providerAuth: {
-			title: 'Учётные данные API',
+			title: 'API-ключи',
 			addButton: 'Добавить',
 			removeButton: 'Удалить',
 			emptyState: 'Ещё нет ни одного поставщика. Добавьте ключ API, чтобы начать.',

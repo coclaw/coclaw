@@ -506,7 +506,7 @@ export const hiMessages = {
 			pickerEmpty: 'कोई मॉडल उपलब्ध नहीं है। पहले कम-से-कम एक प्रदाता के लिए API कुंजी जोड़ें।',
 		},
 		providerAuth: {
-			title: 'API क्रेडेंशियल',
+			title: 'API कुंजियाँ',
 			addButton: 'जोड़ें',
 			removeButton: 'हटाएँ',
 			emptyState: 'अभी तक कोई प्रदाता कॉन्फ़िगर नहीं है। आरंभ करने के लिए एक API कुंजी जोड़ें।',

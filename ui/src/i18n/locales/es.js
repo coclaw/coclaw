@@ -506,7 +506,7 @@ export const esMessages = {
 			pickerEmpty: 'No hay modelos disponibles. Primero añade una clave de API para al menos un proveedor.',
 		},
 		providerAuth: {
-			title: 'Credenciales de API',
+			title: 'Claves de API',
 			addButton: 'Añadir',
 			removeButton: 'Eliminar',
 			emptyState: 'Aún no hay ningún proveedor configurado. Añade una clave de API para empezar.',

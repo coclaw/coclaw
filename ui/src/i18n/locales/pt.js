@@ -506,7 +506,7 @@ export const ptMessages = {
 			pickerEmpty: 'Nenhum modelo disponível. Adicione primeiro uma chave de API para pelo menos um provedor.',
 		},
 		providerAuth: {
-			title: 'Credenciais de API',
+			title: 'Chaves de API',
 			addButton: 'Adicionar',
 			removeButton: 'Remover',
 			emptyState: 'Nenhum provedor configurado ainda. Adicione uma chave de API para começar.',

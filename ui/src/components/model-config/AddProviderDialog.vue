@@ -3,7 +3,8 @@
 		:open="open"
 		:title="title"
 		description=" "
-		:fullscreen="isMobile"
+		:ui="modalUi"
+		:fullscreen="modalFullscreen"
 		@update:open="onModalOpenChange"
 	>
 		<template #body>
@@ -70,23 +71,18 @@
 
 				<!-- Step 2: 输 API key -->
 				<div v-else class="flex flex-col gap-3">
-					<div class="flex flex-col gap-1">
-						<label :for="apiKeyInputId" class="text-sm font-medium">
-							{{ $t('modelConfig.providerAuth.add.keyLabel') }}
-						</label>
-						<!-- type=password：UInput 透传给原生 input -->
-						<UInput
-							:id="apiKeyInputId"
-							v-model="apiKey"
-							data-testid="add-provider-key-input"
-							type="password"
-							autocomplete="off"
-							spellcheck="false"
-							:placeholder="$t('modelConfig.providerAuth.add.keyPlaceholder')"
-							:disabled="submitting"
-							@keydown.enter="onSubmit"
-						/>
-					</div>
+					<!-- 输入框自带 placeholder，无需额外 label；aria-label 保留可达性。type=password 透传给原生 input -->
+					<UInput
+						v-model="apiKey"
+						data-testid="add-provider-key-input"
+						type="password"
+						autocomplete="off"
+						spellcheck="false"
+						:aria-label="$t('modelConfig.providerAuth.add.keyLabel')"
+						:placeholder="$t('modelConfig.providerAuth.add.keyPlaceholder')"
+						:disabled="submitting"
+						@keydown.enter="onSubmit"
+					/>
 
 					<!-- 错误：仅在 inlineErrorKey 非空时渲染 -->
 					<p
@@ -97,31 +93,43 @@
 						{{ $t(inlineErrorKey) }}
 					</p>
 
-					<!-- "去官网创建"链接：仅当 PROVIDER_META 含 dashboardUrl 时渲染 -->
-					<div v-if="dashboardUrl" class="text-sm text-muted">
-						<span class="mr-1">{{ $t('modelConfig.providerAuth.add.noKeyHint', { provider: selectedProvider }) }}</span>
+					<!-- "去官网创建"提示：问句与链接分两行——窄卡片宽度更从容，整体高度更协调 -->
+					<div v-if="dashboardUrl" class="flex flex-col gap-1 text-sm text-muted">
+						<span>{{ $t('modelConfig.providerAuth.add.noKeyHint', { provider: selectedProvider }) }}</span>
 						<a
 							data-testid="add-provider-dashboard-link"
-							class="text-primary underline cursor-pointer"
+							class="self-start text-primary underline cursor-pointer"
 							:aria-label="$t('modelConfig.providerAuth.add.dashboardLink', { provider: selectedProvider })"
 							@click="onOpenDashboard"
 						>
 							{{ $t('modelConfig.providerAuth.add.dashboardLink', { provider: selectedProvider }) }}
 						</a>
 					</div>
-
-					<!-- 提交按钮：无 footer，提交动作内嵌于 Step 2 表单底部（取消走 X / 遮罩 / Esc） -->
-					<UButton
-						data-testid="add-provider-submit"
-						block
-						color="primary"
-						:loading="submitting"
-						:disabled="submitting"
-						@click="onSubmit"
-					>
-						{{ $t('modelConfig.providerAuth.add.submitButton') }}
-					</UButton>
 				</div>
+			</div>
+		</template>
+
+		<!-- footer 仅在 Step 2 提供：右下角 取消 + 提交，与项目其它 confirm 弹窗一致 -->
+		<template v-if="step === 'configure'" #footer>
+			<div class="flex w-full justify-end gap-2">
+				<UButton
+					data-testid="add-provider-cancel"
+					variant="ghost"
+					color="neutral"
+					:disabled="submitting"
+					@click="onCancel"
+				>
+					{{ $t('common.cancel') }}
+				</UButton>
+				<UButton
+					data-testid="add-provider-submit"
+					color="primary"
+					:loading="submitting"
+					:disabled="submitting"
+					@click="onSubmit"
+				>
+					{{ $t('modelConfig.providerAuth.add.submitButton') }}
+				</UButton>
 			</div>
 		</template>
 	</UModal>
@@ -129,14 +137,12 @@
 
 <script>
 import { getProviderMeta, PROVIDER_META } from '../../constants/provider-meta.js';
+import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 import { mapModelConfigErrorKey, isCanceledError } from '../../utils/model-config-errors.js';
 import { openExternalUrl } from '../../utils/external-url.js';
 import { useEnvStore } from '../../stores/env.store.js';
 
 const RPC_TIMEOUT = 60_000;
-
-// 自增 id，给 input 一个独立 id 让 <label for> 可达 a11y
-let __uid = 0;
 
 export default {
 	name: 'AddProviderDialog',
@@ -181,10 +187,8 @@ export default {
 	},
 	emits: ['update:open', 'added'],
 	setup() {
-		__uid += 1;
 		return {
 			envStore: useEnvStore(),
-			apiKeyInputId: `add-provider-key-${__uid}`,
 		};
 	},
 	data() {
@@ -206,6 +210,19 @@ export default {
 	computed: {
 		isMobile() {
 			return this.envStore?.screen?.ltMd === true;
+		},
+		/**
+		 * Step 2（输 key）套用项目统一 confirm 弹窗样式（窄卡片 max-w-sm + 无分割线 + footer 放按钮）；
+		 * Step 1（选 provider 列表）保持默认更宽的弹窗，承载列表
+		 */
+		modalUi() {
+			return this.step === 'configure' ? promptModalUi : undefined;
+		},
+		/**
+		 * 仅 Step 1 列表在移动端全屏铺开；Step 2 走 confirm 小卡片，移动端也居中显示不全屏
+		 */
+		modalFullscreen() {
+			return this.isMobile && this.step === 'select';
 		},
 		/**
 		 * 标题文案：Step 1 是 "选择 provider"，Step 2 是 "配置 <provider id>"（统一用原生 id，不用映射名）
@@ -279,6 +296,11 @@ export default {
 		},
 		closeAll() {
 			this.$emit('update:open', false);
+		},
+		onCancel() {
+			// footer 取消按钮：等价于关闭；submitting 期间忽略，避免对话框消失而后台仍跑
+			if (this.submitting) return;
+			this.closeAll();
 		},
 		onModalOpenChange(value) {
 			// UModal close（X / 遮罩 / Esc）等价于取消；submitting 期间忽略

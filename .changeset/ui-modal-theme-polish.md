@@ -18,13 +18,24 @@ model configuration feature and tightens dialog chrome app-wide.
   floor with no side effects. Applies to every `UModal`, so the
   web-agent picker and user settings/profile dialogs inherit the same
   chrome and drop their bespoke per-dialog overrides.
-- **Dialog cleanup**: removed the footers from the primary-model picker
-  and add-provider dialogs (pick-to-save / inline full-width submit;
-  dismiss via close button / overlay / Esc, with the in-flight-save guard
+- **Dialog cleanup**: the primary-model picker is pick-to-save with no
+  footer (dismiss via close button / overlay / Esc, in-flight-save guard
   intact). Removed the now-redundant per-dialog `modalUi`/`safeAreaUi`.
+- **Add-provider dialog — confirm style**: Step 2 (API-key entry) now
+  adopts the shared confirm chrome (`promptModalUi`): narrowed to
+  `max-w-sm`, divider-less, with a right-aligned ghost-`Cancel` +
+  primary-`Submit` footer replacing the former inline full-width submit
+  button; on mobile it renders as a centered card instead of fullscreen
+  (Step 1's provider list stays fullscreen on mobile). The standalone
+  `API key` label is dropped in favour of the input placeholder plus an
+  `aria-label`, and the "create a key" hint wraps onto its own line.
 - **Model-config page**: aligned action-button size/variant and section
   padding with `ManageClawsPage`; the credential-row revoke button now
-  matches the claw unbind button.
+  matches the claw unbind button. The desktop header gained trailing
+  padding so a long title no longer hugs the right edge, and the page's
+  region gaps (offline banner / retry / both sections) are unified to a
+  single `space-y-5` rhythm matching the body's top padding (replacing the
+  ad-hoc `mb-4`/`mb-6`).
 - **Primary-model change**: dropped the success toast (the model region
   updates immediately, so the result is self-evident); the error toast on
   failure is kept.
@@ -59,3 +70,9 @@ model configuration feature and tightens dialog chrome app-wide.
   `leading-normal` overrides on the admin search inputs.
 - **Modal close button**: widened the header close-icon negative-margin
   compensation to `-me-2.5`.
+- **i18n**: localized the bare English word "provider" to Chinese
+  (`模型服务商` / `模型服務商`) across the provider-select dialog title,
+  search and empty states in `zh-CN`/`zh-TW` (the other 11 locales already
+  translated it); renamed the credentials section heading from "API
+  credentials" to "API keys" across all 12 locales (each in its own key
+  term, matching the add-flow wording).

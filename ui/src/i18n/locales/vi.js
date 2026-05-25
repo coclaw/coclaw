@@ -506,7 +506,7 @@ export const viMessages = {
 			pickerEmpty: 'Không có mô hình nào khả dụng. Hãy thêm khóa API cho ít nhất một nhà cung cấp trước.',
 		},
 		providerAuth: {
-			title: 'Thông tin xác thực API',
+			title: 'Khóa API',
 			addButton: 'Thêm',
 			removeButton: 'Gỡ',
 			emptyState: 'Chưa có nhà cung cấp nào. Thêm khóa API để bắt đầu.',

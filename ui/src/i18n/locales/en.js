@@ -506,7 +506,7 @@ export const enMessages = {
 			pickerEmpty: 'No models available. Add an API key for at least one provider first.',
 		},
 		providerAuth: {
-			title: 'API credentials',
+			title: 'API keys',
 			addButton: 'Add',
 			removeButton: 'Remove',
 			emptyState: 'No provider configured yet. Add an API key to get started.',
