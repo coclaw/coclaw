@@ -32,6 +32,12 @@ model configuration feature and tightens dialog chrome app-wide.
   grows to fill the screen height (was capped at `60vh`, leaving dead
   space below) and the body scrollbar is hidden (reuses the main-list
   `.scrollbar-hide` pattern); desktop/non-fullscreen layout is unchanged.
+  List rows now use a `min-h-10` floor with `py-2` instead of a fixed
+  `h-11`: as flex children of the scroll container the fixed height was
+  shrinkable and silently collapsed once the list overflowed, whereas
+  `min-height` is a hard floor and also lets rows grow with the font on
+  zoom / large-text. The provider-id text gained `truncate` so a long id
+  ellipsizes instead of squeezing the provider name.
 - **Input baseline**: a global input theme now standardizes inputs to a
   16px font, 1.5 line-height and `py-2`, and keeps the font-size at 16px
   across all breakpoints by overriding Nuxt UI's built-in shrink to 14px
