@@ -37,7 +37,10 @@ model configuration feature and tightens dialog chrome app-wide.
   shrinkable and silently collapsed once the list overflowed, whereas
   `min-height` is a hard floor and also lets rows grow with the font on
   zoom / large-text. The provider-id text gained `truncate` so a long id
-  ellipsizes instead of squeezing the provider name.
+  ellipsizes instead of squeezing the provider name. The provider rows
+  use `justify-between` (name left / id right, both shrinkable) and all
+  rows tightened to `gap-2` and gained `cursor-pointer` (the global
+  pointer cursor only covers `UButton`, not these native `<button>`s).
 - **Input baseline**: a global input theme now standardizes inputs to a
   16px font, 1.5 line-height and `py-2`, and keeps the font-size at 16px
   across all breakpoints by overriding Nuxt UI's built-in shrink to 14px

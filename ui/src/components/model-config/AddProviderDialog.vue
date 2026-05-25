@@ -29,11 +29,11 @@
 								v-for="p in popularList"
 								:key="`pop-${p.id}`"
 								type="button"
-								class="flex min-h-10 items-center gap-3 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
+								class="flex min-h-10 cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
 								:data-testid="`add-provider-item-${p.id}`"
 								@click="onPickProvider(p.id)"
 							>
-								<span class="min-w-0 flex-1 truncate font-medium">{{ p.displayName }}</span>
+								<span class="min-w-0 truncate font-medium">{{ p.displayName }}</span>
 								<span class="min-w-0 truncate text-xs text-muted">{{ p.id }}</span>
 							</button>
 						</template>
@@ -46,11 +46,11 @@
 								v-for="p in otherList"
 								:key="`oth-${p.id}`"
 								type="button"
-								class="flex min-h-10 items-center gap-3 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
+								class="flex min-h-10 cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
 								:data-testid="`add-provider-item-${p.id}`"
 								@click="onPickProvider(p.id)"
 							>
-								<span class="min-w-0 flex-1 truncate font-medium">{{ p.displayName }}</span>
+								<span class="min-w-0 truncate font-medium">{{ p.displayName }}</span>
 								<span class="min-w-0 truncate text-xs text-muted">{{ p.id }}</span>
 							</button>
 						</template>

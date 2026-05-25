@@ -44,7 +44,7 @@
 							v-for="m in g.models"
 							:key="`${g.provider}/${m.id}`"
 							type="button"
-							class="flex min-h-10 items-center gap-3 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
+							class="flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
 							:class="{
 								'bg-accented/60': isCurrent(g.provider, m.id),
 								'opacity-60 pointer-events-none': busy && !isCurrent(g.provider, m.id),
