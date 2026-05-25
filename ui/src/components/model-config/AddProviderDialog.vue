@@ -69,8 +69,8 @@
 					</div>
 				</div>
 
-				<!-- Step 2: 输 API key -->
-				<div v-else class="flex flex-col gap-3">
+				<!-- Step 2: 输 API key（用 form 包裹密码框：消除浏览器“password 不在 form 内”告警；提交 + 原生回车都走 onSubmit）-->
+				<form v-else class="flex flex-col gap-3" @submit.prevent="onSubmit">
 					<!-- 输入框自带 placeholder，无需额外 label；aria-label 保留可达性。type=password 透传给原生 input -->
 					<UInput
 						v-model="apiKey"
@@ -81,7 +81,6 @@
 						:aria-label="$t('modelConfig.providerAuth.add.keyLabel')"
 						:placeholder="$t('modelConfig.providerAuth.add.keyPlaceholder')"
 						:disabled="submitting"
-						@keydown.enter="onSubmit"
 					/>
 
 					<!-- 错误：仅在 inlineErrorKey 非空时渲染 -->
@@ -105,7 +104,7 @@
 							{{ $t('modelConfig.providerAuth.add.dashboardLink', { provider: selectedProvider }) }}
 						</a>
 					</div>
-				</div>
+				</form>
 			</div>
 		</template>
 

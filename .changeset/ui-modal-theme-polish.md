@@ -28,7 +28,10 @@ model configuration feature and tightens dialog chrome app-wide.
   button; on mobile it renders as a centered card instead of fullscreen
   (Step 1's provider list stays fullscreen on mobile). The standalone
   `API key` label is dropped in favour of the input placeholder plus an
-  `aria-label`, and the "create a key" hint wraps onto its own line.
+  `aria-label`, and the "create a key" hint wraps onto its own line. The
+  key field is wrapped in a `<form>` (submit handled, Enter still submits)
+  to clear Chrome's "password field is not contained in a form" DOM
+  warning.
 - **Model-config page**: aligned action-button size/variant and section
   padding with `ManageClawsPage`; the credential-row revoke button now
   matches the claw unbind button. The desktop header gained trailing

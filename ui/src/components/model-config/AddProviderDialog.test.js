@@ -346,13 +346,12 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		await flushPromises();
 	});
 
-	test('Enter key on input triggers submit', async () => {
+	test('Enter / form submit triggers onSubmit', async () => {
 		const setApiKey = vi.fn().mockResolvedValue({ profileId: 'groq:default' });
 		const w = await goToStep2(makeWrapper({ setApiKey }));
-		const input = w.find('[data-testid="add-provider-key-input"]');
-		await input.setValue('gsk_abc');
-		// 触发 keydown.enter
-		await input.trigger('keydown.enter');
+		await w.find('[data-testid="add-provider-key-input"]').setValue('gsk_abc');
+		// 密码框现包在 <form> 内：回车触发原生表单提交 → @submit.prevent="onSubmit"
+		await w.find('form').trigger('submit');
 		await flushPromises();
 		expect(setApiKey).toHaveBeenCalledTimes(1);
 	});
