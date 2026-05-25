@@ -8,15 +8,18 @@
 	>
 		<template #body>
 			<div data-testid="primary-picker-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
-				<UInput
-					v-model="searchText"
-					data-testid="primary-picker-search"
-					icon="i-lucide-search"
-					:placeholder="$t('modelConfig.primary.pickerSearchPlaceholder')"
-					size="md"
-					class="w-full"
-					:disabled="busy"
-				/>
+				<!-- 搜索框两端各冒出 2px：外层块级 div 用 -mx-0.5 自动撑出 4px，内层 input w-full 填满（同列表 -mx-2 的做法） -->
+				<div class="-mx-0.5">
+					<UInput
+						v-model="searchText"
+						data-testid="primary-picker-search"
+						icon="i-lucide-search"
+						:placeholder="$t('modelConfig.primary.pickerSearchPlaceholder')"
+						size="md"
+						class="w-full"
+						:disabled="busy"
+					/>
+				</div>
 
 				<div data-testid="primary-picker-list" class="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hide md:max-h-96 md:flex-none">
 					<div
@@ -28,23 +31,23 @@
 					</div>
 
 					<template
-						v-for="(g, gi) in groups"
+						v-for="g in groups"
 						:key="g.provider"
 					>
-						<!-- 首个分组标题贴近搜索框（pt-1），其余分组之间留 pt-3 分隔；与 AddProviderDialog 一致 -->
+						<!-- 所有分组标题统一 pt-1：分组名本身已起分隔作用，不再按首组/其余区别加间距 -->
+						<!-- 直接显示原生 provider id（与 AddProviderDialog 一致，暂不用映射 displayName；排序仍按 displayName） -->
 						<p
-							class="px-2 pb-1 text-xs font-medium text-muted"
-							:class="gi === 0 ? 'pt-1' : 'pt-3'"
+							class="px-2 pt-1 pb-1 text-xs font-medium text-muted"
 							:data-testid="`primary-picker-group-${g.provider}`"
 						>
-							{{ g.displayName }}
+							{{ g.provider }}
 						</p>
 
 						<button
 							v-for="m in g.models"
 							:key="`${g.provider}/${m.id}`"
 							type="button"
-							class="flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
+							class="flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accented/80"
 							:class="{
 								'bg-accented/60': isCurrent(g.provider, m.id),
 								'opacity-60 pointer-events-none': busy && !isCurrent(g.provider, m.id),
@@ -53,20 +56,20 @@
 							:disabled="busy"
 							@click="onPickModel(g.provider, m.id)"
 						>
-							<UIcon
-								v-if="isCurrent(g.provider, m.id)"
-								name="i-lucide-check"
-								class="size-4 shrink-0 text-primary"
-								aria-hidden="true"
-							/>
-							<span v-else aria-hidden="true" class="size-4 shrink-0" />
 							<span class="min-w-0 flex-1 truncate">{{ m.id }}</span>
-							<!-- 保存中的 spinner：只看 pendingTarget 是否命中本行，与"是否当前 primary"无关——
-							     否则换到一个非当前模型时点击的那行永远不显示 loading -->
+							<!-- 尾部状态 icon：保存中显示 spinner，否则当前 primary 显示勾。
+							     勾移到尾部后头部文本纵向对齐；spinner 只看 pendingTarget 命中本行
+							     （与是否 current 无关），优先于勾，避免重选当前模型时两个 icon 叠一起 -->
 							<UIcon
 								v-if="pendingTarget === `${g.provider}/${m.id}`"
 								name="i-lucide-loader-2"
 								class="size-4 shrink-0 animate-spin text-muted"
+								aria-hidden="true"
+							/>
+							<UIcon
+								v-else-if="isCurrent(g.provider, m.id)"
+								name="i-lucide-check"
+								class="size-4 shrink-0 text-primary"
 								aria-hidden="true"
 							/>
 						</button>

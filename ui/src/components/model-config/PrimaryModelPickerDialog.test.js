@@ -102,14 +102,13 @@ describe('PrimaryModelPickerDialog — intersection of providers + catalog', () 
 		expect(other.find('[data-icon="i-lucide-check"]').exists()).toBe(false);
 	});
 
-	test('groups labeled by displayName from PROVIDER_META', () => {
+	test('groups labeled by raw provider id (no displayName mapping)', () => {
 		const w = makeWrapper();
-		// openai group header text should contain "OpenAI" (PROVIDER_META)
+		// 分组标题直接显示原生 provider id（不再用 PROVIDER_META 的 displayName）
 		const openaiGroup = w.find('[data-testid="primary-picker-group-openai"]');
 		expect(openaiGroup.exists()).toBe(true);
-		expect(openaiGroup.text()).toBe('OpenAI');
-		// groq group → "Groq"
-		expect(w.find('[data-testid="primary-picker-group-groq"]').text()).toBe('Groq');
+		expect(openaiGroup.text()).toBe('openai');
+		expect(w.find('[data-testid="primary-picker-group-groq"]').text()).toBe('groq');
 	});
 
 	test('empty providers list → empty hint', () => {

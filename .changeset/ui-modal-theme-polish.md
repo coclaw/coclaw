@@ -32,15 +32,23 @@ model configuration feature and tightens dialog chrome app-wide.
   grows to fill the screen height (was capped at `60vh`, leaving dead
   space below) and the body scrollbar is hidden (reuses the main-list
   `.scrollbar-hide` pattern); desktop/non-fullscreen layout is unchanged.
-  List rows now use a `min-h-10` floor with `py-2` instead of a fixed
-  `h-11`: as flex children of the scroll container the fixed height was
-  shrinkable and silently collapsed once the list overflowed, whereas
-  `min-height` is a hard floor and also lets rows grow with the font on
-  zoom / large-text. The provider-id text gained `truncate` so a long id
-  ellipsizes instead of squeezing the provider name. The provider rows
-  use `justify-between` (name left / id right, both shrinkable) and all
-  rows tightened to `gap-2` and gained `cursor-pointer` (the global
-  pointer cursor only covers `UButton`, not these native `<button>`s).
+  List rows use a `min-h-10` floor with `py-1` instead of a fixed `h-11`:
+  as flex children of the scroll container the fixed height was shrinkable
+  and silently collapsed once the list overflowed, whereas `min-height` is
+  a hard floor; the tighter `py-1` leaves more of the 40px floor for the
+  text to grow into on zoom / large-text. Rows show the raw OpenClaw
+  provider/model id directly and drop the mapped `displayName` (the
+  mapping is incomplete and largely duplicates the id, and using the name
+  would have to be mirrored across both dialogs — deferred to a later
+  name-only pass). The picker group headings and the add-provider Step 2
+  title / dashboard hint also use the raw id; search and sort still match
+  the mapped name internally for now. Rows are single-line `truncate`,
+  tightened to `gap-2`, and gained `cursor-pointer` (the global pointer
+  cursor only covers `UButton`, not these native `<button>`s). In the
+  picker the current-model check moved from the row head to the tail
+  (sharing the slot with the save spinner) so the head text aligns
+  vertically across rows; group headings use a uniform `pt-1`. Both search
+  boxes bulge 2px past each edge via a `-mx-0.5` wrapper.
 - **Input baseline**: a global input theme now standardizes inputs to a
   16px font, 1.5 line-height and `py-2`, and keeps the font-size at 16px
   across all breakpoints by overriding Nuxt UI's built-in shrink to 14px

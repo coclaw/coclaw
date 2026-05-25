@@ -131,9 +131,9 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 	test('clicking a provider transitions to Step 2 (configure)', async () => {
 		const w = makeWrapper();
 		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
-		// 标题切到 stepConfigTitle，带 Groq 品牌名
+		// 标题切到 stepConfigTitle，带原生 provider id（不再用映射名）
 		expect(w.find('.modal-header').text()).toContain('modelConfig.providerAuth.add.stepConfigTitle');
-		expect(w.find('.modal-header').text()).toContain('Groq');
+		expect(w.find('.modal-header').text()).toContain('groq');
 		// Step 2 元素出现
 		expect(w.find('[data-testid="add-provider-key-input"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);

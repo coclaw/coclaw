@@ -10,14 +10,17 @@
 			<div data-testid="add-provider-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
 				<!-- Step 1: 选 provider（全屏下 flex-1 填满，桌面端 md:flex-none 维持紧凑） -->
 				<div v-if="step === 'select'" class="flex min-h-0 flex-1 flex-col gap-3 md:flex-none">
-					<UInput
-						v-model="searchText"
-						data-testid="add-provider-search"
-						icon="i-lucide-search"
-						:placeholder="$t('modelConfig.providerAuth.add.searchPlaceholder')"
-						size="md"
-						class="w-full"
-					/>
+					<!-- 搜索框两端各冒出 2px：外层块级 div 用 -mx-0.5 自动撑出 4px，内层 input w-full 填满（同列表 -mx-2 的做法） -->
+					<div class="-mx-0.5">
+						<UInput
+							v-model="searchText"
+							data-testid="add-provider-search"
+							icon="i-lucide-search"
+							:placeholder="$t('modelConfig.providerAuth.add.searchPlaceholder')"
+							size="md"
+							class="w-full"
+						/>
+					</div>
 
 					<!-- 列表区：全屏下填满高度、桌面端 md:max-h-96 限高；内部滚动且隐藏滚动条（与主列表一致） -->
 					<div data-testid="add-provider-list" class="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hide md:max-h-96 md:flex-none">
@@ -29,29 +32,29 @@
 								v-for="p in popularList"
 								:key="`pop-${p.id}`"
 								type="button"
-								class="flex min-h-10 cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
+								class="flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accented/80"
 								:data-testid="`add-provider-item-${p.id}`"
 								@click="onPickProvider(p.id)"
 							>
-								<span class="min-w-0 truncate font-medium">{{ p.displayName }}</span>
-								<span class="min-w-0 truncate text-xs text-muted">{{ p.id }}</span>
+								<!-- 直接显示 OpenClaw 原生 provider id（映射的 displayName 不全且二者大致相同，暂不用映射） -->
+								<span class="min-w-0 flex-1 truncate">{{ p.id }}</span>
 							</button>
 						</template>
 
 						<template v-if="otherList.length">
-							<p class="px-2 pt-3 pb-1 text-xs font-medium text-muted">
+							<p class="px-2 pt-1 pb-1 text-xs font-medium text-muted">
 								{{ $t('modelConfig.providerAuth.add.groupOther') }}
 							</p>
 							<button
 								v-for="p in otherList"
 								:key="`oth-${p.id}`"
 								type="button"
-								class="flex min-h-10 cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accented/80"
+								class="flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accented/80"
 								:data-testid="`add-provider-item-${p.id}`"
 								@click="onPickProvider(p.id)"
 							>
-								<span class="min-w-0 truncate font-medium">{{ p.displayName }}</span>
-								<span class="min-w-0 truncate text-xs text-muted">{{ p.id }}</span>
+								<!-- 直接显示 OpenClaw 原生 provider id（映射的 displayName 不全且二者大致相同，暂不用映射） -->
+								<span class="min-w-0 flex-1 truncate">{{ p.id }}</span>
 							</button>
 						</template>
 
@@ -96,14 +99,14 @@
 
 					<!-- "去官网创建"链接：仅当 PROVIDER_META 含 dashboardUrl 时渲染 -->
 					<div v-if="dashboardUrl" class="text-sm text-muted">
-						<span class="mr-1">{{ $t('modelConfig.providerAuth.add.noKeyHint', { provider: providerDisplayName }) }}</span>
+						<span class="mr-1">{{ $t('modelConfig.providerAuth.add.noKeyHint', { provider: selectedProvider }) }}</span>
 						<a
 							data-testid="add-provider-dashboard-link"
 							class="text-primary underline cursor-pointer"
-							:aria-label="$t('modelConfig.providerAuth.add.dashboardLink', { provider: providerDisplayName })"
+							:aria-label="$t('modelConfig.providerAuth.add.dashboardLink', { provider: selectedProvider })"
 							@click="onOpenDashboard"
 						>
-							{{ $t('modelConfig.providerAuth.add.dashboardLink', { provider: providerDisplayName }) }}
+							{{ $t('modelConfig.providerAuth.add.dashboardLink', { provider: selectedProvider }) }}
 						</a>
 					</div>
 
@@ -205,18 +208,15 @@ export default {
 			return this.envStore?.screen?.ltMd === true;
 		},
 		/**
-		 * 标题文案：Step 1 是 "选择 provider"，Step 2 是 "配置 <displayName>"
+		 * 标题文案：Step 1 是 "选择 provider"，Step 2 是 "配置 <provider id>"（统一用原生 id，不用映射名）
 		 */
 		title() {
 			if (this.step === 'select') {
 				return this.$t('modelConfig.providerAuth.add.stepSelectTitle');
 			}
 			return this.$t('modelConfig.providerAuth.add.stepConfigTitle', {
-				provider: this.providerDisplayName,
+				provider: this.selectedProvider,
 			});
-		},
-		providerDisplayName() {
-			return getProviderMeta(this.selectedProvider).displayName;
 		},
 		dashboardUrl() {
 			return PROVIDER_META[this.selectedProvider]?.dashboardUrl ?? '';
