@@ -24,11 +24,14 @@
 
 		<UModal v-model:open="passwordModalOpen" :title="$t('settings.passwordTitle')" description=" " :ui="promptUi">
 			<template #body>
-				<div class="grid gap-3">
-					<UInput v-model="pwdForm.currentPassword" type="password" :placeholder="$t('settings.currentPassword')" />
-					<UInput v-model="pwdForm.newPassword" type="password" :placeholder="$t('settings.newPassword')" />
-					<UInput v-model="pwdForm.confirmPassword" type="password" :placeholder="$t('settings.confirmPassword')" />
-				</div>
+				<!-- 用 form 包裹密码框：消除浏览器“password 不在 form 内”告警；原生回车走 onSubmit -->
+				<form class="grid gap-3" @submit.prevent="onSubmitPasswordChange">
+					<UInput v-model="pwdForm.currentPassword" type="password" autocomplete="current-password" :placeholder="$t('settings.currentPassword')" />
+					<UInput v-model="pwdForm.newPassword" type="password" autocomplete="new-password" :placeholder="$t('settings.newPassword')" />
+					<UInput v-model="pwdForm.confirmPassword" type="password" autocomplete="new-password" :placeholder="$t('settings.confirmPassword')" />
+					<!-- 隐藏 submit：让多输入框场景下的原生回车也能触发提交（按钮在 footer 外，不在 form 内） -->
+					<button type="submit" class="hidden" aria-hidden="true" tabindex="-1"></button>
+				</form>
 			</template>
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
