@@ -1,6 +1,6 @@
 # model-config UI implementation
 
-Status: active
+Status: done
 Design: ui/docs/model-config.md
 Plugin contract: plugins/openclaw/docs/model-config-api.md
 
