@@ -247,3 +247,4 @@ Each worker who picks up a subtask MUST:
 - T3 done @ a7def6b
 - T4 done @ fc08cae
 - T5 done @ 5cc0dee
+- T6-followup done @ e870ddf

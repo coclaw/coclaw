@@ -640,15 +640,3 @@ X4 触及面比 X1 广，需要重新评估：
    - 优先级：中；属新发现，相邻于 [[feedback_async_orphan_operation_pattern]] 项目通病
    - 关联：`980c9a2` 加 in-flight guard 时未覆盖 unmount exit 路径
 
-## dashboard.store force-dedup 返回陈旧快照（model-config T5 E2E 中核实，2026-05-25）
-
-**发现日期**：2026-05-25
-**关联背景**：model-config T5 E2E 调试时核实到的预存问题（与 T5 无关，T5 用 `waitDashboardSettled` 规避，不修业务）。
-
-1. **两次写操作的 `loadDashboard(force)` 重叠时，后一次被去重命中尚在飞行的旧快照**
-   - 现状：`dashboard.store.js` 的飞行守卫 `if (force && inflight.force) return inflight.p`——当一次 force 刷新尚在飞行（受 `status` RPC 的 manifest-cache ~10s 卡顿拖长），紧随的第二次 force 刷新直接复用旧 promise，拿到的是旧那次发起时的快照
-   - 触发场景：model-config 子页"先加 key（primary 还空）→ 紧接着选主模型"两步写各自触发 `loadDashboard(force)`；第一步的刷新（primary=null）还在飞时第二步去重命中它，外层 ManageClaws 卡片短暂停留在"未配主模型"橙条，直到下一次非重叠刷新（路由重挂 / 手动刷新 / 前台恢复）才纠正
-   - 后果：仅外层卡片的短暂 stale 窗口，自愈，无数据丢失；与 `sessions.store` 那条 force 覆盖（本文件上方"sessions.list dedup"段 #3）同族
-   - 修法方向：给 force load 加序号 / 让 force 不复用更早 force 的 promise 而是排队重跑（store 已有 "force 不被合流吞掉" 的相邻逻辑，可扩展）；或治本去掉 `status` 的 manifest-cache 卡顿（见 [[reference_openclaw_manifest_cache_mismatch]]）
-   - 优先级：低；transient stale，门槛是"用户在 ~10s 内连做两次写"
-
