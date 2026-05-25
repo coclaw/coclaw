@@ -22,7 +22,7 @@
 			<UButton color="error" variant="soft" @click="clearConfirmOpen = true">{{ $t('settings.clear') }}</UButton>
 		</div>
 
-		<UModal v-model:open="passwordModalOpen" :title="$t('settings.passwordTitle')" description=" ">
+		<UModal v-model:open="passwordModalOpen" :title="$t('settings.passwordTitle')" description=" " :ui="promptUi">
 			<template #body>
 				<div class="grid gap-3">
 					<UInput v-model="pwdForm.currentPassword" type="password" :placeholder="$t('settings.currentPassword')" />
@@ -31,18 +31,23 @@
 				</div>
 			</template>
 			<template #footer>
-				<UButton variant="ghost" @click="passwordModalOpen = false">{{ $t('common.cancel') }}</UButton>
-				<UButton @click="onSubmitPasswordChange">{{ $t('settings.change') }}</UButton>
+				<div class="flex w-full justify-end gap-2">
+					<UButton variant="ghost" color="neutral" @click="passwordModalOpen = false">{{ $t('common.cancel') }}</UButton>
+					<UButton @click="onSubmitPasswordChange">{{ $t('settings.change') }}</UButton>
+				</div>
 			</template>
 		</UModal>
 
-		<UModal v-model:open="clearConfirmOpen" :title="$t('settings.dangerTitle')" :description="$t('settings.dangerDesc')">
+		<UModal v-model:open="clearConfirmOpen" :title="$t('settings.dangerTitle')" description=" " :ui="promptUi">
 			<template #body>
-				<UCheckbox v-model="clearAcknowledge" :label="$t('settings.ackDanger')" />
+				<p class="text-sm text-muted">{{ $t('settings.dangerDesc') }}</p>
+				<UCheckbox v-model="clearAcknowledge" :label="$t('settings.ackDanger')" class="mt-3" />
 			</template>
 			<template #footer>
-				<UButton variant="ghost" @click="clearConfirmOpen = false">{{ $t('common.cancel') }}</UButton>
-				<UButton color="error" :disabled="!clearAcknowledge" @click="onConfirmClearChats">{{ $t('common.confirm') }}</UButton>
+				<div class="flex w-full justify-end gap-2">
+					<UButton variant="ghost" color="neutral" @click="clearConfirmOpen = false">{{ $t('common.cancel') }}</UButton>
+					<UButton color="error" :disabled="!clearAcknowledge" @click="onConfirmClearChats">{{ $t('common.confirm') }}</UButton>
+				</div>
 			</template>
 		</UModal>
 	</div>
@@ -51,6 +56,7 @@
 <script>
 import { useAuthStore } from '../../stores/auth.store.js';
 import { useNotify } from '../../composables/use-notify.js';
+import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 
 export default {
 	name: 'UserSettingsPanel',
@@ -58,6 +64,7 @@ export default {
 		return {
 			authStore: useAuthStore(),
 			notify: useNotify(),
+			promptUi: promptModalUi,
 		};
 	},
 	data() {
