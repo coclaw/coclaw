@@ -33,12 +33,12 @@ model configuration feature and tightens dialog chrome app-wide.
   space below) and the body scrollbar is hidden (reuses the main-list
   `.scrollbar-hide` pattern); desktop/non-fullscreen layout is unchanged.
 - **Input baseline**: a global input theme now standardizes inputs to a
-  16px font, 1.5 line-height and `py-2`, and locks the font-size to 16px
-  across all breakpoints via `fixed: true` — disabling Nuxt UI's built-in
-  shrink to 14px at `md` and up. That width-based shrink leaks the iOS
-  focus-zoom trap on landscape iPhone / iPad (still iOS Safari, where a
-  sub-16px input font auto-zooms the page on focus). Removed the
-  now-redundant per-instance `leading-normal` overrides on the admin
-  search inputs.
+  16px font, 1.5 line-height and `py-2`, and keeps the font-size at 16px
+  across all breakpoints by overriding Nuxt UI's built-in shrink to 14px
+  at `md` and up (re-asserting `md:text-base` through compound variants).
+  That width-based shrink leaks the iOS focus-zoom trap on landscape
+  iPhone / iPad (still iOS Safari, where a sub-16px input font auto-zooms
+  the page on focus). Removed the now-redundant per-instance
+  `leading-normal` overrides on the admin search inputs.
 - **Modal close button**: widened the header close-icon negative-margin
   compensation to `-me-2.5`.
