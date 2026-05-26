@@ -11,6 +11,8 @@ export const koMessages = {
 		loadFailed: '불러오기 실패',
 		retry: '다시 시도',
 		moreActions: '추가 작업',
+		showPassword: '비밀번호 표시',
+		hidePassword: '비밀번호 숨기기',
 	},
 	notify: {
 		rtcUnrecoverable: '{clawName}와(과)의 연결이 끊겼습니다. {n}개의 작업에 영향이 있을 수 있습니다',
@@ -412,17 +414,6 @@ export const koMessages = {
 		copy: '복사',
 		copied: '복사됨',
 		codeLangText: '텍스트',
-	},
-	authPrototype: {
-		title: 'CoClaw 로컬 인증 프로토타입',
-		desc: '로컬 로그인, 로그아웃 및 세션 조회를 지원합니다.',
-		openDemo: 'Nuxt UI 데모 열기',
-		loginName: '로그인 이름',
-		password: '비밀번호',
-		login: '로그인',
-		logout: '로그아웃',
-		refreshSession: '세션 새로고침',
-		currentSession: '현재 세션',
 	},
 	files: {
 		titleSuffix: '파일',

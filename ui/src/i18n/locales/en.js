@@ -11,6 +11,8 @@ export const enMessages = {
 		loadFailed: 'Failed to load',
 		retry: 'Retry',
 		moreActions: 'More actions',
+		showPassword: 'Show password',
+		hidePassword: 'Hide password',
 	},
 	notify: {
 		rtcUnrecoverable: 'Connection to {clawName} lost. {n} task(s) may be affected.',
@@ -412,17 +414,6 @@ export const enMessages = {
 		copy: 'Copy',
 		copied: 'Copied',
 		codeLangText: 'Text',
-	},
-	authPrototype: {
-		title: 'CoClaw Local Auth Prototype',
-		desc: 'Supports local login, logout, and session query.',
-		openDemo: 'Open Nuxt UI Demo',
-		loginName: 'Login Name',
-		password: 'Password',
-		login: 'Login',
-		logout: 'Logout',
-		refreshSession: 'Refresh Session',
-		currentSession: 'Current Session',
 	},
 	files: {
 		titleSuffix: 'Files',

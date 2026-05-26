@@ -28,9 +28,9 @@
 				<form class="grid gap-3" @submit.prevent="onSubmitPasswordChange">
 					<!-- 隐藏 username 字段：消除“改密表单应含 username 字段”告警，并让密码管理器把新密码关联到当前账号 -->
 					<input type="text" :value="loginName" autocomplete="username" class="hidden" aria-hidden="true" tabindex="-1" readonly />
-					<UInput v-model="pwdForm.currentPassword" data-testid="pwd-current" type="password" autocomplete="current-password" :placeholder="$t('settings.currentPassword')" />
-					<UInput v-model="pwdForm.newPassword" data-testid="pwd-new" type="password" autocomplete="new-password" :placeholder="$t('settings.newPassword')" />
-					<UInput v-model="pwdForm.confirmPassword" data-testid="pwd-confirm" type="password" autocomplete="new-password" :placeholder="$t('settings.confirmPassword')" />
+					<PasswordInput v-model="pwdForm.currentPassword" data-testid="pwd-current" autocomplete="current-password" :placeholder="$t('settings.currentPassword')" />
+					<PasswordInput v-model="pwdForm.newPassword" data-testid="pwd-new" autocomplete="new-password" :placeholder="$t('settings.newPassword')" />
+					<PasswordInput v-model="pwdForm.confirmPassword" data-testid="pwd-confirm" autocomplete="new-password" :placeholder="$t('settings.confirmPassword')" />
 					<!-- 隐藏 submit：让多输入框场景下的原生回车也能触发提交（按钮在 footer 外，不在 form 内） -->
 					<button type="submit" class="hidden" aria-hidden="true" tabindex="-1"></button>
 				</form>
@@ -63,9 +63,13 @@ import { useAuthStore } from '../../stores/auth.store.js';
 import { useNotify } from '../../composables/use-notify.js';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 import { getUserLoginName } from '../../utils/user-profile.js';
+import PasswordInput from '../PasswordInput.vue';
 
 export default {
 	name: 'UserSettingsPanel',
+	components: {
+		PasswordInput,
+	},
 	setup() {
 		return {
 			authStore: useAuthStore(),

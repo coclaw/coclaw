@@ -652,3 +652,23 @@ X4 触及面比 X1 广，需要重新评估：
 - 修复方向：`refreshAfterWrite` 失败时给一个轻提示（如"列表可能未刷新，稍后重进"）或失败自动重试一次；二选一需带 trade-off 评估。
 - 用户已明确**本期不处理**，仅登记。
 
+
+## NuxtUiDemoPage 的 "Back to Auth Prototype" 按钮文案已失效
+
+**发现日期**：2026-05-26
+**来源**：密码框显隐功能 deep-review（附带发现的预存问题）
+
+- 现状：`NuxtUiDemoPage.vue:24` 的按钮用 `demo.backToAuthPrototype`（"返回认证原型"）文案，但它 `to="/"`，而 `/` 现在重定向到 `/home`（`router/index.js`）。本次又删掉了从未注册路由的死文件 `AuthPrototypePage.vue`，"认证原型"这个去处已彻底不存在，文案语义彻底落空。
+- 后果：仅内部 Nuxt UI 演示页的一个按钮文案误导（点了到首页而非"认证原型"）。不影响正式用户路径、不影响功能。
+- 性质：预存问题（该按钮一直指向 `/`、从未真正去到原型页），非本次引入；本次删死文件让它更明显。
+- 修复方向：把 key/文案改成 `demo.backHome` 之类（需同步 12 语言），或干脆移除该按钮。低优先。
+
+## 登录页密码框缺 autocomplete，密码管理器自动填充不顺
+
+**发现日期**：2026-05-26
+**来源**：密码框显隐功能 deep-review（附带发现的预存问题）
+
+- 现状：`LoginPage.vue` 的密码框没有设 `autocomplete`，内部 UInput 回退到默认 `"off"`；注册页/改密弹窗都显式设了（`new-password`/`current-password`）。
+- 后果：登录页密码管理器自动填充体验不如其他表单顺畅。纯体验问题，不影响功能。
+- 性质：预存问题（改造前的裸 `<UInput type="password">` 同样没设 autocomplete，本次重构未引入也未修复）。
+- 修复方向：登录页密码框补 `autocomplete="current-password"`。低优先。

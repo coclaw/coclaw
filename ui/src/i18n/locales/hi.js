@@ -11,6 +11,8 @@ export const hiMessages = {
 		loadFailed: 'लोड करने में विफल',
 		retry: 'पुनः प्रयास करें',
 		moreActions: 'अधिक क्रियाएँ',
+		showPassword: 'पासवर्ड दिखाएं',
+		hidePassword: 'पासवर्ड छिपाएं',
 	},
 	notify: {
 		rtcUnrecoverable: '{clawName} से कनेक्शन टूट गया। {n} कार्य प्रभावित हो सकते हैं।',
@@ -412,17 +414,6 @@ export const hiMessages = {
 		copy: 'कॉपी करें',
 		copied: 'कॉपी हो गया',
 		codeLangText: 'टेक्स्ट',
-	},
-	authPrototype: {
-		title: 'CoClaw लोकल Auth प्रोटोटाइप',
-		desc: 'लोकल लॉगिन, लॉगआउट और session क्वेरी को सपोर्ट करता है।',
-		openDemo: 'Nuxt UI डेमो खोलें',
-		loginName: 'लॉगिन नाम',
-		password: 'पासवर्ड',
-		login: 'लॉगिन',
-		logout: 'लॉगआउट',
-		refreshSession: 'Session रिफ्रेश करें',
-		currentSession: 'वर्तमान Session',
 	},
 	files: {
 		titleSuffix: 'फ़ाइलें',

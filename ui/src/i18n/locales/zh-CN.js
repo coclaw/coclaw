@@ -11,6 +11,8 @@ export const zhCNMessages = {
 		loadFailed: '加载失败',
 		retry: '重试',
 		moreActions: '更多操作',
+		showPassword: '显示密码',
+		hidePassword: '隐藏密码',
 	},
 	notify: {
 		rtcUnrecoverable: '与「{clawName}」的连接已中断，{n} 个任务可能受影响',
@@ -412,17 +414,6 @@ export const zhCNMessages = {
 		copy: '复制',
 		copied: '已复制',
 		codeLangText: '文本',
-	},
-	authPrototype: {
-		title: 'CoClaw 本地认证原型',
-		desc: '支持本地账号登录、登出、会话查询。',
-		openDemo: '打开 Nuxt UI 示例',
-		loginName: '登录名',
-		password: '密码',
-		login: '登录',
-		logout: '登出',
-		refreshSession: '刷新会话',
-		currentSession: '当前会话',
 	},
 	files: {
 		titleSuffix: '文件',

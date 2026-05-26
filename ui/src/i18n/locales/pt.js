@@ -11,6 +11,8 @@ export const ptMessages = {
 		loadFailed: 'Falha ao carregar',
 		retry: 'Tentar novamente',
 		moreActions: 'Mais ações',
+		showPassword: 'Mostrar senha',
+		hidePassword: 'Ocultar senha',
 	},
 	notify: {
 		rtcUnrecoverable: 'Conexão com {clawName} perdida. {n} tarefa(s) podem ser afetadas.',
@@ -412,17 +414,6 @@ export const ptMessages = {
 		copy: 'Copiar',
 		copied: 'Copiado',
 		codeLangText: 'Texto',
-	},
-	authPrototype: {
-		title: 'Protótipo de Autenticação Local CoClaw',
-		desc: 'Suporta login local, logout e consulta de sessão.',
-		openDemo: 'Abrir Demo Nuxt UI',
-		loginName: 'Nome de Login',
-		password: 'Senha',
-		login: 'Entrar',
-		logout: 'Sair',
-		refreshSession: 'Atualizar Sessão',
-		currentSession: 'Sessão Atual',
 	},
 	files: {
 		titleSuffix: 'Arquivos',

@@ -11,6 +11,8 @@ export const frMessages = {
 		loadFailed: 'Échec du chargement',
 		retry: 'Réessayer',
 		moreActions: 'Plus d\'actions',
+		showPassword: 'Afficher le mot de passe',
+		hidePassword: 'Masquer le mot de passe',
 	},
 	notify: {
 		rtcUnrecoverable: 'Connexion à {clawName} perdue. {n} tâche(s) peuvent être affectées.',
@@ -412,17 +414,6 @@ export const frMessages = {
 		copy: 'Copier',
 		copied: 'Copié',
 		codeLangText: 'Texte',
-	},
-	authPrototype: {
-		title: 'Prototype d\'authentification locale CoClaw',
-		desc: 'Prend en charge la connexion locale, la déconnexion et la consultation de session.',
-		openDemo: 'Ouvrir la démo Nuxt UI',
-		loginName: 'Nom de connexion',
-		password: 'Mot de passe',
-		login: 'Connexion',
-		logout: 'Déconnexion',
-		refreshSession: 'Actualiser la session',
-		currentSession: 'Session actuelle',
 	},
 	files: {
 		titleSuffix: 'Fichiers',

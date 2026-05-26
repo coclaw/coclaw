@@ -11,6 +11,8 @@ export const ruMessages = {
 		loadFailed: 'Ошибка загрузки',
 		retry: 'Повторить',
 		moreActions: 'Дополнительные действия',
+		showPassword: 'Показать пароль',
+		hidePassword: 'Скрыть пароль',
 	},
 	notify: {
 		rtcUnrecoverable: 'Соединение с {clawName} прервано. Затронутых задач: {n}.',
@@ -412,17 +414,6 @@ export const ruMessages = {
 		copy: 'Копировать',
 		copied: 'Скопировано',
 		codeLangText: 'Текст',
-	},
-	authPrototype: {
-		title: 'Прототип локальной авторизации CoClaw',
-		desc: 'Поддерживает локальный вход, выход и запрос сессии.',
-		openDemo: 'Открыть демо Nuxt UI',
-		loginName: 'Имя для входа',
-		password: 'Пароль',
-		login: 'Войти',
-		logout: 'Выйти',
-		refreshSession: 'Обновить сессию',
-		currentSession: 'Текущая сессия',
 	},
 	files: {
 		titleSuffix: 'Файлы',

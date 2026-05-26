@@ -15,10 +15,9 @@
 				</UFormField>
 
 				<UFormField :label="$t('login.password')" name="password">
-					<UInput
+					<PasswordInput
 						v-model="form.password"
 						data-testid="login-password"
-						type="password"
 						:placeholder="$t('login.passwordPlaceholder')"
 						size="xl"
 						class="w-full"
@@ -52,9 +51,13 @@
 <script>
 import { useAuthStore } from '../stores/auth.store.js';
 import { useEnvStore } from '../stores/env.store.js';
+import PasswordInput from '../components/PasswordInput.vue';
 
 export default {
 	name: 'LoginPage',
+	components: {
+		PasswordInput,
+	},
 	setup() {
 		return {
 			authStore: useAuthStore(),

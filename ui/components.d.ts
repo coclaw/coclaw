@@ -30,6 +30,7 @@ declare module 'vue' {
     MarkdownBody: typeof import('./src/components/MarkdownBody.vue')['default']
     MobileBottomTabs: typeof import('./src/components/MobileBottomTabs.vue')['default']
     MobilePageHeader: typeof import('./src/components/MobilePageHeader.vue')['default']
+    PasswordInput: typeof import('./src/components/PasswordInput.vue')['default']
     PrimaryModelPickerDialog: typeof import('./src/components/model-config/PrimaryModelPickerDialog.vue')['default']
     ProgressRing: typeof import('./src/components/ProgressRing.vue')['default']
     ProviderAuthRow: typeof import('./src/components/model-config/ProviderAuthRow.vue')['default']

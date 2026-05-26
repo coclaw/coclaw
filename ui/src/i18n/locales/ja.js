@@ -11,6 +11,8 @@ export const jaMessages = {
 		loadFailed: '読み込みに失敗しました',
 		retry: '再試行',
 		moreActions: 'その他の操作',
+		showPassword: 'パスワードを表示',
+		hidePassword: 'パスワードを非表示',
 	},
 	notify: {
 		rtcUnrecoverable: '「{clawName}」との接続が切断されました。{n} 件のタスクに影響が出る可能性があります',
@@ -412,17 +414,6 @@ export const jaMessages = {
 		copy: 'コピー',
 		copied: 'コピーしました',
 		codeLangText: 'テキスト',
-	},
-	authPrototype: {
-		title: 'CoClaw ローカル認証プロトタイプ',
-		desc: 'ローカルのログイン、ログアウト、セッション照会に対応しています。',
-		openDemo: 'Nuxt UI デモを開く',
-		loginName: 'ログイン名',
-		password: 'パスワード',
-		login: 'ログイン',
-		logout: 'ログアウト',
-		refreshSession: 'セッションを更新',
-		currentSession: '現在のセッション',
 	},
 	files: {
 		titleSuffix: 'ファイル',

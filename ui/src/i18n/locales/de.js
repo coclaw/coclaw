@@ -11,6 +11,8 @@ export const deMessages = {
 		loadFailed: 'Laden fehlgeschlagen',
 		retry: 'Wiederholen',
 		moreActions: 'Weitere Aktionen',
+		showPassword: 'Passwort anzeigen',
+		hidePassword: 'Passwort verbergen',
 	},
 	notify: {
 		rtcUnrecoverable: 'Verbindung zu {clawName} verloren. {n} Aufgabe(n) könnten betroffen sein.',
@@ -412,17 +414,6 @@ export const deMessages = {
 		copy: 'Kopieren',
 		copied: 'Kopiert',
 		codeLangText: 'Text',
-	},
-	authPrototype: {
-		title: 'CoClaw Local Auth Prototype',
-		desc: 'Unterstützt lokale Anmeldung, Abmeldung und Sitzungsabfrage.',
-		openDemo: 'Nuxt UI Demo öffnen',
-		loginName: 'Benutzername',
-		password: 'Passwort',
-		login: 'Anmelden',
-		logout: 'Abmelden',
-		refreshSession: 'Sitzung aktualisieren',
-		currentSession: 'Aktuelle Sitzung',
 	},
 	files: {
 		titleSuffix: 'Dateien',

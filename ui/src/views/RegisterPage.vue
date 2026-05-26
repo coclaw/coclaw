@@ -17,10 +17,9 @@
 				</UFormField>
 
 				<UFormField :label="$t('register.password')" name="password">
-					<UInput
+					<PasswordInput
 						v-model="form.password"
 						data-testid="register-password"
-						type="password"
 						autocomplete="new-password"
 						:placeholder="$t('register.passwordPlaceholder')"
 						size="xl"
@@ -29,10 +28,9 @@
 				</UFormField>
 
 				<UFormField :label="$t('register.confirmPassword')" name="confirmPassword">
-					<UInput
+					<PasswordInput
 						v-model="form.confirmPassword"
 						data-testid="register-confirm-password"
-						type="password"
 						autocomplete="new-password"
 						:placeholder="$t('register.confirmPasswordPlaceholder')"
 						size="xl"
@@ -71,9 +69,13 @@
 import { useAuthStore } from '../stores/auth.store.js';
 import { useEnvStore } from '../stores/env.store.js';
 import { validateLoginName } from '../validators/login-name.js';
+import PasswordInput from '../components/PasswordInput.vue';
 
 export default {
 	name: 'RegisterPage',
+	components: {
+		PasswordInput,
+	},
 	setup() {
 		return {
 			authStore: useAuthStore(),

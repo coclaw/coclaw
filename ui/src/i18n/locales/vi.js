@@ -11,6 +11,8 @@ export const viMessages = {
 		loadFailed: 'Tải thất bại',
 		retry: 'Thử lại',
 		moreActions: 'Tác vụ khác',
+		showPassword: 'Hiện mật khẩu',
+		hidePassword: 'Ẩn mật khẩu',
 	},
 	notify: {
 		rtcUnrecoverable: 'Mất kết nối với {clawName}. {n} tác vụ có thể bị ảnh hưởng.',
@@ -412,17 +414,6 @@ export const viMessages = {
 		copy: 'Sao chép',
 		copied: 'Đã sao chép',
 		codeLangText: 'Văn bản',
-	},
-	authPrototype: {
-		title: 'Nguyên mẫu xác thực cục bộ CoClaw',
-		desc: 'Hỗ trợ đăng nhập, đăng xuất và truy vấn session cục bộ.',
-		openDemo: 'Mở Demo Nuxt UI',
-		loginName: 'Tên đăng nhập',
-		password: 'Mật khẩu',
-		login: 'Đăng nhập',
-		logout: 'Đăng xuất',
-		refreshSession: 'Làm mới Session',
-		currentSession: 'Session hiện tại',
 	},
 	files: {
 		titleSuffix: 'Tệp',

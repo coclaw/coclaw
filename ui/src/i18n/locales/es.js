@@ -11,6 +11,8 @@ export const esMessages = {
 		loadFailed: 'Error al cargar',
 		retry: 'Reintentar',
 		moreActions: 'Más acciones',
+		showPassword: 'Mostrar contraseña',
+		hidePassword: 'Ocultar contraseña',
 	},
 	notify: {
 		rtcUnrecoverable: 'Se perdió la conexión con {clawName}. {n} tarea(s) pueden verse afectadas.',
@@ -412,17 +414,6 @@ export const esMessages = {
 		copy: 'Copiar',
 		copied: 'Copiado',
 		codeLangText: 'Texto',
-	},
-	authPrototype: {
-		title: 'Prototipo de autenticación local de CoClaw',
-		desc: 'Admite inicio de sesión local, cierre de sesión y consulta de sesión.',
-		openDemo: 'Abrir demo de Nuxt UI',
-		loginName: 'Nombre de usuario',
-		password: 'Contraseña',
-		login: 'Iniciar sesión',
-		logout: 'Cerrar sesión',
-		refreshSession: 'Actualizar sesión',
-		currentSession: 'Sesión actual',
 	},
 	files: {
 		titleSuffix: 'Archivos',
