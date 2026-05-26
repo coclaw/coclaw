@@ -65,7 +65,33 @@ export default defineConfig({
 				modal: MODAL_THEME,
 				// 弹出菜单脱离背景：quasar 多层投影 + 暗色提亮描边，叠在内置 content 上（shadow-lg 被去重换掉）
 				popover: { slots: { content: MENU_ELEVATION } },
-				select: { slots: { content: MENU_ELEVATION } },
+				// select 同 input：默认 outline 变体给 trigger base 加 text-highlighted，选中值文字跟着变纯白；
+				// 统一跳柔到 text-default（落 size 变体 base + ! 锁定，理由同下方 input 注释）。
+				select: {
+					slots: { content: MENU_ELEVATION },
+					variants: {
+						size: {
+							xs: { base: 'text-default!' },
+							sm: { base: 'text-default!' },
+							md: { base: 'text-default!' },
+							lg: { base: 'text-default!' },
+							xl: { base: 'text-default!' },
+						},
+					},
+				},
+				// textarea（如 ChatPage 底部输入框）：主题由 input 工厂派生，但 appConfig.ui.input 覆盖只作用于
+				// <UInput> 实例、不传导到 <UTextarea>，故须单独再写一份；同样落 size 变体 base + ! 跳柔到 text-default。
+				textarea: {
+					variants: {
+						size: {
+							xs: { base: 'text-default!' },
+							sm: { base: 'text-default!' },
+							md: { base: 'text-default!' },
+							lg: { base: 'text-default!' },
+							xl: { base: 'text-default!' },
+						},
+					},
+				},
 				// 输入框全局基线（落在 size 变体的 base 上——覆盖 slots.base 会被变体类去重吃掉，tv 实测）：
 				//   text-base   字体锁 1rem，防 iOS 聚焦自动缩放（字体 <16px 时 Safari 会放大页面）
 				//   leading-normal  内置行高过紧（text-sm/4 · text-base/5）会切高字形头尾，抬到 1.5
@@ -76,13 +102,17 @@ export default defineConfig({
 				// 用 compoundVariants 追加同尺寸的 md:text-base 盖回去——tv 合并 compoundVariants 是
 				// append，我们这条排在内置 md:text-sm 之后，靠 tailwind-merge 同断点后者胜出。
 				input: {
+					// 文本色跳柔：内置默认 variant=outline 会给 base 加 text-highlighted(纯白)，与全局"默认文字
+					// 回落 text-default"基调统一改为 text-default。落点同字号——必须在 size 变体 base 上（覆盖
+					// 顶层 slots.base 会被丢弃，tv 实测）。用 ! 锁定：tailwind-merge 不认 Nuxt UI 语义色为同组，
+					// text-default 不会去重掉 outline 的 text-highlighted，两者并存只能 important 决胜。
 					variants: {
 						size: {
-							xs: { base: 'text-base leading-normal py-2' },
-							sm: { base: 'text-base leading-normal py-2' },
-							md: { base: 'text-base leading-normal py-2' },
-							lg: { base: 'text-base leading-normal py-2' },
-							xl: { base: 'text-base leading-normal py-2' },
+							xs: { base: 'text-base leading-normal py-2 text-default!' },
+							sm: { base: 'text-base leading-normal py-2 text-default!' },
+							md: { base: 'text-base leading-normal py-2 text-default!' },
+							lg: { base: 'text-base leading-normal py-2 text-default!' },
+							xl: { base: 'text-base leading-normal py-2 text-default!' },
 						},
 					},
 					compoundVariants: [

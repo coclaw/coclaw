@@ -32,6 +32,13 @@ describe('MODAL_THEME — 全局 modal 主题覆盖形态', () => {
 		expect(slots.footer).toContain('items-center');
 	});
 
+	test('title：跳柔为 text-default 且带 important（! 锁定，压住内置并存的 text-highlighted）', () => {
+		// tailwind-merge 不认 Nuxt UI 语义色同组，append 的 text-default 与内置 text-highlighted 会并存，
+		// 必须靠 important 决胜——漏掉 ! 则 CSS 顺序决定、标题可能回弹纯白
+		expect(slots.title).toContain('text-default');
+		expect(slots.title).toContain('!');
+	});
+
 	test('close：行内静态、用 cc-icon-btn-lg', () => {
 		expect(slots.close).toContain('static');
 		expect(slots.close).toContain('cc-icon-btn-lg');

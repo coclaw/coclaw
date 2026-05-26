@@ -1,5 +1,5 @@
 <template>
-	<div class="bg-default text-highlighted" :class="rootClasses">
+	<div class="bg-default" :class="rootClasses">
 		<!-- 下拉刷新指示器 -->
 		<div
 			v-show="pulling"

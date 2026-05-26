@@ -24,6 +24,10 @@ import { MODAL_ELEVATION } from './popup-elevation.js';
 export const MODAL_THEME = {
 	slots: {
 		header: 'flex items-center justify-between gap-1.5 px-4 py-1 sm:px-5 min-h-13',
+		// 标题跳柔：内置默认是 text-highlighted(纯白)，与全局"默认文字回落 text-default"基调统一改为 text-default。
+		// 用 important——tailwind-merge 不认 Nuxt UI 语义色为同组，append 的 text-default 不会去重掉内置
+		// text-highlighted，两者并存只能靠 CSS 顺序决胜(不可靠)，故用 ! 锁定胜出。
+		title: 'text-default!',
 		wrapper: 'flex-1 min-w-0',
 		close: 'static -me-2.5 cc-icon-btn-lg',
 		body: 'flex-1 px-4 sm:px-5 pt-4 sm:pt-5 pb-5 sm:pb-5',
