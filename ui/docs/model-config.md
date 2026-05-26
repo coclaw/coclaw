@@ -123,6 +123,8 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 **为什么 UI 能判"失效"（启发式判断，但有据可依）**：这不是前端自行臆测——判定标准与**插件 `coclaw.model.set` 接受一个主模型时的校验同源**。插件在写入 primary 时就会拒绝"provider 无可用凭据"或"model 不在全量 catalog"的值（见 `plugins/openclaw/docs/model-config-api.md`）。因此凡是已落库的 primary，写入时一定满足这两条；UI 只是在子页加载 / 选择器关闭后把同一套校验再跑一遍，判断它"现在是否仍成立"。两种真实失效场景及可靠性：
 
+> 📌 **现状是"重复实现"而非真·同源（计划收敛）**：当前前端 `computePrimaryEffective` 是对插件那套校验的**另一份复刻**，两边都漏了上游 `normalizeProviderId` 别名折叠 → 别名形 provider 误判失效（deep-review finding #4）。计划把判定下沉插件、`model.list` 直接返回 `usable` 布尔，使两端**真·单一源头**、别名盲点单点根治。见 § 7.4 + 插件 § 3.8。
+
 - **provider 凭据被撤**（最常见，如撤销了 primary 所在 provider 的 key）：凭据由 CoChat 侧自管，撤没撤完全可知，判定**可靠**。
 - **model 从 catalog 消失**（上游下架 / 改名）：以 `models.list view:"all"` 全量目录比对——刻意用全量而非登录态过滤版，避免把合法 model 误判失效。
 
@@ -302,6 +304,8 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 ## 七、数据流
 
+> ⚠️ 下方 § 7.1 图与 § 7.2 描述的是**当前实现**（仪表盘拉全量 catalog 自算有效性）。该实现有分层债（finding #5）+ 别名漂移（finding #4），根治方案见 § 7.4——届时仪表盘改读插件返回的 `usable` 布尔、catalog 退回默认 view。
+
 ### 7.1 数据来源
 
 ```
@@ -337,7 +341,9 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 - `coclaw.providerAuth.list`：派生 `hasAnyProviderAuth` + `providers: string[]`（用于失效校验）
 - `coclaw.model.list`：派生 `primaryModel` 字符串
-- 用现有 `models.list view:"all"` 派生 catalog（已有，无需重拉）→ 计算 `primaryEffective`
+- 用 `models.list view:"all"` 派生 catalog → 计算 `primaryEffective`
+
+> ⚠️ **事实纠正 + 分层债（2026-05-26 deep-review finding #5）**：上一条括注曾写"（已有，无需重拉）"，**不实**——git 史（`e592a36`）证明仪表盘原来拉的是**默认 view**（轻，仅含已登录 provider，给 agent 卡片模型标签用），是 model-config 脚手架那次把它**升级成 `view:"all"`**。这等于把最重的全量目录塞进了仪表盘层，违背本文档 § 一"低频写、按需读"分层原则（重数据只该在子页按需拉、退出销毁）。根治方案见 § 7.4。
 
 **失败处理沿用现有 allSettled 模式**：单条 RPC 失败不影响其它字段；失败时 `hasAnyProviderAuth = false` / `primaryModel = null` / `primaryEffective = false` 默认值。外层在这种"未知态"下**不显示橙条**——避免数据拿不到时误报 warning。
 
@@ -348,6 +354,25 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - 进入页面时拉：`providerAuth.list` + `model.list` + `models.list view:"all"`
 - 写完任一字段 → 局部更新 state + 触发 `dashboard.store` 重拉 → notify
 - 退出页面销毁——不长期占用 store
+
+### 7.4 计划（未实施）：主模型有效性判定下沉插件侧（根治 finding #5 + #4）
+
+> 状态：**设计已定，未实施**（2026-05-26）。源自发版前 deep-review。上游契约 spec 见 `plugins/openclaw/docs/model-config-api.md` § 3.8。属设计完善项（版本已发布，作为后续完善跟进，非发版前热修）。
+
+**问题**：仪表盘外层只需要一个布尔（"主模型还灵不灵"，§ 六 橙条用），却为了**在前端自己算**它而把全量 catalog（`models.list view:"all"`）拉进每台 claw 的仪表盘刷新（§ 7.2）——违背分层。且前端 `computePrimaryEffective` 是对插件 `coclaw.model.set` 写入校验的**重复实现**，两边都漏了上游别名折叠 → finding #4 别名误判（重复实现必然漂移）。
+
+**根治**：
+
+1. **插件**：`coclaw.model.list` 出参每个 primary 加 `usable: boolean | null`（true / false / 判不了），判定**复用插件已有的写入校验逻辑**（单一事实源），catalog 查询前归一化 provider（顺带修 #4 插件侧盲点）。详见插件 § 3.8。
+2. **仪表盘**（`dashboard.store.js`）：
+   - `models.list` 从 `{ view:'all' }` **退回默认 `{}`**——仪表盘对 catalog 的**另一处**用途是 `findCurrentModel(status.model, catalog)` 给 agent 卡片贴模型标签（§ 7.1）；它查的是**正在跑的**模型，其 provider 必已登录 → 默认 view 必含。退回还顺带消除全量目录里跨 provider 同名 id 撞车（deep-review MINOR）。这次调用**不能整个删**（标签要目录里的展示元数据），只是把参数从 `view:"all"` 退回默认。
+   - 删 `computePrimaryEffective`；`primaryEffective` 直接读 `coclaw.model.list` 的 `default.usable`。
+   - "未知态不显示橙条"语义改由 `usable === null`（或 `model.list` 失败）承载，**不再依赖本地 catalog 是否拿到**——现有 `modelsOk` 闸门对 model-config 字段的耦合可简化（`findCurrentModel` 仍各自用默认 view catalog）。
+3. **模型设置子页**（`ModelConfigPage`）：本就合法持全量 catalog（按需拉、退出销毁，**不违分层**），可继续自算 `computePrimaryEffective`，或改信插件 `usable`（更彻底的单一源头，顺带治好子页 § 4 的 #4 别名展示）——实施时定。
+
+**收益**：经 DC 搬给 UI 的从整本目录缩成一个布尔（链路负载真减）；前端少一套客户端算法 + `modelsOk` 耦合；#4 别名误判在插件侧单点根治；§ 4「UI 失效判定与插件校验同源」从"重复实现貌似同源"变成"真·同源"。
+
+**前置**：落地需先定插件 § 3.8 的"判不了"（catalog 不可用）契约；按跨模块规范**先改两份协议文档再改实现**。
 
 ---
 
