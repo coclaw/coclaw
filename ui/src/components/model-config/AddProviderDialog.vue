@@ -69,17 +69,20 @@
 					</div>
 				</div>
 
-				<!-- Step 2: 输 API key（用 form 包裹密码框：消除浏览器“password 不在 form 内”告警；提交 + 原生回车都走 onSubmit）-->
+				<!-- Step 2: 输 API key（form 仅用于支持原生回车提交；提交按钮与回车都走 onSubmit）-->
 				<form v-else class="flex flex-col gap-3" @submit.prevent="onSubmit">
-					<!-- API key 是秘钥而非登录凭据：不加 username 字段、保持 autocomplete=off，刻意把密码管家挡在外面（主流做法）。
-					     代价是 Chrome 控制台留一条“表单应含 username 字段”的可达性提示——对秘钥框无害，接受。 -->
-					<!-- 输入框自带 placeholder，无需额外 label；aria-label 保留可达性。type=password 透传给原生 input -->
+					<!-- API key 是秘钥而非登录凭据：用 type=text + CSS 打码（cc-secret-mask）而非 type=password。
+					     若用 type=password，浏览器密码管家会弹“保存/更新密码”——Chrome 无视 autocomplete=off，只要是
+					     password 框就提示，还把当前登录账号名当 username 关联。改 type=text 后它不再被当密码框，弹窗连同
+					     “password 不在 form 内 / 表单应含 username 字段”等相关告警一并消失。 -->
+					<!-- 输入框自带 placeholder，无需额外 label；aria-label 保留可达性 -->
 					<UInput
 						v-model="apiKey"
 						data-testid="add-provider-key-input"
-						type="password"
+						type="text"
 						autocomplete="off"
 						spellcheck="false"
+						:ui="{ base: 'cc-secret-mask' }"
 						:aria-label="$t('modelConfig.providerAuth.add.keyLabel')"
 						:placeholder="$t('modelConfig.providerAuth.add.keyPlaceholder')"
 						:disabled="submitting"

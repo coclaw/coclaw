@@ -100,3 +100,13 @@ body {
 .dark .cc-icon-btn-lg:hover {
 	background-color: rgba(255, 255, 255, 0.1);
 }
+
+/*
+ * 秘钥输入打码：API key 这类“要遮挡但不是登录密码”的框用 type=text + 本类，
+ * 而非 type=password——后者会招来浏览器密码管家的“保存密码”弹窗（Chrome 无视 autocomplete=off）。
+ * -webkit-text-security 覆盖 Chrome/Edge/Safari/iOS/Android 及 Firefox 117+；
+ * 更老的 Firefox 不支持本属性，降级为明文（仅遮挡失效，输入/提交功能不受影响）。
+ */
+.cc-secret-mask {
+	-webkit-text-security: disc;
+}

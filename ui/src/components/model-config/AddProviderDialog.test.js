@@ -23,11 +23,12 @@ const UButtonStub = {
 };
 
 const UInputStub = {
-	props: ['modelValue', 'disabled', 'placeholder', 'type', 'icon', 'autocomplete', 'spellcheck', 'id'],
+	props: ['modelValue', 'disabled', 'placeholder', 'type', 'icon', 'autocomplete', 'spellcheck', 'id', 'ui'],
 	emits: ['update:modelValue', 'keydown'],
 	template: `<input
 		:id="id"
 		:type="type ?? 'text'"
+		:class="ui?.base"
 		:disabled="disabled"
 		:placeholder="placeholder"
 		:value="modelValue"
@@ -156,10 +157,13 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		return w;
 	}
 
-	test('renders password-type input (raw HTML type=password)', async () => {
+	test('renders the API key field as a masked text input, not type=password (keeps the browser password manager out)', async () => {
 		const w = await goToStep2(makeWrapper());
 		const input = w.find('[data-testid="add-provider-key-input"]');
-		expect(input.attributes('type')).toBe('password');
+		// type=text（非 password）：浏览器不再当它是密码框，不弹“保存/更新密码”
+		expect(input.attributes('type')).toBe('text');
+		// 仍通过 CSS 打码遮挡（-webkit-text-security）
+		expect(input.classes()).toContain('cc-secret-mask');
 	});
 
 	test('shows dashboard link when provider has dashboardUrl (groq has one)', async () => {
