@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { buildProviderAuthHandlers } from './handlers.js';
 import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL } from './minimax-oauth.js';
+import { getPortalModels } from './portal-model-catalog.js';
 
 // fake sdk —— 只覆盖 handlers 实际调到的方法
 function createStubSdk(overrides = {}) {
@@ -765,11 +766,8 @@ function createStubOAuth(overrides = {}) {
 	};
 }
 
-// 内置静态表里 minimax-portal 的清单（与 portal-model-catalog.js 对齐）——成功用例断言写入的就是它
-const EXPECTED_PORTAL_MODELS = [
-	{ id: 'MiniMax-M2.7', name: 'MiniMax M2.7' },
-	{ id: 'MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed' },
-];
+// 成功用例断言写入配置的就是内置静态表的清单——直接取 getPortalModels，验证写路径用的就是它
+const EXPECTED_PORTAL_MODELS = getPortalModels(PORTAL_PROVIDER_ID);
 
 // 把 oauth handler 构建出来；scheduleBackground 收集后台 promise，便于确定性 await
 function buildOAuthHandlers({ sdkOverrides = {}, oauthOverrides = {}, registry, mutateConfigFile } = {}) {

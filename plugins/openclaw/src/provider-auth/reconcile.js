@@ -12,7 +12,7 @@
  */
 
 import { PORTAL_PROVIDER_ID } from './minimax-oauth.js';
-import { getPortalModels, portalModelsMatch } from './portal-model-catalog.js';
+import { getPortalModels, portalModelsCoveredById } from './portal-model-catalog.js';
 
 /**
  * 对账某个 portal-style provider 的配置模型清单。
@@ -33,14 +33,13 @@ export async function reconcilePortalModels({ getConfig, mutateConfigFile, provi
 	const target = getPortalModels(providerId);
 	// 表里没这个 provider（理论不该发生）→ 不动用户已有清单
 	if (target.length === 0) return { changed: false, reason: 'no-catalog' };
-	// 前提（务必留意）：getConfig 读的是「解析后」配置（config.current()），而 mutateConfigFile
-	// 默认写「源」配置。对 minimax-portal 这俩的 models 相等——上游 bundled discovery 不给第三方
-	// 扫码 provider 注入 catalog（已真机核实），解析不会增删它的模型条目，故这里读解析、写源是安全的。
-	// 若上游将来改为给第三方 portal 注入模型，解析后会多出条目而源里没有 → 这里永远判不一致 → 每次
-	// 启动都写；届时必须改成比对「源」配置（如 getRuntimeConfigSourceSnapshot 一类），否则正是本文件
-	// 想防的反复写/重启循环。
-	// 已一致 → 零写入（防重启循环的闸）
-	if (portalModelsMatch(node.models, target)) return { changed: false, reason: 'in-sync' };
+	// 只按 id 判"已覆盖"：目标里每个 model id 都已在配置现有清单出现 → 视为已同步、零写入。
+	// 比"全等"宽容——配置是我们的超集（别的来源，如官方 MiniMax 插件，多写了几个模型）时也判已覆盖、
+	// 不去动它，避免和它来回覆盖、反复重启。仅当配置缺了我们某个 id（升级新增模型 / 老配置不全）才写。
+	// 顺带说清读/写不对称：getConfig 读「解析后」配置（config.current()），mutateConfigFile 默认写
+	// 「源」配置。即便上游将来在解析期给第三方 portal 注入额外模型，那也只是让配置成超集、我们的 id 仍在
+	// → 判已覆盖 → 不写，不会触发"永远判不一致、每次启动都写"的循环。
+	if (portalModelsCoveredById(node.models, target)) return { changed: false, reason: 'in-sync' };
 
 	await mutateConfigFile({
 		afterWrite: { mode: 'auto' },

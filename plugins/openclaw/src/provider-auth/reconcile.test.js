@@ -90,6 +90,46 @@ test('reconcile: in-sync holds even when config order differs from table', async
 	assert.equal(calls.length, 0);
 });
 
+test('reconcile: config is a superset (our ids present + extras from another source) → in-sync, no write', async () => {
+	// 模拟官方 MiniMax 插件往同一 provider 多写了几个模型：我们的 id 都在 → 不去覆盖它
+	const superset = [...TARGET, { id: 'MiniMax-M2.5', name: 'MiniMax M2.5' }, { id: 'MiniMax-Other', name: 'Other' }];
+	const { mutateConfigFile, calls } = makeMutate(() => makeCfg(superset));
+	const r = await reconcilePortalModels({ getConfig: () => makeCfg(superset), mutateConfigFile });
+	assert.deepEqual(r, { changed: false, reason: 'in-sync' });
+	assert.equal(calls.length, 0); // 超集也不写——避免和别的来源来回覆盖
+});
+
+test('reconcile: config has our ids but drifted name/metadata → still in-sync (covered by id), no write', async () => {
+	const drifted = [
+		{ id: 'MiniMax-M2.7', name: 'Different Name', reasoning: false },
+		{ id: 'MiniMax-M2.7-highspeed', name: 'Another', contextWindow: 1 },
+	];
+	const { mutateConfigFile, calls } = makeMutate(() => makeCfg(drifted));
+	const r = await reconcilePortalModels({ getConfig: () => makeCfg(drifted), mutateConfigFile });
+	assert.deepEqual(r, { changed: false, reason: 'in-sync' });
+	assert.equal(calls.length, 0);
+});
+
+test('reconcile: config missing one of our ids (upgrade added a model / partial config) → updated, writes full table', async () => {
+	// 只有我们的一个 id，另一个缺 → 不被覆盖 → 补写整份静态表
+	const partial = makeCfg([{ id: 'MiniMax-M2.7', name: 'MiniMax M2.7' }]);
+	const { mutateConfigFile, calls } = makeMutate(() => structuredClone(partial));
+	const r = await reconcilePortalModels({ getConfig: () => partial, mutateConfigFile });
+	assert.deepEqual(r, { changed: true, reason: 'updated' });
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].draft.models.providers['minimax-portal'].models, TARGET);
+});
+
+test('reconcile: portal node present but models missing/garbage → not covered → updated, writes full table', async () => {
+	// 节点在、但 models 字段缺失（半截写 / 手改 config）→ 不被覆盖 → 补写
+	const malformed = { models: { providers: { 'minimax-portal': { baseUrl: 'b', api: 'anthropic-messages', authHeader: true } } } };
+	const { mutateConfigFile, calls } = makeMutate(() => structuredClone(malformed));
+	const r = await reconcilePortalModels({ getConfig: () => malformed, mutateConfigFile });
+	assert.deepEqual(r, { changed: true, reason: 'updated' });
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0].draft.models.providers['minimax-portal'].models, TARGET);
+});
+
 test('reconcile: config stale (old models) → updated, writes the static table, keeps connection fields', async () => {
 	const stale = makeCfg([{ id: 'MiniMax-M2', name: 'MiniMax M2' }]);
 	const { mutateConfigFile, calls } = makeMutate(() => structuredClone(stale));

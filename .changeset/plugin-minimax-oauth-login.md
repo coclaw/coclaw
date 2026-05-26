@@ -27,10 +27,20 @@ provider shows zero models (unusable in the picker and rejected by
 `MINIMAX_TEXT_MODEL_ORDER`) rather than fetching `/models` over the network — the
 live endpoint returns several older model generations the user does not want, and
 a login-time fetch is no fresher than a static table (it goes stale until the next
-login anyway). To keep already-bound users in sync when the plugin ships new
-models, the gateway reconciles the bound provider's `models[]` against the built-in
-table on startup, writing only when they actually differ (a no-op when in sync, so
-config writes — and any future restart-on-write behavior — happen at most once).
+login anyway). Each entry carries only the minimal runtime metadata
+(`reasoning`/`contextWindow`/`maxTokens`, aligned with upstream's
+`model-definitions.ts`; no `cost`, since the portal runs on a token plan rather
+than usage-based billing). `reasoning` in particular must be written — a missing
+flag defaults to false and a reasoning model would be handled as an ordinary one.
+
+To keep already-bound users in sync when the plugin ships new models, the gateway
+reconciles the bound provider's `models[]` against the built-in table on startup.
+It writes only when the config does not already cover every built-in model id
+(matched by id alone): if another source — e.g. the official MiniMax plugin — later
+writes its own, larger list into the same provider, the config is treated as a
+superset and left untouched instead of being overwritten (and the gateway
+re-restarted) on every startup. A no-op whenever the ids are already present, so
+config writes — and any future restart-on-write behavior — happen at most once.
 
 The device-code flow is replicated from the upstream MiniMax extension (shared
 client_id / endpoints / scope) with injectable `fetch` for offline unit tests.
