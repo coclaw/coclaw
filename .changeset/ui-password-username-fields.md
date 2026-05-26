@@ -18,7 +18,8 @@ Follow-up to the password-form wrapping shipped in 0.26.0:
   the username) when the dialog submits. The field is now a `type="text"` input
   masked purely in CSS (`-webkit-text-security: disc`), so the browser no longer
   treats it as a password — no save prompt, and the password-form DOM warnings
-  disappear too. Falls back to plaintext on Firefox < 117 (masking only;
+  disappear too. The `<form>` also carries `autocomplete="off"` as a
+  belt-and-suspenders. Falls back to plaintext on Firefox < 117 (masking only;
   input/submit unaffected).
 - **Change-password submit**: add an in-flight guard and disable the footer
   buttons while the request runs, so Enter-then-click can no longer fire the

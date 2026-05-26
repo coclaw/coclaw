@@ -70,7 +70,7 @@
 				</div>
 
 				<!-- Step 2: 输 API key（form 仅用于支持原生回车提交；提交按钮与回车都走 onSubmit）-->
-				<form v-else class="flex flex-col gap-3" @submit.prevent="onSubmit">
+				<form v-else class="flex flex-col gap-3" autocomplete="off" @submit.prevent="onSubmit">
 					<!-- API key 是秘钥而非登录凭据：用 type=text + CSS 打码（cc-secret-mask）而非 type=password。
 					     若用 type=password，浏览器密码管家会弹“保存/更新密码”——Chrome 无视 autocomplete=off，只要是
 					     password 框就提示，还把当前登录账号名当 username 关联。改 type=text 后它不再被当密码框，弹窗连同

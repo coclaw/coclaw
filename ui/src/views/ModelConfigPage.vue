@@ -451,7 +451,7 @@ export default {
 		},
 
 		/**
-		 * AddProviderDialog 'added' 事件回调：refresh + dashboard reload + notify
+		 * AddProviderDialog 'added' 事件回调：refresh + dashboard reload（成功不 notify）
 		 *
 		 * 关键：用打开时记下的 __writeClawId 作目标。若 inflight RPC 落地时用户已切到别的 claw，
 		 * 直接丢弃——不要给当前 claw 弹"已添加"、也不要拿别的 claw 的写结果去刷它的 dashboard
