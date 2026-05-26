@@ -54,7 +54,8 @@ function createWrapper({ query = {} } = {}) {
 		global: {
 			plugins: [pinia],
 			stubs: {
-				UInput: { props: ['modelValue'], template: '<div />', inheritAttrs: false },
+				// size 声明为 prop（不落到原生 input，否则 size="xl" 触发 DOMException 告警）
+				UInput: { props: ['modelValue', 'size'], template: '<input v-bind="$attrs" />', inheritAttrs: false },
 				UButton: { template: '<button><slot /></button>' },
 				UFormField: { props: ['label', 'name'], template: '<div><slot /></div>' },
 				RouterLink: { props: ['to'], template: '<a><slot /></a>' },
@@ -67,6 +68,12 @@ function createWrapper({ query = {} } = {}) {
 		},
 	});
 }
+
+test('登录框标注 autocomplete：账号=username、密码=current-password（利于密码管理器/系统填充识别）', () => {
+	const wrapper = createWrapper();
+	expect(wrapper.find('[data-testid="login-name"]').attributes('autocomplete')).toBe('username');
+	expect(wrapper.find('[data-testid="login-password"]').attributes('autocomplete')).toBe('current-password');
+});
 
 test('safeRedirect should return valid redirect path', () => {
 	const wrapper = createWrapper({ query: { redirect: '/claim?code=123' } });

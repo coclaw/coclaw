@@ -8,6 +8,7 @@
 					<UInput
 						v-model="form.loginName"
 						data-testid="login-name"
+						autocomplete="username"
 						:placeholder="$t('login.accountPlaceholder')"
 						size="xl"
 						class="w-full"
@@ -18,6 +19,7 @@
 					<PasswordInput
 						v-model="form.password"
 						data-testid="login-password"
+						autocomplete="current-password"
 						:placeholder="$t('login.passwordPlaceholder')"
 						size="xl"
 						class="w-full"
