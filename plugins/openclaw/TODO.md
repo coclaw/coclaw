@@ -1336,3 +1336,22 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **修复方向**：用 `fsp.open(resolved, 'wx')` 走 exclusive create，第二个调用会拿到 `EEXIST` → 翻译为 `ALREADY_EXISTS` 错误码。
 
 **严重性**：低——业务影响小；正常 UI 不会真的并发 create 同一路径。
+
+## providerAuth.list 返回原始 provider 拼写，未做上游别名归一化，UI 端 === 比对误判别名服务商
+
+**发现日期**：2026-05-26（model-config 发版前 deep-review 识别）
+**关联**：问题出在 UI 端比对（`ui/src/stores/dashboard.store.js` `computePrimaryEffective` / `ui/src/views/ModelConfigPage.vue` / `ui/src/components/model-config/PrimaryModelPickerDialog.vue`），但更干净的修法落在插件侧 `plugins/openclaw/src/provider-auth/handlers.js` 的 `list` handler。
+
+**问题**：CoClaw 把两份 OpenClaw 出参在前端用 `===` 直接比 provider 名：
+- `models.list view:'all'` 出参的 `provider` 是注册表规范名（只小写、不折叠别名），如 `moonshot`；
+- `coclaw.providerAuth.list` 出参的 `provider` 是**存进去时的原始拼写**（`buildApiKeyCredential` 不动 provider、`toListEntry` 原样返回 `cred.provider`），如外部用 `moonshotai` 配的就是 `moonshotai`。
+
+OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderId`（`openclaw-repo/src/agents/provider-id.ts`：`moonshotai→moonshot`、`modelstudio/qwencloud→qwen`、`z.ai→zai` 等）折叠别名 + 小写。CoClaw 前端复制了读写、漏了这步归一化，于是两份未对齐的原始拼写硬比 → 主模型被误报"失效"（橙条）、picker 里看不到该 provider 的模型。
+
+**影响**：很窄。只在该 provider 是**绕开 CoClaw 界面**（`openclaw` onboard 命令 / 手改 auth-profiles / 外部 CLI 导入）用别名形或非规范大小写配置时才触发。通过 CoClaw 界面添加时，发出去的 provider 名取自 catalog 规范名（`AddProviderDialog` 可选列表来自 catalog 的 `m.provider`，`provider-meta.js` 也只有规范的 `moonshot` 无 `moonshotai`），存进去 = 规范名 = 与 catalog 一致，永不触发。无数据损坏、不崩、不影响其它 provider。
+
+**为什么发版前不修**：
+- 修法 A（前端复刻上游别名映射表，比对前先折叠）会让前端持有一份与上游可能脱节的映射，上游新增别名时无声错位；临发版加投机性复杂度不划算。
+- 修法 B（插件侧在 `list` handler 返回前用上游自己的归一化函数把 `cred.provider` 折叠成规范名再给前端）更干净——映射只在上游一份、前端保持简单。但前提是 plugin-sdk 暴露了 `normalizeProviderId`（待核实；当前插件未 import 该函数），且仍是跨工作区的发版前改动。
+
+**修复方向**：优先走修法 B——先核实 `openclaw/plugin-sdk` 是否暴露 `normalizeProviderId`（或等价 `normalizeProviderIdForAuth`）；若暴露，在 `provider-auth/handlers.js` `list` 的 `toListEntry` 出参处把 `provider` 归一化，并同步给 UI 一条"profiles[].provider 已规范化"的契约说明。若 SDK 未暴露，再评估前端兜底或推动上游导出。
