@@ -219,3 +219,42 @@ test('用户页：切换主题生效 @ui', async ({ page }) => {
 		expect(isDark).toBe(initialTheme === 'dark');
 	}).toPass({ timeout: 5000 });
 });
+
+// ================================================================
+// Test 8: 改密弹窗 → 回车提交（验证隐藏 submit 按钮让原生回车触发提交）
+//
+// 改密表单有 3 个输入框且提交按钮在 form 外（UModal #footer），按 HTML 规范
+// 这种情况下回车默认不提交——靠 form 内一个隐藏 submit 按钮才让回车生效。
+// 本用例锁死该行为：故意填两次不一致的新密码，回车后应弹出“不一致”警告 toast，
+// 证明回车确实触发了提交校验（走 mismatch 早返回，绝不会真改密码，账号安全）。
+// ================================================================
+
+test('设置：改密弹窗回车触发提交（不一致警告，不改密码） @ui', async ({ page }) => {
+	test.setTimeout(30_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+	await page.getByTestId('menu-settings').click();
+
+	const dialog = page.locator('[role="dialog"]');
+	await expect(dialog).toBeVisible({ timeout: 5000 });
+
+	// 打开改密弹窗
+	await page.getByTestId('btn-change-password').click();
+	await expect(page.getByTestId('pwd-current')).toBeVisible({ timeout: 5000 });
+
+	// 故意填不一致的新密码（current 随便填非空，避免落到 needPassword 分支）
+	await page.getByTestId('pwd-current').fill('whatever-not-real');
+	await page.getByTestId('pwd-new').fill('e2e-new-aaaa');
+	await page.getByTestId('pwd-confirm').fill('e2e-new-bbbb');
+
+	// 在输入框内按回车 → 隐藏 submit 让 form 提交 → onSubmitPasswordChange 校验
+	await page.getByTestId('pwd-confirm').press('Enter');
+
+	// 回车确实触发了提交：弹出“两次新密码不一致”警告 toast（en / zh 兼容）
+	await expect(
+		page.locator('[data-slot="title"]').filter({ hasText: /do not match|不一致/i }),
+	).toBeVisible({ timeout: 5000 });
+});
