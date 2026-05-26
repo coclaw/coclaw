@@ -105,6 +105,28 @@ test('reconcile: config stale (old models) → updated, writes the static table,
 	assert.equal(written.authHeader, true);
 });
 
+test('reconcile: update preserves sibling providers (only rewrites the portal node models)', async () => {
+	// 旁边坐一个用户自配 provider；对账刷新 minimax-portal 时不能把它抹掉/重建
+	const sibling = { baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', models: [{ id: 'claude', name: 'Claude' }] };
+	const stale = {
+		models: {
+			providers: {
+				anthropic: structuredClone(sibling),
+				'minimax-portal': { baseUrl: 'b', api: 'anthropic-messages', authHeader: true, models: [{ id: 'MiniMax-M2', name: 'MiniMax M2' }] },
+			},
+		},
+	};
+	const { mutateConfigFile, calls } = makeMutate(() => structuredClone(stale));
+	const r = await reconcilePortalModels({ getConfig: () => stale, mutateConfigFile });
+	assert.deepEqual(r, { changed: true, reason: 'updated' });
+	assert.equal(calls.length, 1);
+	const providers = calls[0].draft.models.providers;
+	// 旁边的 provider 原样保留（没被重建 providers map 抹掉）
+	assert.deepEqual(providers.anthropic, sibling);
+	// 只有 minimax-portal 被刷成静态表
+	assert.deepEqual(providers['minimax-portal'].models, TARGET);
+});
+
 test('reconcile: node vanished between read and write (TOCTOU) → mutate is a no-op, does not recreate node', async () => {
 	// getConfig 看到 stale 节点 → 决定要写；但 mutateConfigFile 的 draft 里节点已被并发删
 	const stale = makeCfg([{ id: 'MiniMax-M2', name: 'MiniMax M2' }]);

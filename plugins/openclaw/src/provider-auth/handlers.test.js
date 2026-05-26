@@ -923,6 +923,36 @@ test('loginOauth phase-2 success: writes oauth credential + provider cfg (static
 	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']);
 });
 
+test('loginOauth phase-2 success: preserves sibling providers (only overwrites the minimax-portal node)', async () => {
+	// draft 起始就坐着一个用户自配 provider + 一份旧的 minimax-portal 节点；
+	// 登录写配置时只能覆盖 minimax-portal，不能重建整个 providers map 把旁边的抹掉
+	const sibling = { baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', models: [{ id: 'claude', name: 'Claude' }] };
+	const mutateCalls = [];
+	const mutateConfigFile = async ({ afterWrite, mutate }) => {
+		const draft = {
+			models: {
+				providers: {
+					anthropic: structuredClone(sibling),
+					[PORTAL_PROVIDER_ID]: { baseUrl: 'old', api: 'anthropic-messages', authHeader: true, models: [{ id: 'OLD', name: 'OLD' }] },
+				},
+			},
+		};
+		mutate(draft);
+		mutateCalls.push({ afterWrite, draft });
+	};
+	const { handlers, bg } = buildOAuthHandlers({ mutateConfigFile });
+	const { respond } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+
+	assert.equal(mutateCalls.length, 1);
+	const providers = mutateCalls[0].draft.models.providers;
+	// 旁边的 provider 原样保留
+	assert.deepEqual(providers.anthropic, sibling);
+	// minimax-portal 被刷成静态表
+	assert.deepEqual(providers[PORTAL_PROVIDER_ID].models, EXPECTED_PORTAL_MODELS);
+});
+
 test('loginOauth phase-2 success: missing resourceUrl falls back to cn config base url', async () => {
 	const { handlers, bg, mutateCalls } = buildOAuthHandlers({
 		oauthOverrides: {

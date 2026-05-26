@@ -1364,3 +1364,12 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 **背景**：设备码登录流仅 cn 区域实地跑通（真账号扫码、令牌落盘、配置热更、零重启全验过）。global 走相同代码、不同 baseUrl，机制一致但端点行为/响应未实测。拿到 global 账号时跑一遍同款 e2e（`scripts/oauth-e2e-verify.sh` 改 region 即可）。
 
 **模型清单已与 REST 解耦**：模型清单现取自内置静态表（`portal-model-catalog.js`），登录写一次 + 启动对账同步，cn/global 同款两个模型，不再有 region 相关的 `/models` 端点行为差异。详见 `docs/model-config-api.md` § 2.3.7。
+
+## MiniMax OAuth：登录写凭据成功但写配置失败会留半残绑定（预存）
+
+**发现日期**：2026-05-27（方案 B deep-review 时识别，非本次引入）
+**关联**：`plugins/openclaw/src/provider-auth/handlers.js` `persistOAuthSuccess`（写凭据 → 写配置两步）
+
+**根因初判**：登录成功先 `upsertAuthProfileWithLock` 写 OAuth 凭据，再 `mutateConfigFile` 写 provider 节点。若凭据写成而配置写失败（磁盘/锁/校验），凭据留在 auth store 但 config 里没有 `models.providers.minimax-portal` 节点。启动对账遇"无节点"判 `not-bound` 直接跳过、自愈不了——模型对用户不可用，直到重新扫码登录覆盖。`providerAuth.list` 仍能看到这条 oauth profile，外观像"绑了但选不到模型"。
+
+**为什么暂不立刻修**：两步写盘的顺序与本次方案 B 无关（方案 B 只把写入的 `models` 从 `[]` 换成静态表）；重新登录即可恢复，发生概率低（写配置失败本就罕见）。治本需让对账在"有凭据但无节点"时补建节点（即把 `not-bound` 细分出"凭据在、节点缺"分支并 create-on-reconcile），属功能增强而非缺陷修复，单独评估。
