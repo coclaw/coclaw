@@ -1,5 +1,110 @@
 # @coclaw/ui
 
+## 0.27.0
+
+### Minor Changes
+
+- 001decc: feat(ui): add a reveal/hide toggle to password fields
+
+  Introduce a reusable `PasswordInput` component that wraps Nuxt UI's `UInput`
+  with an eye button in its trailing slot, toggling the field between masked
+  (`password`) and plaintext (`text`). The button is `type="button"` (never
+  submits the surrounding form), carries a translated `aria-label` and
+  `aria-pressed`, and switches its icon (eye / eye-off) with the state. Fields
+  start masked, and the component-controlled type cannot be overridden by a
+  caller-passed `type` attribute.
+
+  It replaces the raw `<UInput type="password">` at all six password fields:
+  login, register (password + confirm), and the change-password dialog
+  (current / new / confirm). All forwarded attributes (`data-testid`,
+  `autocomplete`, `placeholder`, `class`, …) still reach the underlying input,
+  so existing selectors and password-manager hints are unchanged. New
+  `common.showPassword` / `common.hidePassword` keys are added across all 12
+  locales. The add-provider API-key field is intentionally left untouched (it
+  stays CSS-masked, not a togglable password).
+
+  Also removes the dead `AuthPrototypePage.vue` (never routed, no imports) and
+  its `authPrototype` i18n block across all 12 locales.
+
+### Patch Changes
+
+- 0b93aac: fix(ui): dim default text to text-default instead of highlighted white
+
+  Several container roots (the authed app layout, login/register pages, the
+  desktop sidebar) carried `text-highlighted`, which made every descendant
+  without an explicit color render as pure white in dark mode. Remove it so text
+  falls back to the body default (`--ui-text` / `text-default`).
+
+  Also override the global Nuxt UI theme so dialog titles and input / textarea /
+  select text use `text-default` (with `!` to win over the built-in
+  `text-highlighted`, which tailwind-merge does not dedupe against Nuxt UI's
+  semantic color utilities).
+
+- 57f9b10: fix(ui): drop the success toast after adding a provider
+
+  Adding a provider already shows its result directly — the new credential
+  appears in the list the moment it refreshes — so the success toast was
+  redundant. Remove it to match the no-success-toast convention already applied
+  to the primary-model change and remove-provider flows (the success toast there
+  was dropped, but the add flow was missed). Add failures are unaffected — they
+  still surface inline inside the dialog. Also remove the now-dead
+  `modelConfig.providerAuth.add.success` i18n key across all 12 locales.
+
+- 6c1d4b5: fix(ui): add autocomplete hints to the login form
+
+  Tag the login account field with `autocomplete="username"` and the login
+  password field with `autocomplete="current-password"`, the standard
+  HTML autofill tokens for a sign-in form. The register and change-password
+  forms already carried explicit autocomplete; login was the only auth form
+  left relying on browser heuristics. Chrome's heuristics already worked, but
+  weaker environments — other browsers, third-party password managers, and
+  especially Android WebView system autofill — depend on these explicit hints
+  to recognise the fields, so this improves recognition and save/associate
+  reliability there. No `name` attributes are added, matching the existing
+  CoClaw convention (autocomplete-only).
+
+- bf9a4d2: fix(ui): add username field to change-password form + guard its double-submit
+
+  Follow-up to the password-form wrapping shipped in 0.26.0:
+
+  - **Username field (change-password only)**: the change-password `<form>` now
+    carries a hidden `autocomplete="username"` input set to the current account's
+    login name, clearing Chrome's "Password forms should have (optionally hidden)
+    username fields" DOM warning and letting password managers associate the new
+    password with the account.
+  - **API-key field — keep the password manager out**: the add-provider key
+    input is no longer `type="password"`. An API key is a secret, not a login
+    credential, but Chrome ignores `autocomplete="off"` on password fields and
+    still offers to "save/update password" (guessing the account's login name as
+    the username) when the dialog submits. The field is now a `type="text"` input
+    masked purely in CSS (`-webkit-text-security: disc`), so the browser no longer
+    treats it as a password — no save prompt, and the password-form DOM warnings
+    disappear too. The `<form>` also carries `autocomplete="off"` as a
+    belt-and-suspenders. Falls back to plaintext on Firefox < 117 (masking only;
+    input/submit unaffected).
+  - **Change-password submit**: add an in-flight guard and disable the footer
+    buttons while the request runs, so Enter-then-click can no longer fire the
+    password change twice (mirrors the add-provider dialog).
+
+- 5dbaec3: fix(ui): clear change-password form on close + stop the keyboard mangling the API key
+
+  Two follow-ups to the password/secret input work in 0.26.0:
+
+  - **Change-password form clears on every close path**: cancelling, the X,
+    Esc, or clicking the overlay now wipes the entered current/new/confirm
+    passwords, so reopening the dialog never shows stale input and nothing
+    lingers in memory. Previously only a successful submit cleared the form.
+    All close paths converge on one reset; a close while the request is still
+    in flight is skipped (that submit's own success path clears it) so the two
+    never race.
+  - **API-key field no longer lets the keyboard rewrite the key**: now that the
+    field is `type="text"` (CSS-masked, not a password), mobile input methods
+    re-enabled auto-capitalize / auto-correct, which could uppercase or "fix" a
+    hand-typed key. It now sets `autocapitalize="none"` and `autocorrect="off"`
+    (alongside the existing `spellcheck="false"`), restoring what `type="password"`
+    suppressed by default. It stays `type="text"` — not reverted to a password
+    field, which would bring back the browser's save-password prompt.
+
 ## 0.26.0
 
 ### Minor Changes
