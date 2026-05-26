@@ -18,6 +18,7 @@
 #   - 默认读 $HOME/.openclaw/openclaw.json；自定义 state-dir / profile 时用 OPENCLAW_CONFIG 指向真实配置文件
 #
 # 用法：bash plugins/openclaw/scripts/oauth-e2e-verify.sh
+#   KEEP_BINDING=1 bash ...  # 验证完保留这次登录的凭据+配置节点（不还原，省得再扫一次码）
 
 set -u
 
@@ -42,11 +43,17 @@ bad()  { printf "    ${RED}%s${NC}\n" "$1"; FAIL=$((FAIL+1)); }
 
 cleanup() {
 	echo
-	note "清理（Create-Test-Delete 还原）"
-	# 拨掉可能仍在跑的后台轮询（幂等；未知/已终态也无害）
+	# 拨掉可能仍在跑的后台轮询（幂等；未知/已终态也无害）——无论是否保留绑定都该停残留轮询
 	if [[ -n "$LOGIN_ID" ]]; then
 		openclaw gateway call coclaw.providerAuth.cancelOauth --params "{\"loginId\":\"$LOGIN_ID\"}" --json >/dev/null 2>&1 || true
 	fi
+	# KEEP_BINDING=1：验证完保留本次登录写入的凭据 + 配置节点，不做 Create-Test-Delete 还原
+	# （省去再扫一次码恢复绑定）。仅在你确实要留用这次登录时设。
+	if [[ -n "${KEEP_BINDING:-}" ]]; then
+		note "保留绑定（KEEP_BINDING=1）：不删凭据 + 配置节点"
+		return
+	fi
+	note "清理（Create-Test-Delete 还原）"
 	openclaw gateway call coclaw.providerAuth.remove --params "{\"provider\":\"$PROVIDER\"}" --json >/dev/null 2>&1 || true
 	printf "    凭据已删。配置节点 models.providers.%s 无 CLI 可删（残留无害，见 § 6.14）。\n" "$PROVIDER"
 	printf "    如需手动清除：\n"
