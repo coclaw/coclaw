@@ -464,7 +464,7 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 		w.unmount();
 	});
 
-	test('AddProviderDialog "added" event triggers refresh + dashboard force reload + success notify', async () => {
+	test('AddProviderDialog "added" event triggers refresh + dashboard force reload (no success notify)', async () => {
 		primedAuthList();
 		const w = makeWrapper();
 		await flushPromises();
@@ -485,8 +485,8 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 		expect(w.find('.add-dialog').exists()).toBe(false);
 		// dashboard reload with force
 		expect(mockLoadDashboard).toHaveBeenCalledWith('claw1', { force: true });
-		// success notify
-		expect(mockNotify.success).toHaveBeenCalled();
+		// 成功不 notify：新 provider 立即出现在凭据列表，用户可直接分辨
+		expect(mockNotify.success).not.toHaveBeenCalled();
 		w.unmount();
 	});
 
@@ -615,9 +615,7 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 		mockLoadDashboard.mockRejectedValueOnce(new Error('dash boom'));
 		await w.find('.ad-fire-added').trigger('click');
 		await flushPromises();
-		// success notify still fires
-		expect(mockNotify.success).toHaveBeenCalled();
-		// no error notify because dashboard failure is silent
+		// dashboard 失败静默：不弹 error（成功本就不 notify）
 		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
 	});

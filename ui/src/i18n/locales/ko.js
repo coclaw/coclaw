@@ -532,7 +532,6 @@ export const koMessages = {
 				dashboardLink: '{provider} 대시보드 열기 →',
 				submitButton: '제출',
 				submitFailed: 'API 키 저장에 실패했습니다. 다시 시도해 주세요.',
-				success: '{provider}을(를) 추가했습니다.',
 			},
 		},
 		guidance: {

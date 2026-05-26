@@ -532,7 +532,6 @@ export const zhCNMessages = {
 				dashboardLink: '去 {provider} 官网创建 →',
 				submitButton: '提交',
 				submitFailed: 'API key 保存失败，请重试',
-				success: '已添加 {provider}',
 			},
 		},
 		guidance: {

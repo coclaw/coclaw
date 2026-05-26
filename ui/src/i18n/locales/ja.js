@@ -532,7 +532,6 @@ export const jaMessages = {
 				dashboardLink: '{provider} ダッシュボードを開く →',
 				submitButton: '送信',
 				submitFailed: 'API キーの保存に失敗しました。もう一度お試しください。',
-				success: '{provider} を追加しました。',
 			},
 		},
 		guidance: {

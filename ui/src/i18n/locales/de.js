@@ -532,7 +532,6 @@ export const deMessages = {
 				dashboardLink: '{provider}-Dashboard öffnen →',
 				submitButton: 'Senden',
 				submitFailed: 'API-Schlüssel konnte nicht gespeichert werden. Bitte erneut versuchen.',
-				success: '{provider} hinzugefügt.',
 			},
 		},
 		guidance: {

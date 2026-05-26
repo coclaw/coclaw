@@ -532,7 +532,6 @@ export const frMessages = {
 				dashboardLink: 'Ouvrir le tableau de bord {provider} →',
 				submitButton: 'Soumettre',
 				submitFailed: 'Échec de l\'enregistrement de la clé API. Veuillez réessayer.',
-				success: '{provider} ajouté.',
 			},
 		},
 		guidance: {

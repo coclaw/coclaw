@@ -532,7 +532,6 @@ export const hiMessages = {
 				dashboardLink: '{provider} डैशबोर्ड खोलें →',
 				submitButton: 'जमा करें',
 				submitFailed: 'API कुंजी सहेजने में विफल। कृपया पुनः प्रयास करें।',
-				success: '{provider} जोड़ा गया।',
 			},
 		},
 		guidance: {

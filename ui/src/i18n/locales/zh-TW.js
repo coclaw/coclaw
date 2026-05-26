@@ -532,7 +532,6 @@ export const zhTWMessages = {
 				dashboardLink: '前往 {provider} 官網建立 →',
 				submitButton: '送出',
 				submitFailed: 'API key 儲存失敗，請重試',
-				success: '已新增 {provider}',
 			},
 		},
 		guidance: {

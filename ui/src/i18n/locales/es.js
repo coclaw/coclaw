@@ -532,7 +532,6 @@ export const esMessages = {
 				dashboardLink: 'Abrir el panel de {provider} →',
 				submitButton: 'Enviar',
 				submitFailed: 'No se pudo guardar la clave de API. Inténtalo de nuevo.',
-				success: '{provider} añadido.',
 			},
 		},
 		guidance: {

@@ -532,7 +532,6 @@ export const ptMessages = {
 				dashboardLink: 'Abrir painel do {provider} →',
 				submitButton: 'Enviar',
 				submitFailed: 'Falha ao salvar a chave de API. Tente novamente.',
-				success: '{provider} adicionado.',
 			},
 		},
 		guidance: {

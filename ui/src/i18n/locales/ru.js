@@ -532,7 +532,6 @@ export const ruMessages = {
 				dashboardLink: 'Открыть панель {provider} →',
 				submitButton: 'Отправить',
 				submitFailed: 'Не удалось сохранить API-ключ. Попробуйте ещё раз.',
-				success: 'Поставщик {provider} добавлен.',
 			},
 		},
 		guidance: {

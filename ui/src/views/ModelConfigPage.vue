@@ -461,12 +461,10 @@ export default {
 		async onProviderAdded(info) {
 			const target = this.__writeClawId;
 			if (this.__unmounted || !target || this.clawId !== target) return;
-			// 先局部 refresh 让子页凭据列表立即一致，再 notify 成功——避免"提示成功但列表还旧"
+			// 局部 refresh 让子页凭据列表立即一致；成功不 notify：新 provider 立即出现在凭据列表，
+			// 用户可直接分辨，失败才提示（与 onPrimaryPicked / 撤销 provider 一致）
 			await this.refreshAfterWrite();
 			if (this.__unmounted || this.clawId !== target) return;
-			this.notify.success(this.$t('modelConfig.providerAuth.add.success', {
-				provider: info?.provider ?? '',
-			}));
 			// dashboard.store 触发外层（ManageClaws 卡片）一致性，稍后追上
 			try {
 				await this.dashboardStore.loadDashboard(target, { force: true });

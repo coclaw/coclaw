@@ -532,7 +532,6 @@ export const enMessages = {
 				dashboardLink: 'Open {provider} dashboard →',
 				submitButton: 'Submit',
 				submitFailed: 'Failed to save the API key. Please retry.',
-				success: 'Added {provider}.',
 			},
 		},
 		guidance: {

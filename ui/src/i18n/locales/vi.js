@@ -532,7 +532,6 @@ export const viMessages = {
 				dashboardLink: 'Mở bảng điều khiển {provider} →',
 				submitButton: 'Gửi',
 				submitFailed: 'Lưu khóa API thất bại. Vui lòng thử lại.',
-				success: 'Đã thêm {provider}.',
 			},
 		},
 		guidance: {
