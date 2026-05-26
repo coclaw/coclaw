@@ -6,6 +6,8 @@
 
 			<form class="mt-6 space-y-4" @submit.prevent="onRegister">
 				<UFormField :label="$t('register.account')" name="loginName">
+					<!-- 故意用 autocomplete=off：注册是建新号，不希望聚焦账号框时浏览器弹出已存账号的建议下拉。
+					     （与登录页的 username 不同是有意为之，勿改成 username） -->
 					<UInput
 						v-model="form.loginName"
 						data-testid="register-name"

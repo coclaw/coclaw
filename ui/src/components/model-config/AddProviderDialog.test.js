@@ -23,7 +23,7 @@ const UButtonStub = {
 };
 
 const UInputStub = {
-	props: ['modelValue', 'disabled', 'placeholder', 'type', 'icon', 'autocomplete', 'spellcheck', 'id', 'ui'],
+	props: ['modelValue', 'disabled', 'placeholder', 'type', 'icon', 'autocomplete', 'spellcheck', 'autocapitalize', 'autocorrect', 'id', 'ui'],
 	emits: ['update:modelValue', 'keydown'],
 	template: `<input
 		:id="id"
@@ -33,6 +33,10 @@ const UInputStub = {
 		:placeholder="placeholder"
 		:value="modelValue"
 		:data-type="type"
+		:autocomplete="autocomplete"
+		:spellcheck="spellcheck"
+		:autocapitalize="autocapitalize"
+		:autocorrect="autocorrect"
 		@input="$emit('update:modelValue', $event.target.value)"
 		@keydown.enter="$emit('keydown', $event)"
 	/>`,
@@ -164,6 +168,17 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		expect(input.attributes('type')).toBe('text');
 		// 仍通过 CSS 打码遮挡（-webkit-text-security）
 		expect(input.classes()).toContain('cc-secret-mask');
+	});
+
+	test('API key field disables autofill / capitalize / correct / spellcheck so手敲的 key 不被改写', async () => {
+		const w = await goToStep2(makeWrapper());
+		const input = w.find('[data-testid="add-provider-key-input"]');
+		// 不让密码管家介入
+		expect(input.attributes('autocomplete')).toBe('off');
+		// type=text 后移动端输入法的自动大写/纠错会复活，必须显式关掉，否则会弄坏 key
+		expect(input.attributes('autocapitalize')).toBe('none');
+		expect(input.attributes('autocorrect')).toBe('off');
+		expect(input.attributes('spellcheck')).toBe('false');
 	});
 
 	test('shows dashboard link when provider has dashboardUrl (groq has one)', async () => {

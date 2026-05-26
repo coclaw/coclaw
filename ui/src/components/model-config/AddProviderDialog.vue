@@ -76,12 +76,16 @@
 					     password 框就提示，还把当前登录账号名当 username 关联。改 type=text 后它不再被当密码框，弹窗连同
 					     “password 不在 form 内 / 表单应含 username 字段”等相关告警一并消失。 -->
 					<!-- 输入框自带 placeholder，无需额外 label；aria-label 保留可达性 -->
+					<!-- type=text 后移动端输入法的自动大写/纠错会复活，可能把手敲的 key 首字母大写或纠错弄坏，
+					     故显式关掉 autocapitalize/autocorrect/spellcheck（type=password 时浏览器默认就不做这些） -->
 					<UInput
 						v-model="apiKey"
 						data-testid="add-provider-key-input"
 						type="text"
 						autocomplete="off"
 						spellcheck="false"
+						autocapitalize="none"
+						autocorrect="off"
 						:ui="{ base: 'cc-secret-mask' }"
 						:aria-label="$t('modelConfig.providerAuth.add.keyLabel')"
 						:placeholder="$t('modelConfig.providerAuth.add.keyPlaceholder')"

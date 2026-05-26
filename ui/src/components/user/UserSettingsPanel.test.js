@@ -118,6 +118,42 @@ describe('UserSettingsPanel 修改密码', () => {
 		expect(authStore.changePassword).not.toHaveBeenCalled();
 	});
 
+	test('关闭弹窗（取消/X/Esc/遮罩）清空已输入的密码，避免重开时回填残留', async () => {
+		const w = mountPanel();
+		w.vm.passwordModalOpen = true;
+		w.vm.pwdForm.currentPassword = 'old-secret';
+		w.vm.pwdForm.newPassword = 'new-secret';
+		w.vm.pwdForm.confirmPassword = 'new-secret';
+		await w.vm.$nextTick();
+		// 关闭弹窗（所有关闭路径都把 passwordModalOpen 置 false）
+		w.vm.passwordModalOpen = false;
+		await w.vm.$nextTick();
+		expect(w.vm.pwdForm.currentPassword).toBe('');
+		expect(w.vm.pwdForm.newPassword).toBe('');
+		expect(w.vm.pwdForm.confirmPassword).toBe('');
+	});
+
+	test('提交在途时关闭弹窗不清空（不与成功路径打架），待请求收尾再清', async () => {
+		let resolveCall;
+		authStore.changePassword.mockReturnValueOnce(new Promise((res) => { resolveCall = res; }));
+		const w = mountPanel();
+		w.vm.passwordModalOpen = true;
+		w.vm.pwdForm.currentPassword = 'old-secret';
+		w.vm.pwdForm.newPassword = 'new-secret';
+		w.vm.pwdForm.confirmPassword = 'new-secret';
+		const submit = w.vm.onSubmitPasswordChange();
+		await w.vm.$nextTick();
+		// 在途中关闭（如按 Esc）：守卫跳过，不清空正在提交的值
+		w.vm.passwordModalOpen = false;
+		await w.vm.$nextTick();
+		expect(w.vm.pwdForm.currentPassword).toBe('old-secret');
+		// 请求收尾 → 成功路径自行清空
+		resolveCall(true);
+		await submit;
+		expect(w.vm.pwdForm.currentPassword).toBe('');
+		expect(w.vm.pwdForm.newPassword).toBe('');
+	});
+
 	test('提交进行中再次触发被在途守卫挡下：changePassword 只调用一次', async () => {
 		// changePassword 挂起不 resolve，模拟 RPC 在途
 		let resolveCall;

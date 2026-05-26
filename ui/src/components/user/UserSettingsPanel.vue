@@ -134,8 +134,23 @@ export default {
 				this.form.lang = user?.settings?.lang ?? 'zh-CN';
 			},
 		},
+		// 弹窗关闭即清空已输入的密码，避免重开时旧值回填/残留在内存。
+		// 收敛所有关闭路径（取消 / X / Esc / 点遮罩 / 提交成功）到这一处；
+		// 提交在途时跳过——此刻清空与成功路径的清空无意义重复，待请求收尾再由其自行清。
+		passwordModalOpen(open) {
+			if (!open && !this.pwdSubmitting) {
+				this.resetPwdForm();
+			}
+		},
 	},
 	methods: {
+		resetPwdForm() {
+			this.pwdForm = {
+				currentPassword: '',
+				newPassword: '',
+				confirmPassword: '',
+			};
+		},
 		async onSaveSettings() {
 			await this.authStore.updateSettings({
 				theme: this.form.theme,
@@ -168,11 +183,7 @@ export default {
 					this.notify.error(this.authStore.errorMessage);
 				}
 				this.passwordModalOpen = false;
-				this.pwdForm = {
-					currentPassword: '',
-					newPassword: '',
-					confirmPassword: '',
-				};
+				this.resetPwdForm();
 			} finally {
 				this.pwdSubmitting = false;
 			}

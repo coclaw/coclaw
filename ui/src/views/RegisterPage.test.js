@@ -76,6 +76,31 @@ function createWrapper({ query = {} } = {}) {
 	});
 }
 
+test('账号框 autocomplete=off：注册建新号，故意不让浏览器弹已存账号建议（勿改成 username）', () => {
+	const pinia = createPinia();
+	setActivePinia(pinia);
+	const wrapper = mount(RegisterPage, {
+		global: {
+			plugins: [pinia],
+			stubs: {
+				// 渲染真实 input 并透传 $attrs，让 autocomplete 落到 DOM 才能断言
+				UInput: { inheritAttrs: false, props: ['modelValue', 'size'], template: '<input v-bind="$attrs" :value="modelValue" />' },
+				UButton: { template: '<button><slot /></button>' },
+				UFormField: { props: ['label', 'name'], template: '<div><slot /></div>' },
+				RouterLink: { props: ['to'], template: '<a><slot /></a>' },
+			},
+			mocks: {
+				$t: (key) => i18nMap[key] ?? key,
+				$route: { query: {} },
+				$router: { replace: vi.fn() },
+			},
+		},
+	});
+	const account = wrapper.find('[data-testid="register-name"]');
+	expect(account.exists()).toBe(true);
+	expect(account.attributes('autocomplete')).toBe('off');
+});
+
 test('safeRedirect should return valid redirect path', () => {
 	const wrapper = createWrapper({ query: { redirect: '/claim?code=123' } });
 	expect(wrapper.vm.safeRedirect).toBe('/claim?code=123');
