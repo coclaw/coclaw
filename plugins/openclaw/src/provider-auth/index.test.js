@@ -3,6 +3,14 @@ import test from 'node:test';
 
 import { registerProviderAuthHandlers, __resetSdkCache } from './index.js';
 
+const ALL_METHODS = [
+	'coclaw.providerAuth.cancelOauth',
+	'coclaw.providerAuth.list',
+	'coclaw.providerAuth.loginOauth',
+	'coclaw.providerAuth.remove',
+	'coclaw.providerAuth.setApiKey',
+];
+
 function createMockApi() {
 	const methods = new Map();
 	return {
@@ -30,30 +38,40 @@ function fakeSdk() {
 		ensureAuthProfileStore: () => ({ version: 1, profiles: {} }),
 		removeProviderAuthProfilesWithLock: async () => ({ version: 1, profiles: {} }),
 		formatApiKeyPreview: (raw) => `${raw.slice(0, 2)}…${raw.slice(-2)}`,
+		// OAuth 设备码流需要的 PKCE / 表单编码器（createMiniMaxOAuth 仅存引用，非 oauth 路径不调）
+		generatePkceVerifierChallenge: () => ({ verifier: 'v', challenge: 'c' }),
+		toFormUrlEncoded: (obj) => new URLSearchParams(obj).toString(),
 	};
 }
 
-test('registerProviderAuthHandlers registers three RPC methods with coclaw.providerAuth.* names', () => {
-	const { api, methods } = createMockApi();
+// config-mutation 子入口 stub：OAuth 写 cfg 用；非 oauth 路径不调
+function fakeConfigMutation() {
+	return { mutateConfigFile: async () => {} };
+}
+
+// 给非 oauth 测试统一注入两个 loader 的便捷封装
+function registerWithStubs(api, opts = {}) {
 	registerProviderAuthHandlers(api, {
 		loadSdk: async () => fakeSdk(),
+		loadConfigMutation: async () => fakeConfigMutation(),
 		resolveAgentDir: () => '/tmp/agent',
+		...opts,
 	});
-	assert.deepEqual(
-		[...methods.keys()].sort(),
-		[
-			'coclaw.providerAuth.list',
-			'coclaw.providerAuth.remove',
-			'coclaw.providerAuth.setApiKey',
-		],
-	);
+}
+
+test('registerProviderAuthHandlers registers all five coclaw.providerAuth.* methods', () => {
+	const { api, methods } = createMockApi();
+	registerWithStubs(api);
+	assert.deepEqual([...methods.keys()].sort(), ALL_METHODS);
 });
 
 test('wrap: handlers cache after first SDK load (loader called once across multiple methods)', async () => {
 	const { api, methods } = createMockApi();
 	let loadCount = 0;
+	let cmCount = 0;
 	registerProviderAuthHandlers(api, {
 		loadSdk: async () => { loadCount += 1; return fakeSdk(); },
+		loadConfigMutation: async () => { cmCount += 1; return fakeConfigMutation(); },
 		resolveAgentDir: () => '/tmp/agent',
 	});
 	const setApiKey = methods.get('coclaw.providerAuth.setApiKey');
@@ -63,6 +81,7 @@ test('wrap: handlers cache after first SDK load (loader called once across multi
 	const r2 = respondCollector();
 	await list({ params: {}, respond: r2.respond });
 	assert.equal(loadCount, 1);
+	assert.equal(cmCount, 1);
 	assert.equal(r1.calls[0].ok, true);
 	assert.equal(r2.calls[0].ok, true);
 });
@@ -71,6 +90,7 @@ test('wrap: SDK loader rejects → respond(false) with IO_FAILED + message', asy
 	const { api, methods } = createMockApi();
 	registerProviderAuthHandlers(api, {
 		loadSdk: async () => { throw new Error('npm package missing'); },
+		loadConfigMutation: async () => fakeConfigMutation(),
 		resolveAgentDir: () => '/tmp/agent',
 	});
 	const setApiKey = methods.get('coclaw.providerAuth.setApiKey');
@@ -81,6 +101,20 @@ test('wrap: SDK loader rejects → respond(false) with IO_FAILED + message', asy
 	assert.equal(calls[0].err.message, 'npm package missing');
 });
 
+test('wrap: config-mutation loader rejects → respond(false) with IO_FAILED', async () => {
+	const { api, methods } = createMockApi();
+	registerProviderAuthHandlers(api, {
+		loadSdk: async () => fakeSdk(),
+		loadConfigMutation: async () => { throw new Error('cfg sdk missing'); },
+		resolveAgentDir: () => '/tmp/agent',
+	});
+	const list = methods.get('coclaw.providerAuth.list');
+	const { respond, calls } = respondCollector();
+	await list({ params: {}, respond });
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.equal(calls[0].err.message, 'cfg sdk missing');
+});
+
 test('wrap: SDK loader rejects with custom err.code is NOT preserved (always IO_FAILED)', async () => {
 	const { api, methods } = createMockApi();
 	registerProviderAuthHandlers(api, {
@@ -89,6 +123,7 @@ test('wrap: SDK loader rejects with custom err.code is NOT preserved (always IO_
 			err.code = 'SDK_UNAVAILABLE';
 			throw err;
 		},
+		loadConfigMutation: async () => fakeConfigMutation(),
 		resolveAgentDir: () => '/tmp/agent',
 	});
 	const list = methods.get('coclaw.providerAuth.list');
@@ -101,6 +136,7 @@ test('wrap: SDK loader rejects with non-Error → message stringified', async ()
 	const { api, methods } = createMockApi();
 	registerProviderAuthHandlers(api, {
 		loadSdk: async () => { throw 'boom'; },
+		loadConfigMutation: async () => fakeConfigMutation(),
 		resolveAgentDir: () => '/tmp/agent',
 	});
 	const remove = methods.get('coclaw.providerAuth.remove');
@@ -117,10 +153,12 @@ test('wrap: per-registration handlersPromise is isolated (two registers do not s
 	let loads2 = 0;
 	registerProviderAuthHandlers(api1, {
 		loadSdk: async () => { loads1 += 1; return fakeSdk(); },
+		loadConfigMutation: async () => fakeConfigMutation(),
 		resolveAgentDir: () => '/tmp/a',
 	});
 	registerProviderAuthHandlers(api2, {
 		loadSdk: async () => { loads2 += 1; return fakeSdk(); },
+		loadConfigMutation: async () => fakeConfigMutation(),
 		resolveAgentDir: () => '/tmp/b',
 	});
 	const r1 = respondCollector();
@@ -145,6 +183,7 @@ test('wrap: concurrent first-call invocations only trigger one SDK load (in-flig
 			await sdkReady;
 			return fakeSdk();
 		},
+		loadConfigMutation: async () => fakeConfigMutation(),
 		resolveAgentDir: () => '/tmp/agent',
 	});
 	const setApiKey = methods.get('coclaw.providerAuth.setApiKey');
@@ -159,11 +198,48 @@ test('wrap: concurrent first-call invocations only trigger one SDK load (in-flig
 	assert.equal(r2.calls[0].ok, true);
 });
 
-test('default loader: registerProviderAuthHandlers without opts wires three methods + dynamic-import path runs', async () => {
+// === OAuth 方法的 index 接线（不触网：region 校验 / cancel 走早返路径） ===
+
+test('loginOauth wired through index: invalid region → INVALID_ARGS (no network)', async () => {
+	const { api, methods } = createMockApi();
+	registerWithStubs(api);
+	const loginOauth = methods.get('coclaw.providerAuth.loginOauth');
+	const { respond, calls } = respondCollector();
+	await loginOauth({ params: { region: 'eu' }, respond });
+	assert.equal(calls[0].err.code, 'INVALID_ARGS');
+});
+
+test('cancelOauth wired through index with default registry: unknown loginId → {}', async () => {
+	const { api, methods } = createMockApi();
+	registerWithStubs(api);
+	const cancelOauth = methods.get('coclaw.providerAuth.cancelOauth');
+	const { respond, calls } = respondCollector();
+	await cancelOauth({ params: { loginId: 'nope' }, respond });
+	assert.equal(calls[0].ok, true);
+	assert.deepEqual(calls[0].data, {});
+});
+
+test('custom registry injection is honored', async () => {
+	const { api, methods } = createMockApi();
+	const ac = new AbortController();
+	const reg = {
+		registerLogin() {},
+		getLogin: (id) => (id === 'L1' ? { abortController: ac } : undefined),
+		removeLogin() {},
+	};
+	registerWithStubs(api, { registry: reg });
+	const cancelOauth = methods.get('coclaw.providerAuth.cancelOauth');
+	const { respond, calls } = respondCollector();
+	await cancelOauth({ params: { loginId: 'L1' }, respond });
+	assert.equal(ac.signal.aborted, true);
+	assert.equal(calls[0].ok, true);
+});
+
+test('default loader: registerProviderAuthHandlers without opts wires five methods + dynamic-import path runs', async () => {
 	__resetSdkCache();
 	const { api, methods } = createMockApi();
 	registerProviderAuthHandlers(api);
-	assert.equal(methods.size, 3);
+	assert.equal(methods.size, 5);
 	const remove = methods.get('coclaw.providerAuth.remove');
 	const { respond, calls } = respondCollector();
 	await remove({ params: { provider: 'groq' }, respond });
@@ -178,6 +254,7 @@ test('__resetSdkCache: after reset, default loader is invoked again on next regi
 	const { api: api1, methods: m1 } = createMockApi();
 	registerProviderAuthHandlers(api1, {
 		loadSdk: async () => { loads += 1; return fakeSdk(); },
+		loadConfigMutation: async () => fakeConfigMutation(),
 	});
 	await m1.get('coclaw.providerAuth.list')({ params: {}, respond: () => {} });
 	assert.equal(loads, 1);
@@ -186,6 +263,7 @@ test('__resetSdkCache: after reset, default loader is invoked again on next regi
 	const { api: api2, methods: m2 } = createMockApi();
 	registerProviderAuthHandlers(api2, {
 		loadSdk: async () => { loads += 1; return fakeSdk(); },
+		loadConfigMutation: async () => fakeConfigMutation(),
 	});
 	await m2.get('coclaw.providerAuth.list')({ params: {}, respond: () => {} });
 	assert.equal(loads, 2);

@@ -1,5 +1,6 @@
 /**
- * provider-auth handlers —— `coclaw.providerAuth.*` 三个 RPC 的纯函数实现
+ * provider-auth handlers —— `coclaw.providerAuth.*` RPC 的纯函数实现
+ * （setApiKey / list / remove + OAuth 的 loginOauth / cancelOauth）
  *
  * 设计要点（详见 docs/model-config-api.md § 2 + § 6）：
  * - 通过 dependency injection 拿 SDK / agentDir 解析器，便于单测；产线注入在 ./index.js
@@ -20,9 +21,23 @@
  * 与 plugin 既有 `respondError` / `respondInvalid`（在 plugins/openclaw/index.js）的关系：
  * 既有 helper 用 `INVALID_INPUT` / `INTERNAL_ERROR`，与本节 RPC 契约（`INVALID_ARGS` /
  * `IO_FAILED`）不一致——所以本模块自带局部 helper，避免改既有 helper 影响所有现存 RPC。
+ *
+ * OAuth（loginOauth / cancelOauth）补充：
+ * - **真·两阶段 res**（plugin respond 可多调，详见 docs/model-config-api.md § 2.3.2）：
+ *   phase-1 同步 respond accepted 帧（payload 必带 `status:'accepted'` 否则中继提前清路由），
+ *   phase-2 后台轮询出结果后用同一 reqId respond 终态帧
+ * - phase-1 之前的失败（region 非法 / 设备码请求失败）走单帧错误响应（INVALID_ARGS / IO_FAILED）
+ * - phase-2 失败用 payload.status 区分语义（error / timeout / cancelled），结构化 error.code
+ *   按语义给 OAUTH_FAILED / OAUTH_TIMEOUT / OAUTH_CANCELLED；写凭据 null / 写配置抛错走 IO_FAILED
+ * - 后台轮询 fire-and-forget，但 runOAuthBackground 内全程 try/catch 保证恰好 respond 一次且不外抛；
+ *   终态在 finally 清 registry
  */
 
+import { randomUUID } from 'node:crypto';
+import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL, VALID_REGIONS } from './minimax-oauth.js';
+
 const VALID_CRED_TYPES = new Set(['api_key', 'oauth', 'token']);
+const PORTAL_PROFILE_ID = `${PORTAL_PROVIDER_ID}:default`;
 
 function respondInvalid(respond, message) {
 	respond(false, undefined, { code: 'INVALID_ARGS', message });
@@ -40,7 +55,7 @@ function isNonEmptyString(v) {
 }
 
 /**
- * 构造三个 handler。
+ * 构造 handler 集合。
  *
  * @param {object} opts
  * @param {object} opts.sdk - openclaw/plugin-sdk/provider-auth 命名空间（或 stub）
@@ -49,10 +64,22 @@ function isNonEmptyString(v) {
  * @param {Function} opts.sdk.ensureAuthProfileStore - 位置参数 (agentDir, options?)
  * @param {Function} opts.sdk.removeProviderAuthProfilesWithLock - async；返回 store（成功）/ null（锁/磁盘失败）
  * @param {Function} opts.sdk.formatApiKeyPreview - 遮蔽显示 helper
+ * @param {Function} [opts.sdk.mutateConfigFile] - async；OAuth 写 cfg（openclaw/plugin-sdk/config-mutation）
  * @param {Function} opts.resolveAgentDir - 返回 main agent 完整路径（含 /agent 子目录）
- * @returns {{ setApiKey: Function, list: Function, remove: Function }}
+ * @param {object} [opts.oauth] - createMiniMaxOAuth 实例（requestDeviceCode / pollUntilSettled）；OAuth handler 才用
+ * @param {object} [opts.registry] - oauth-registry（registerLogin / getLogin / removeLogin）
+ * @param {Function} [opts.genLoginId] - () → loginId，默认 randomUUID
+ * @param {Function} [opts.scheduleBackground] - (promise) → void，挂后台轮询；默认 fire-and-forget + .catch
+ * @returns {{ setApiKey, list, remove, loginOauth, cancelOauth }}
  */
-export function buildProviderAuthHandlers({ sdk, resolveAgentDir }) {
+export function buildProviderAuthHandlers({
+	sdk,
+	resolveAgentDir,
+	oauth,
+	registry,
+	genLoginId = randomUUID,
+	scheduleBackground = (p) => { p.catch(() => {}); },
+}) {
 	// TODO: 将来若要支持"设默认模型 / 多账号顺序"等需要写 cfg 的操作，会撞上
 	// gateway 重启窗口的 UX 问题——参 docs/model-config-api.md § 3 / § 5（占位章节）。
 	// 当前三个 RPC 都只动 secret 不动 cfg，零重启。
@@ -144,7 +171,167 @@ export function buildProviderAuthHandlers({ sdk, resolveAgentDir }) {
 		}
 	}
 
-	return { setApiKey, list, remove };
+	// --- OAuth（MiniMax device-code，真·两阶段 res） ---
+
+	// 写凭据 + 写 cfg；恰好 respond 一次，不外抛（成功 ok / 失败 IO_FAILED 都在内部消化）
+	async function persistOAuthSuccess({ region, token, respond }) {
+		try {
+			const credential = {
+				type: 'oauth',
+				provider: PORTAL_PROVIDER_ID,
+				access: token.access,
+				refresh: token.refresh,
+				expires: token.expires,
+			};
+			const result = await sdk.upsertAuthProfileWithLock({
+				profileId: PORTAL_PROFILE_ID,
+				credential,
+				agentDir: resolveAgentDir(),
+			});
+			// 同 setApiKey：锁/磁盘失败时上游静默返回 null
+			if (result === null) {
+				respond(false, { status: 'error' }, {
+					code: 'IO_FAILED',
+					message: 'failed to write auth-profiles store',
+				});
+				return;
+			}
+			// 写 provider 节点 baseUrl —— hot-reload 路径，零打断（afterWrite:auto，禁传 restart）。
+			// baseUrl 优先用服务端动态返回的 resourceUrl，缺省回落 cn/global 默认（带 /anthropic 后缀）
+			const baseUrl = token.resourceUrl || CONFIG_DEFAULT_BASE_URL[region];
+			await sdk.mutateConfigFile({
+				afterWrite: { mode: 'auto' },
+				mutate(draft) {
+					if (!draft.models || typeof draft.models !== 'object' || Array.isArray(draft.models)) {
+						draft.models = {};
+					}
+					const p = draft.models.providers;
+					if (!p || typeof p !== 'object' || Array.isArray(p)) {
+						draft.models.providers = {};
+					}
+					draft.models.providers[PORTAL_PROVIDER_ID] = {
+						baseUrl,
+						api: 'anthropic-messages',
+						authHeader: true,
+						models: [],
+					};
+				},
+			});
+			respond(true, { status: 'ok', profileId: PORTAL_PROFILE_ID });
+		}
+		catch (err) {
+			respond(false, { status: 'error' }, {
+				code: 'IO_FAILED',
+				message: String(err?.message ?? err),
+			});
+		}
+	}
+
+	// 后台轮询循环 → 终态 respond（phase-2）。全程 try/catch，保证恰好 respond 一次且不外抛；
+	// finally 清 registry，无论成功/失败/取消
+	async function runOAuthBackground({ region, loginId, deviceCode, abortController, respond }) {
+		try {
+			const outcome = await oauth.pollUntilSettled({
+				region,
+				userCode: deviceCode.userCode,
+				verifier: deviceCode.verifier,
+				expiresAt: deviceCode.expiresAt,
+				interval: deviceCode.interval,
+				signal: abortController.signal,
+			});
+			if (outcome.status === 'cancelled') {
+				respond(false, { status: 'cancelled' }, {
+					code: 'OAUTH_CANCELLED',
+					message: 'MiniMax OAuth login was cancelled',
+				});
+				return;
+			}
+			if (outcome.status === 'timeout') {
+				respond(false, { status: 'timeout' }, {
+					code: 'OAUTH_TIMEOUT',
+					message: 'MiniMax OAuth timed out before authorization completed',
+				});
+				return;
+			}
+			if (outcome.status === 'error') {
+				respond(false, { status: 'error' }, {
+					code: 'OAUTH_FAILED',
+					message: outcome.message || 'MiniMax OAuth authorization failed',
+				});
+				return;
+			}
+			// success：persistOAuthSuccess 内部恰好 respond 一次，不外抛
+			await persistOAuthSuccess({ region, token: outcome.token, respond });
+		}
+		catch (err) {
+			// 防御：pollUntilSettled 未预期抛错（多半是 /oauth/token 轮询期的网络/传输失败）。
+			// 终态帧回 error + OAUTH_FAILED——属轮询阶段失败，区别于写盘失败的 IO_FAILED（见 docs § 2.3.6）；
+			// 避免发起方永远挂着
+			respond(false, { status: 'error' }, {
+				code: 'OAUTH_FAILED',
+				message: String(err?.message ?? err),
+			});
+		}
+		finally {
+			registry.removeLogin(loginId);
+		}
+	}
+
+	async function loginOauth({ params, respond }) {
+		try {
+			const region = params?.region ?? 'cn';
+			if (!VALID_REGIONS.has(region)) {
+				respondInvalid(respond, 'region must be "cn" or "global"');
+				return;
+			}
+			let deviceCode;
+			try {
+				deviceCode = await oauth.requestDeviceCode({ region });
+			}
+			catch (err) {
+				// phase-1 之前失败（网络 / HTTP / 响应不全）：单帧错误响应
+				respondIoFailed(respond, err);
+				return;
+			}
+			const loginId = genLoginId();
+			const abortController = new AbortController();
+			// 先登记再 respond accepted：让紧随其后的 cancelOauth 一定能找到该 loginId
+			registry.registerLogin(loginId, { abortController });
+			respond(true, {
+				status: 'accepted',
+				loginId,
+				verificationUri: deviceCode.verificationUri,
+				userCode: deviceCode.userCode,
+				expiresAt: deviceCode.expiresAt,
+				interval: deviceCode.interval,
+			});
+			scheduleBackground(
+				runOAuthBackground({ region, loginId, deviceCode, abortController, respond }),
+			);
+		}
+		catch (err) {
+			respondIoFailed(respond, err);
+		}
+	}
+
+	async function cancelOauth({ params, respond }) {
+		try {
+			const loginId = params?.loginId;
+			if (!isNonEmptyString(loginId)) {
+				respondInvalid(respond, 'loginId must be a non-empty string');
+				return;
+			}
+			const entry = registry.getLogin(loginId);
+			// 幂等：未知 loginId 也回 {}（可能已终态自清，或从来没有）
+			if (entry) entry.abortController.abort();
+			respond(true, {});
+		}
+		catch (err) {
+			respondIoFailed(respond, err);
+		}
+	}
+
+	return { setApiKey, list, remove, loginOauth, cancelOauth };
 }
 
 /**

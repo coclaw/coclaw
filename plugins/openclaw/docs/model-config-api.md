@@ -16,7 +16,7 @@
 | 子话题 | 状态 | 章节 |
 |---|---|---|
 | provider 清单获取 | 已定（用上游 `models.list view:"all"`） | § 1 |
-| Provider 认证管理（API key / OAuth / 列表 / 撤销） | **API key + list + remove 本期实施**；OAuth 待设计（下个议题） | § 2 |
+| Provider 认证管理（API key / OAuth / 列表 / 撤销） | **API key + list + remove + OAuth（MiniMax device-code）已实施** | § 2 |
 | 默认模型设置 | **本期实施**（default + per-agent primary） | § 3 |
 | 白名单 + 模型附加设置 | 待设计 | § 4 |
 | 多账号顺序 | 暂不做 | § 5 |
@@ -26,7 +26,7 @@
 适用于本文档下所有新增 RPC：
 
 1. **优先 OpenClaw 原生入口**：gateway RPC > runtime API > SDK helper > 手搓。设计前先确认上游有没有现成的；只在没有时才加 `coclaw.*` RPC（见 [feedback-prefer-openclaw-native-apis](../../../docs/openclaw-research/model-config-mental-model.md#附录-c-openclaw-源码定位)）
-2. **零 gateway 重启**：禁触发 `cfg.auth.*` / `cfg.models` 等"非 hot-reload 白名单"字段的写入路径（见 mental-model § 4.7）
+2. **零 gateway 重启**：判定按"改了哪条配置路径"逐条来（核源 `openclaw-repo/src/gateway/config-reload-plan.ts`，首次匹配规则）——**禁触发非 hot-reload 路径**（如 `cfg.auth.*`：全表无规则 → 默认全量重启，5-10s 中断；api-key 路径刻意不碰 cfg 正因此，见 mental-model § 4.7）；**hot-reload 路径允许写**（`cfg.models.*`（含 `cfg.models.providers.*`）/ `cfg.agents.defaults.model(s).*`：命中 hot 规则 → 仅毫秒级心跳重启，不掉 gateway / 不断 RTC / chat/run 不中断）。§ 3 默认模型与 § 2.3 OAuth 写的就是 hot 路径
 3. **凭据不外流**：原始 API key / OAuth token 绝对不出 gateway 进程边界；UI / server / 远端 log 只能拿到遮蔽串 `keyPreview`（见 mental-model § 4.8）
 4. **命名空间 `coclaw.*`**：所有新 method 名遵循 [`gateway-method-conventions.md`](gateway-method-conventions.md) 的命名 / 错误格式 / scope 约定
 5. **写凭据走 main agent**：`auth-profiles.json` 的写入对象**永远是 main agent**（`<state-dir>/agents/main/agent/`），所有 agent 通过 OpenClaw 的层叠合并自动可见（见 mental-model § 4.2-4.3）
@@ -55,16 +55,17 @@ api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.lis
 ## § 2. Provider 认证管理
 
 本节统称"凭据/认证"相关的 RPC，涵盖 API key、OAuth 等所有认证模式。
-**API key + 列表 + 撤销三个方法本期实施；OAuth 方法占位，下个议题展开。**
+**API key + 列表 + 撤销 + OAuth（MiniMax device-code）方法均已实施。**
 
 ### 2.1 协议总览
 
 | RPC | 行为 | 状态 |
 |---|---|---|
-| `coclaw.providerAuth.setApiKey` | 配 / 替换某 provider 的 API key | **本期实施** |
-| `coclaw.providerAuth.loginOauth`（方法名占位） | 启动某 provider 的 OAuth 登录流程（一阶段返回授权信息，二阶段返回完成结果） | 待设计 |
-| `coclaw.providerAuth.list` | 列出已绑定的所有 profile（**跨认证类型**，含 api_key / oauth / token） | **本期实施** |
-| `coclaw.providerAuth.remove` | 撤销某 provider 的所有 profile（**跨认证类型，一锅端**） | **本期实施** |
+| `coclaw.providerAuth.setApiKey` | 配 / 替换某 provider 的 API key | **已实施** |
+| `coclaw.providerAuth.loginOauth` | 启动 provider 的 OAuth 登录（**真·两阶段 res**：受理帧返回授权链接 + device-code，终态帧返回登录结果） | **已实施** |
+| `coclaw.providerAuth.cancelOauth` | 取消进行中的 OAuth 登录（单发，镜像 `agent.abort`） | **已实施** |
+| `coclaw.providerAuth.list` | 列出已绑定的所有 profile（**跨认证类型**，含 api_key / oauth / token） | **已实施** |
+| `coclaw.providerAuth.remove` | 撤销某 provider 的所有 profile（**跨认证类型，一锅端**） | **已实施** |
 
 均归 `operator.admin` scope（同 [`gateway-method-conventions.md`](gateway-method-conventions.md) 默认）。
 
@@ -122,21 +123,105 @@ handler 内部一步走完：
 
 总代码量 ~20 行，参考 mental-model 附录 E.1 的代码骨架。
 
-### 2.3 OAuth 登录（待设计；下个议题展开）
+### 2.3 OAuth 登录（已实施；MiniMax device-code）
 
-> 占位章节。方法名（暂用 `coclaw.providerAuth.loginOauth`）和 OAuth 流程的协议形状、二阶段响应载荷、device-code 呈现方式等都待下个议题展开。
+OAuth 登录由**一个两阶段 RPC（`loginOauth`）+ 一个独立取消 RPC（`cancelOauth`）**组成。一期只覆盖 **MiniMax**（默认 `cn` region，亦支持 `global`）。
 
-关键设计点（已确定方向）：
+#### 2.3.1 前提结论（为什么自己复刻 device-code 流）
 
-- 是**一个 RPC + 二阶段响应**（accepted 阶段返回授权链接 / device-code，final 阶段返回登录结果），不是两个 RPC 拆 start/complete
-- 一期只覆盖 MiniMax；MiniMax 似乎为 OpenClaw 专门提供了 OAuth 方式，待核实是否走 `MINIMAX_OAUTH_MARKER` 特殊路径
+源码核实（`openclaw-repo`，详见 memory `reference_openclaw_oauth_provider_login_mechanics`）：
 
-占位事项（继承自前期研究）：
+- **上游无插件可用的"发起 OAuth 登录"入口**：登录能力是 provider 私有的 auth method（`run(ctx)`，CLI 交互式 prompter 驱动），`openclaw models auth login` 硬要 TTY（`src/commands/models/auth.ts:628`）；plugin-sdk 只暴露**凭据落盘** + **PKCE 工具**，不暴露 provider 注册表 / 登录发起。→ CoClaw 只能自己复刻设备码流（~50 行）。
+- **MiniMax 是标准 device-code OAuth，非 OpenClaw 私有**：`POST /oauth/code` 拿 `user_code` + `verification_uri` → 轮询 `POST /oauth/token`（grant_type `urn:ietf:params:oauth:grant-type:user_code`）。端点（cn `https://api.minimaxi.com`）/ client_id（`78257093-...`）/ scope（`group_id profile model.completion`）在 `openclaw-repo/extensions/minimax/oauth.ts` 全是写死值，**复刻并共用同一 client_id**（token 最终要被 OpenClaw 认）。"token plan" 是 MiniMax 产品名，无独立 provider id，凭据 + 配置节点都是 `minimax-portal`（cn auth method `id:"oauth-cn"` / `kind:"device_code"`）。
+- **device-code 流无需本机回环回调** → 与 CoClaw"UI 在远端、claw 在内网"天然契合（对比 OpenAI Codex 的 localhost 回环流，远端只能"粘 redirect URL"兜底）。
 
-- OAuth 凭据由 OpenClaw 自动 refresh（mental-model § 4.4）；CoClaw 不需要自己刷
-- OAuth 不可硬复制（refresh_token_reused），所有写入位置只能是 main agent
-- OAuth provider 出现在 `models.authStatus`，撤销后须 `{refresh:true}` 强刷
-- OAuth 凭据写入是否也"只动 secret 不动 cfg"就够，待核实
+#### 2.3.2 两阶段机制（搭现成基础设施，三层零改动）
+
+- **plugin 注册的 gateway method 的 `respond` 可多次调用**（非单发）——同一 reqId 先发 accepted 帧、后发终态帧，与上游 agent run 同构。核源：`server-methods/agent.ts` 先 `respond(accepted)`（:1358）、后台 fire-and-forget 再 `respond(final)`（:486/:516）；`server-methods.ts:182-199` 把同一 `respond` 原样传所有 handler（内置 + 插件 `registerGatewayMethod`），**无 already-responded 守卫**。
+- **CoClaw 中继按 reqId 通用路由两帧**（`realtime-bridge.js:942-981`，非 agent 专属）：命中 `__dcPendingRequests` 后，`status==='accepted'` 保留路由等下一帧，非 accepted（含无 status）当终态转发 + 清理。
+- **UI** `claw-connection.js` `request()` 传 `onAccepted` 即开两阶段（见 [`docs/architecture/gateway-agent-rpc-protocol.md`](../../../docs/architecture/gateway-agent-rpc-protocol.md)）。
+- ⚠️ **phase-1 payload 必须带 `status:'accepted'`**，否则中继当终态提前清路由、第二帧丢失。
+
+#### 2.3.3 `coclaw.providerAuth.loginOauth`
+
+**入参**：
+
+```ts
+{ region?: 'cn' | 'global' }   // 缺省 'cn'；provider 锁 minimax-portal
+```
+
+**Phase-1（accepted，立即返回）**：
+
+```ts
+{
+  status: 'accepted';        // 必带，供中继识别中间态
+  loginId: string;           // uuid，供 cancelOauth 关联
+  verificationUri: string;   // 让用户打开授权
+  userCode: string;          // 让用户输入
+  expiresAt: number;         // ms epoch，device-code 过期时刻
+  interval: number;          // 建议轮询间隔（ms，下限 2000）
+}
+```
+
+**Phase-2（final，后台轮询出结果后，同 reqId）**：
+
+- 成功：`respond(true, { status: 'ok', profileId })`
+- 失败：`respond(false, { status: 'error' | 'timeout' | 'cancelled' }, { code, message })`
+
+#### 2.3.4 `coclaw.providerAuth.cancelOauth`
+
+**入参**：`{ loginId: string }`　**出参**：`{}`（幂等，未知 loginId 也回 `{}`）
+
+拨掉该 `loginId` 的后台轮询（AbortController）→ 对应 `loginOauth` 的 phase-2 回 `status:'cancelled'`。单发，镜像 `agent.abort`：一次即停，无轮询、无 agent-run 那类限制。
+
+#### 2.3.5 实现要点
+
+`loginOauth` handler：
+
+1. 校验 `region`；生成 PKCE；`POST <cn>/oauth/code` 拿 `user_code` / `verification_uri` / `expired_in` / `interval`。
+2. 注册 `loginId`(uuid) + `AbortController` 进**模块级 registry**；**fire-and-forget 启后台轮询循环（必 `.catch`，否则 unhandled rejection 带垮 gateway）**；`respond` phase-1。
+3. 后台轮询循环：`POST /oauth/token`，`pending` → sleep `interval`(≥2s) 再轮；`success` / `error` / 到 `expired_in` / `signal.aborted` 退出（以 `expired_in` 为自身超时，保证 phase-2 必在该窗口内 fire）。
+4. **success**：
+   - 用 **`upsertAuthProfileWithLock`** 写 oauth credential `{ type:'oauth', provider:'minimax-portal', access, refresh, expires }`——与 `removeProviderAuthProfilesWithLock` **共享文件锁**；**判 null = IO_FAILED**（同 setApiKey）。**刻意不用 `writeOAuthCredentials`**（它走无锁 `upsertAuthProfile`，与带锁 remove 并发会丢写）。profileId 落 `minimax-portal:default`（MiniMax token 不回 email，与 `writeOAuthCredentials` 的 email→profileName 规则在无 email 时一致）。
+   - 再 `mutateConfigFile({ afterWrite:{ mode:'auto' }, mutate })` 写 `models.providers['minimax-portal'] = { baseUrl: result.resourceUrl || <配置默认>, api:'anthropic-messages', authHeader:true, models:[] }`。`afterWrite:'auto'` → 走 hot 路径**零打断**（见设计原则 #2）；**别传 `{mode:'restart'}`**。`baseUrl` 是每账号登录后服务端动态返回的 `resourceUrl`（缺省回落到配置默认）。⚠️ **配置默认 baseUrl 带 `/anthropic` 后缀**（cn `https://api.minimaxi.com/anthropic`、global `https://api.minimax.io/anthropic`），**区别于 OAuth 端点 base**（cn `https://api.minimaxi.com`，用来拼 `/oauth/code`、`/oauth/token`）——两者不是一回事，核源 `extensions/minimax/provider-registration.ts:29-30`（`DEFAULT_BASE_URL_CN/GLOBAL`）。
+   - `respond` phase-2 `{ status:'ok', profileId }`。
+5. 终态统一在 `finally` 清 registry 条目。
+6. **不自动设主模型**——选主模型走既有 `coclaw.model.set`（§ 3），避免越权。
+
+`cancelOauth` handler：registry 查 `loginId` → `abort()`；`respond(true, {})`。
+
+#### 2.3.6 错误码
+
+**phase-1（含 phase-1 之前）单帧错误**：
+
+| code | 触发 |
+|---|---|
+| `INVALID_ARGS` | `region` 非法 / `loginId` 缺失或类型错 |
+| `IO_FAILED` | 设备码请求失败（网络 / HTTP / 响应不全）|
+
+**phase-2 终态失败**：payload 带 `status: 'error' | 'timeout' | 'cancelled'` 区分语义（`error`=授权失败/网络/token 不全，`timeout`=device-code 过期，`cancelled`=被 `cancelOauth` 拨掉）；结构化 `error.code` 随语义给：
+
+| status | error.code | 触发 |
+|---|---|---|
+| `error` | `OAUTH_FAILED` | 轮询拿到授权失败 / token 不全 |
+| `error` | `IO_FAILED` | 写凭据 helper 返 null / `mutateConfigFile` 抛错（成功登录但落盘失败）|
+| `timeout` | `OAUTH_TIMEOUT` | device-code 到 `expired_in` 仍未授权 |
+| `cancelled` | `OAUTH_CANCELLED` | 被 `cancelOauth` 拨掉 |
+
+UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + status），`error.code` / `error.message` 供诊断与展示。
+
+> **为什么 phase-2 错误帧带 `payload`（而非 `respond(false, undefined, {code,message})`）**：两阶段终态帧（含 error）携带 `payload.status` 是**刻意**的，镜像上游 agent run 两阶段（`server-methods/agent.ts` 终态走 `respond(false, {runId,status:'error',...}, error)`），CoClaw 中继正是按 `payload.status !== 'accepted'` 路由这两帧。这与单发方法"error 帧只 `respond(false, undefined, {code,message})`"的约定不冲突——带 status 是两阶段协议的一部分，不是历史 status wrap。
+
+#### 2.3.7 关键依赖与边界
+
+- **CoClaw 只产出"凭据 + 配置"两样**；跑模型 / 模型 catalog 靠 OpenClaw 自带 minimax **bundled 扩展**（被动激活，`resolvePortalCatalog` 查到 oauth profile → `MINIMAX_OAUTH_MARKER`）——我们产出的终态与上游 OAuth 登录**一模一样**，不重写 provider runtime。
+- **RPC 连接中断不处理**：不追踪 UI 存活，断了 phase-2 帧丢弃无害（凭据可能已落盘，下次 `providerAuth.list` 能看到 `minimax-portal`）。现 RTC 基础设施很难断。
+- OAuth 凭据由 OpenClaw 自动 refresh（mental-model § 4.4），CoClaw 不自己刷；不可硬复制（`refresh_token_reused`），写入永远是 main agent（设计原则 #5）；撤销后 `models.authStatus` 须 `{refresh:true}` 强刷。
+- 上游 OAuth 还会写 `agents.defaults.models` 两个 model 别名——锦上添花，本期只写 provider 节点 `baseUrl` 即满足 agent 跑通；要对齐再加（同 hot 路径，安全）。
+
+#### 2.3.8 e2e（人机协同；cn 站授权）
+
+`loginOauth` 是 gateway method，命令行可达（§ 6.13）。CLI `openclaw gateway call coclaw.providerAuth.loginOauth '{"region":"cn"}' --json` 默认**收首帧即返**（`--expect-final` 默认关，专为 agent 留），故脚本能立即拿到并打印 `verificationUri` + `userCode`。流程：脚本调用 → 打印网址 + 码 → **暂停等用户到 `api.minimaxi.com` 授权** → 脚本轮询 `coclaw.providerAuth.list '{"provider":"minimax-portal"}'` 直到出现 oauth profile（带超时）→ 断言 `openclaw.json` 的 `models.providers.minimax-portal.baseUrl` 已写 + gateway 未重启 → **Create-Test-Delete 还原**（`coclaw.providerAuth.remove` 删凭据；provider 配置节点无 CLI 可删，脚本打印手动 `jq` 清理命令，残留无害见 § 6.14）。事件类 CLI 收不到，故验**落盘副作用**而非终态帧。
 
 ### 2.4 `coclaw.providerAuth.list`（本期实施；跨认证类型）
 
@@ -373,7 +458,7 @@ handler 内部一步走完：
 
 凭据理论上不止服务于"模型 provider"——未来 channel 类的 provider auth 可能也走这套。用更通用的 `providerAuth` 留口子。
 
-子方法采用**扁平命名**（`setApiKey` / `loginOauth` / `list` / `remove`），不按 type 分层（不写 `apiKey.set` / `oauth.start` 形式）。理由：OAuth 是一个 RPC + 二阶段响应，不是 start/complete 两个动作；扁平就够，分层反而增加层级噪音。
+子方法采用**扁平命名**（`setApiKey` / `loginOauth` / `cancelOauth` / `list` / `remove`），不按 type 分层（不写 `apiKey.set` / `oauth.start` 形式）。理由：OAuth 登录是一个两阶段 RPC（受理 + 终态），不拆 start/complete；`cancelOauth` 是与登录并列的取消动作（镜像 `agent.abort`），不是登录的"complete"。扁平就够，分层反而增加层级噪音。
 
 ### 6.2 API key 配置不写 `cfg.auth.profiles`
 
@@ -468,6 +553,36 @@ profile 没有创建时间 / 修改时间。多账号场景下用户看不出哪
 
 **决定**：延后。前提是（1）UI 真出现按时间排序 / 显示更新时间的需求；（2）实施前核实 plugin-sdk 对 metadata 的持久化语义。
 
+### 6.12 OAuth 用真·两阶段 res，不用 event 广播
+
+OAuth 终态走 `loginOauth` 同一请求的第二帧 res（§ 2.3.2），**不**另发 `broadcastPluginEvent`。
+
+理由：
+
+- plugin 的 `respond` 可多次调用（核实见 § 2.3.2），真·两阶段成立——曾一度误判为"单发故需 event"，已纠正
+- 两阶段更干净：UI 这次调用直接 resolve/reject 拿结果，**单播回发起连接**，不广播给其它 UI（event 版会播给所有 UI DC + 要 UI 按 loginId 过滤）
+- 三层（线路 / 中继 / UI）本来就都支持两阶段，零改动
+
+### 6.13 loginOauth 做 gateway method，不像 `coclaw.files.*` 就地处理
+
+DC req 分流按方法名前缀（`webrtc-peer.js`）：`coclaw.files.*` 由插件**就地处理**（不转发 gateway、CLI 不可达），其余转发 gateway。loginOauth/cancelOauth 选**做 gateway method**（转发路径）。
+
+理由：
+
+- 与现有 providerAuth.* 一致；且 gateway method 顺带得**命令行入口** → 人机协同 e2e 简单（§ 2.3.8）
+- `coclaw.files.*` 就地是因为文件传输涉二进制 DataChannel、是插件 WebRTC 层独有能力、gateway 无对应方法——那是"没得选"，不是"选了本地"。providerAuth 无此约束
+- 代价仅一次本机回环转发（微秒级，可忽略）
+
+### 6.14 OAuth 必写 `cfg.models.providers`（hot-reload，与 api-key 不同）
+
+api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额外写 `cfg.models.providers.minimax-portal`（每账号动态 `baseUrl`，agent 才知去哪请求）。这不违反设计原则 #2——`models.providers.*` 是 **hot-reload 路径**（毫秒级心跳重启，不掉 gateway/RTC/run），与 `auth.*`（全量重启）是两条不同路径。写法用公开 `mutateConfigFile` + `afterWrite:'auto'`（§ 2.3.5）。
+
+> 卸载 CoClaw 后这条 `minimax-portal` 节点会残留——无害（合法 OpenClaw 节点，与用户自己用上游 CLI 登录后果相同），不触发 schema 校验失败（区别于硬约束禁写的 `channels.coclaw` / `plugins.entries`）。
+
+### 6.15 写 OAuth 凭据用 `upsertAuthProfileWithLock`，不用 `writeOAuthCredentials`
+
+公开的 `writeOAuthCredentials` 内部走**无锁**同步 `upsertAuthProfile`，与带锁的 `removeProviderAuthProfilesWithLock` 并发会绕锁丢写。改用带锁的 `upsertAuthProfileWithLock` + 手搓 oauth credential——核实该 helper 收 `AuthProfileCredential` 联合类型（含 oauth）直接存盘，落盘结果与 `writeOAuthCredentials` 等价但锁正确（与 § 2.2 setApiKey 的"不用上层封装"取舍同源）。
+
 ---
 
 ## § 7. 引用关系
@@ -479,16 +594,30 @@ profile 没有创建时间 / 修改时间。多账号场景下用户看不出哪
 - mental-model **附录 D** —— provider 清单获取的三处来源对照
 - [`gateway-method-conventions.md`](gateway-method-conventions.md) —— 命名 / 错误格式 / scope 约定
 - [`plugin-events.md`](plugin-events.md) —— 若未来 setApiKey 之后要广播事件给 server / UI，参考事件清单和 patch 语义
+- [`docs/architecture/gateway-agent-rpc-protocol.md`](../../../docs/architecture/gateway-agent-rpc-protocol.md) —— 两阶段 res 协议（§ 2.3 OAuth 复用同一机制）
+- `openclaw-repo/extensions/minimax/oauth.ts` —— device-code 流复刻源（端点 / client_id / scope / 轮询语义）
 
-## § 8. 实施 checklist（仅 § 2 API key 部分）
+## § 8. 实施 checklist
 
-落地时按这条单子检查：
+### 8.1 § 2 API key 部分（已实施）
 
-- [ ] 三个 RPC handler 注册位置（建议放 `src/provider-auth/index.js` 或类似新模块）
-- [ ] handler error 响应符合协议层错误形态（`respond(false, undefined, { code, message })`），错误码用本节约定的 `INVALID_ARGS` / `IO_FAILED`；helper 名不强制（模块自带局部 helper 也行）
-- [ ] **成功响应不带 `ok` 字段**——空响应用 `respond(true, {})`（§ 6.6）
-- [ ] **时间字段用 ms epoch number，命名 `*At`，不加 `Ms` 后缀**（§ 6.7）
-- [ ] `agentDir` 走 `claw-paths.js`，不手拼路径
-- [ ] list handler 出参不含 `key` / `token` 字段
-- [ ] 单元测试：set / list / remove 三个路径 + 错误码 + 短 key 遮蔽降级
-- [ ] mental-model § 4.7 提到的"未来若要写 cfg 时的 UX 问题"暂不实现，但代码注释里留 TODO 指向本文档 § 3 / § 5
+- [x] 三个 RPC handler 注册位置（建议放 `src/provider-auth/index.js` 或类似新模块）
+- [x] handler error 响应符合协议层错误形态（`respond(false, undefined, { code, message })`），错误码用本节约定的 `INVALID_ARGS` / `IO_FAILED`；helper 名不强制（模块自带局部 helper 也行）
+- [x] **成功响应不带 `ok` 字段**——空响应用 `respond(true, {})`（§ 6.6）
+- [x] **时间字段用 ms epoch number，命名 `*At`，不加 `Ms` 后缀**（§ 6.7）
+- [x] `agentDir` 走 `claw-paths.js`，不手拼路径
+- [x] list handler 出参不含 `key` / `token` 字段
+- [x] 单元测试：set / list / remove 三个路径 + 错误码 + 短 key 遮蔽降级
+
+### 8.2 § 2.3 OAuth 部分（已实施）
+
+- [x] 新增 `src/provider-auth/minimax-oauth.js`：复刻 device-code 流（PKCE → `/oauth/code` → 轮询 `/oauth/token`），**注入式 `fetch` + 可配 baseUrl**（单测免网、e2e 不误触 global）；端点/client_id/scope 抄 `openclaw-repo/extensions/minimax/oauth.ts`，cn 默认
+- [x] 新增 `src/provider-auth/oauth-registry.js`：模块级 `Map<loginId, { abortController, ... }>`（link-safe 单例，同一模块由 index.js 同次 register 注册）
+- [x] 扩 `src/provider-auth/handlers.js`：`handleLoginOauth`（两阶段：respond accepted + 后台轮询 fire-and-forget 必 `.catch` + 终态 respond）/ `handleCancelOauth`
+- [x] `index.js`：full 模式注册 `coclaw.providerAuth.loginOauth` / `cancelOauth`；**顶部加裸字面量 `import('openclaw/plugin-sdk/config-mutation')`**（loader 只扫入口源码字面量，与现有 `provider-auth` 同处）
+- [x] phase-1 payload **带 `status:'accepted'`**（否则中继提前清路由，§ 2.3.2）
+- [x] 写凭据用带锁 `upsertAuthProfileWithLock`（§ 6.15），判 null = IO_FAILED
+- [x] 写配置用 `mutateConfigFile({ afterWrite:{ mode:'auto' } })`，**不传 restart**（§ 6.14）
+- [x] 后台轮询以 `expired_in` 为自身超时；终态 `finally` 清 registry
+- [x] 单元测试：注入 fetch mock 覆盖 code/token 各分支（pending / success / error / 超时 / abort）+ phase-1 payload + 轮询状态机 + 写凭据共享锁 + `mutateConfigFile` 调用形参 + 错误码；覆盖率维持门槛（lines/fn/stmt 100%、branches 95%）
+- [x] e2e：`scripts/oauth-e2e-verify.sh`（人机协同，§ 2.3.8）

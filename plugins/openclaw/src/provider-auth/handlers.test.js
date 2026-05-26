@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildProviderAuthHandlers } from './handlers.js';
+import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL } from './minimax-oauth.js';
 
 // fake sdk —— 只覆盖 handlers 实际调到的方法
 function createStubSdk(overrides = {}) {
@@ -718,4 +719,423 @@ test('round-trip: concurrent set on same profileId serializes via SDK lock; last
 	assert.equal(profiles[0].profileId, 'groq:default');
 	// 由 mutex 串行保证：发起顺序 p1→p2，因此最终持久化的是 p2 的 key
 	assert.equal(sdk.__store.profiles['groq:default'].key, 'sk-second-2222');
+});
+
+// === OAuth: loginOauth / cancelOauth ===
+
+const PORTAL_PROFILE_ID = `${PORTAL_PROVIDER_ID}:default`;
+
+// fake registry：记录登记 / 移除，可注入 throw 验证防御
+function createStubRegistry(overrides = {}) {
+	const store = new Map();
+	const events = [];
+	return {
+		store,
+		events,
+		registerLogin(loginId, entry) {
+			events.push(['register', loginId]);
+			store.set(loginId, entry);
+		},
+		getLogin(loginId) {
+			return store.get(loginId);
+		},
+		removeLogin(loginId) {
+			events.push(['remove', loginId]);
+			store.delete(loginId);
+		},
+		...overrides,
+	};
+}
+
+// fake oauth：requestDeviceCode 返回固定设备码；pollUntilSettled 返回预设终态
+function createStubOAuth(overrides = {}) {
+	return {
+		requestDeviceCode: async () => ({
+			verifier: 'VERIFIER',
+			userCode: 'USER-CODE',
+			verificationUri: 'https://verify.example',
+			expiresAt: 1700000000000,
+			interval: 2000,
+		}),
+		pollUntilSettled: async () => ({
+			status: 'success',
+			token: { access: 'ACCESS', refresh: 'REFRESH', expires: 9999, resourceUrl: 'https://acct.example/anthropic' },
+		}),
+		...overrides,
+	};
+}
+
+// 把 oauth handler 构建出来；scheduleBackground 收集后台 promise，便于确定性 await
+function buildOAuthHandlers({ sdkOverrides = {}, oauthOverrides = {}, registry, mutateConfigFile } = {}) {
+	const bg = [];
+	const mutateCalls = [];
+	const defaultMutate = async ({ afterWrite, mutate }) => {
+		const draft = { models: undefined };
+		mutate(draft);
+		mutateCalls.push({ afterWrite, draft });
+	};
+	const sdk = createStubSdk({
+		mutateConfigFile: mutateConfigFile ?? defaultMutate,
+		...sdkOverrides,
+	});
+	const reg = registry ?? createStubRegistry();
+	const handlers = buildProviderAuthHandlers({
+		sdk,
+		resolveAgentDir: () => AGENT_DIR,
+		oauth: createStubOAuth(oauthOverrides),
+		registry: reg,
+		genLoginId: () => 'LOGIN-1',
+		scheduleBackground: (p) => { bg.push(p); },
+	});
+	return { handlers, bg, mutateCalls, registry: reg, sdk };
+}
+
+test('loginOauth: invalid region → INVALID_ARGS, no device-code request', async () => {
+	let requested = false;
+	const { handlers } = buildOAuthHandlers({
+		oauthOverrides: { requestDeviceCode: async () => { requested = true; return {}; } },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'eu' }, respond });
+	assert.equal(calls.length, 1); // 单帧错误，无 phase-2
+	assert.equal(calls[0].ok, false);
+	assert.equal(calls[0].err.code, 'INVALID_ARGS');
+	assert.equal(requested, false);
+});
+
+test('loginOauth: phase-1 returns accepted frame with status + loginId + device code fields', async () => {
+	const { handlers, bg, registry } = buildOAuthHandlers();
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	// phase-1 帧
+	assert.equal(calls[0].ok, true);
+	assert.deepEqual(calls[0].data, {
+		status: 'accepted',
+		loginId: 'LOGIN-1',
+		verificationUri: 'https://verify.example',
+		userCode: 'USER-CODE',
+		expiresAt: 1700000000000,
+		interval: 2000,
+	});
+	// 登记发生在 respond accepted 之前
+	assert.deepEqual(registry.events[0], ['register', 'LOGIN-1']);
+	assert.equal(bg.length, 1);
+});
+
+test('loginOauth: registers loginId strictly BEFORE responding accepted (immediate cancel can find it)', async () => {
+	const { respond, calls } = makeRespond();
+	let respondCountAtRegister = -1;
+	// 自定义 registry：在 registerLogin 时刻记录"已发出的 respond 数"，钉死时序而非靠两条独立数组推断
+	const registry = createStubRegistry({
+		registerLogin(loginId, entry) {
+			respondCountAtRegister = calls.length;
+			this.events.push(['register', loginId]);
+			this.store.set(loginId, entry);
+		},
+	});
+	const { handlers } = buildOAuthHandlers({ registry });
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	assert.equal(respondCountAtRegister, 0); // 登记那一刻还没 respond 过 → register 严格早于 accepted
+	assert.equal(calls.length, 1); // 截至 phase-1 恰好一帧
+	assert.equal(calls[0].data.status, 'accepted');
+});
+
+test('loginOauth: region defaults to cn when params omitted', async () => {
+	let seenRegion;
+	const { handlers, bg } = buildOAuthHandlers({
+		oauthOverrides: {
+			requestDeviceCode: async ({ region }) => {
+				seenRegion = region;
+				return { verifier: 'v', userCode: 'u', verificationUri: 'uri', expiresAt: 1, interval: 2000 };
+			},
+		},
+	});
+	const { respond } = makeRespond();
+	await handlers.loginOauth({ respond });
+	await Promise.all(bg);
+	assert.equal(seenRegion, 'cn');
+});
+
+test('loginOauth: requestDeviceCode failure → single IO_FAILED frame, no registry, no background', async () => {
+	const registry = createStubRegistry();
+	const { handlers, bg } = buildOAuthHandlers({
+		registry,
+		oauthOverrides: { requestDeviceCode: async () => { throw new Error('network down'); } },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.equal(calls[0].err.message, 'network down');
+	assert.equal(registry.events.length, 0);
+	assert.equal(bg.length, 0);
+});
+
+test('loginOauth phase-2 success: writes oauth credential + provider cfg, responds ok, clears registry', async () => {
+	const upsertCalls = [];
+	const { handlers, bg, mutateCalls, registry } = buildOAuthHandlers({
+		sdkOverrides: {
+			upsertAuthProfileWithLock: async (p) => { upsertCalls.push(p); return { version: 1, profiles: {} }; },
+		},
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+
+	// 写凭据：oauth 形态 + 共享锁入口 + main agentDir
+	assert.equal(upsertCalls.length, 1);
+	assert.equal(upsertCalls[0].profileId, PORTAL_PROFILE_ID);
+	assert.equal(upsertCalls[0].agentDir, AGENT_DIR);
+	assert.deepEqual(upsertCalls[0].credential, {
+		type: 'oauth',
+		provider: PORTAL_PROVIDER_ID,
+		access: 'ACCESS',
+		refresh: 'REFRESH',
+		expires: 9999,
+	});
+	// 写配置：hot-reload afterWrite + provider 节点形态 + baseUrl 用动态 resourceUrl
+	assert.equal(mutateCalls.length, 1);
+	assert.deepEqual(mutateCalls[0].afterWrite, { mode: 'auto' });
+	assert.deepEqual(mutateCalls[0].draft.models.providers[PORTAL_PROVIDER_ID], {
+		baseUrl: 'https://acct.example/anthropic',
+		api: 'anthropic-messages',
+		authHeader: true,
+		models: [],
+	});
+	// phase-2 终态帧
+	assert.equal(calls.length, 2); // exactly-once：accepted + ok，无重复 respond
+	const final = calls.at(-1);
+	assert.equal(final.ok, true);
+	assert.deepEqual(final.data, { status: 'ok', profileId: PORTAL_PROFILE_ID });
+	// registry 清理
+	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']);
+});
+
+test('loginOauth phase-2 success: missing resourceUrl falls back to cn config base url', async () => {
+	const { handlers, bg, mutateCalls } = buildOAuthHandlers({
+		oauthOverrides: {
+			pollUntilSettled: async () => ({
+				status: 'success',
+				token: { access: 'A', refresh: 'R', expires: 1 }, // 无 resourceUrl
+			}),
+		},
+	});
+	const { respond } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(mutateCalls[0].draft.models.providers[PORTAL_PROVIDER_ID].baseUrl, CONFIG_DEFAULT_BASE_URL.cn);
+});
+
+test('loginOauth phase-2: upsert returns null → status error + IO_FAILED, no cfg write', async () => {
+	const { handlers, bg, mutateCalls } = buildOAuthHandlers({
+		sdkOverrides: { upsertAuthProfileWithLock: async () => null },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(calls.length, 2); // exactly-once：accepted + error
+	const final = calls.at(-1);
+	assert.equal(final.ok, false);
+	assert.deepEqual(final.data, { status: 'error' });
+	assert.equal(final.err.code, 'IO_FAILED');
+	assert.match(final.err.message, /failed to write/);
+	assert.equal(mutateCalls.length, 0);
+});
+
+test('loginOauth phase-2: mutateConfigFile throws → status error + IO_FAILED', async () => {
+	const { handlers, bg } = buildOAuthHandlers({
+		mutateConfigFile: async () => { throw new Error('cfg locked'); },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(calls.length, 2); // exactly-once：accepted + error
+	const final = calls.at(-1);
+	assert.equal(final.ok, false);
+	assert.deepEqual(final.data, { status: 'error' });
+	assert.equal(final.err.code, 'IO_FAILED');
+	assert.equal(final.err.message, 'cfg locked');
+});
+
+test('loginOauth phase-2: poll error → status error + OAUTH_FAILED with message', async () => {
+	const { handlers, bg } = buildOAuthHandlers({
+		oauthOverrides: { pollUntilSettled: async () => ({ status: 'error', message: 'auth denied' }) },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(calls.length, 2); // exactly-once：accepted + error
+	const final = calls.at(-1);
+	assert.deepEqual(final.data, { status: 'error' });
+	assert.equal(final.err.code, 'OAUTH_FAILED');
+	assert.equal(final.err.message, 'auth denied');
+});
+
+test('loginOauth phase-2: poll error without message uses default message', async () => {
+	const { handlers, bg } = buildOAuthHandlers({
+		oauthOverrides: { pollUntilSettled: async () => ({ status: 'error' }) },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.match(calls.at(-1).err.message, /authorization failed/);
+});
+
+test('loginOauth phase-2: poll timeout → status timeout + OAUTH_TIMEOUT', async () => {
+	const { handlers, bg } = buildOAuthHandlers({
+		oauthOverrides: { pollUntilSettled: async () => ({ status: 'timeout' }) },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(calls.length, 2); // exactly-once：accepted + timeout
+	const final = calls.at(-1);
+	assert.deepEqual(final.data, { status: 'timeout' });
+	assert.equal(final.err.code, 'OAUTH_TIMEOUT');
+});
+
+test('loginOauth phase-2: poll cancelled → status cancelled + OAUTH_CANCELLED', async () => {
+	const { handlers, bg } = buildOAuthHandlers({
+		oauthOverrides: { pollUntilSettled: async () => ({ status: 'cancelled' }) },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(calls.length, 2); // exactly-once：accepted + cancelled
+	const final = calls.at(-1);
+	assert.deepEqual(final.data, { status: 'cancelled' });
+	assert.equal(final.err.code, 'OAUTH_CANCELLED');
+});
+
+test('loginOauth phase-2: pollUntilSettled throws → defensive OAUTH_FAILED + registry cleared', async () => {
+	const registry = createStubRegistry();
+	const { handlers, bg } = buildOAuthHandlers({
+		registry,
+		oauthOverrides: { pollUntilSettled: async () => { throw new Error('poll exploded'); } },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(calls.length, 2); // exactly-once：accepted + 终态，无重复 respond
+	const final = calls.at(-1);
+	assert.equal(final.ok, false);
+	assert.deepEqual(final.data, { status: 'error' });
+	assert.equal(final.err.code, 'OAUTH_FAILED');
+	assert.equal(final.err.message, 'poll exploded');
+	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']);
+});
+
+test('loginOauth: mutate creates models container when draft has none, and reuses existing providers', async () => {
+	// 已有 models.providers 对象 → mutate 只增本节点，不重建容器
+	const existing = { models: { providers: { other: { baseUrl: 'x' } } } };
+	const { handlers, bg } = buildOAuthHandlers({
+		mutateConfigFile: async ({ mutate }) => { mutate(existing); },
+	});
+	const { respond } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.ok(existing.models.providers.other); // 原节点保留
+	assert.ok(existing.models.providers[PORTAL_PROVIDER_ID]); // 新节点写入
+});
+
+test('loginOauth: mutate replaces non-object models / array providers defensively', async () => {
+	const weird = { models: 'garbage' };
+	const { handlers, bg } = buildOAuthHandlers({
+		mutateConfigFile: async ({ mutate }) => { mutate(weird); },
+	});
+	const { respond } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	await Promise.all(bg);
+	assert.equal(typeof weird.models, 'object');
+	assert.ok(weird.models.providers[PORTAL_PROVIDER_ID]);
+
+	const arrProviders = { models: { providers: ['bad'] } };
+	const h2 = buildOAuthHandlers({ mutateConfigFile: async ({ mutate }) => { mutate(arrProviders); } });
+	const r2 = makeRespond();
+	await h2.handlers.loginOauth({ params: { region: 'cn' }, respond: r2.respond });
+	await Promise.all(h2.bg);
+	assert.ok(!Array.isArray(arrProviders.models.providers));
+	assert.ok(arrProviders.models.providers[PORTAL_PROVIDER_ID]);
+});
+
+test('loginOauth: defaults (no genLoginId / scheduleBackground) — fire-and-forget swallows finally throw', async () => {
+	// 不注入 genLoginId（走 randomUUID 默认）和 scheduleBackground（走默认 .catch(()=>{})）；
+	// registry.removeLogin 抛错 → 后台 promise reject → 默认 .catch 吞掉，不带垮进程
+	let removeThrew = false;
+	const registry = createStubRegistry({
+		removeLogin() { removeThrew = true; throw new Error('registry cleanup boom'); },
+	});
+	const handlers = buildProviderAuthHandlers({
+		sdk: createStubSdk({ mutateConfigFile: async ({ mutate }) => { mutate({ models: undefined }); } }),
+		resolveAgentDir: () => AGENT_DIR,
+		oauth: createStubOAuth(),
+		registry,
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	// 让后台微任务跑完（默认 fire-and-forget 无法 await，用 setImmediate flush）
+	await new Promise((r) => setImmediate(r));
+	// phase-1 accepted 帧 loginId 是真 uuid（randomUUID 默认）
+	assert.equal(calls[0].data.status, 'accepted');
+	assert.match(calls[0].data.loginId, /[0-9a-f-]{36}/);
+	// phase-2 ok 帧仍发出（finally 抛错发生在 respond 之后）
+	assert.equal(calls.at(-1).data.status, 'ok');
+	assert.equal(removeThrew, true);
+});
+
+test('cancelOauth: missing loginId → INVALID_ARGS', async () => {
+	const { handlers } = buildOAuthHandlers();
+	const { respond, calls } = makeRespond();
+	await handlers.cancelOauth({ params: {}, respond });
+	assert.equal(calls.length, 1); // 单发，exactly-once
+	assert.equal(calls[0].err.code, 'INVALID_ARGS');
+});
+
+test('cancelOauth: known loginId aborts its controller and responds {}', async () => {
+	const registry = createStubRegistry();
+	const ac = new AbortController();
+	registry.store.set('LOGIN-1', { abortController: ac });
+	const { handlers } = buildOAuthHandlers({ registry });
+	const { respond, calls } = makeRespond();
+	await handlers.cancelOauth({ params: { loginId: 'LOGIN-1' }, respond });
+	assert.equal(ac.signal.aborted, true);
+	assert.equal(calls.length, 1); // 单发，exactly-once
+	assert.equal(calls[0].ok, true);
+	assert.deepEqual(calls[0].data, {});
+});
+
+test('cancelOauth: unknown loginId is idempotent (responds {})', async () => {
+	const { handlers } = buildOAuthHandlers();
+	const { respond, calls } = makeRespond();
+	await handlers.cancelOauth({ params: { loginId: 'never-registered' }, respond });
+	assert.equal(calls.length, 1); // 单发，exactly-once
+	assert.equal(calls[0].ok, true);
+	assert.deepEqual(calls[0].data, {});
+});
+
+test('cancelOauth: registry.getLogin throws → defensive IO_FAILED', async () => {
+	const registry = createStubRegistry({
+		getLogin() { throw new Error('registry broken'); },
+	});
+	const { handlers } = buildOAuthHandlers({ registry });
+	const { respond, calls } = makeRespond();
+	await handlers.cancelOauth({ params: { loginId: 'x' }, respond });
+	assert.equal(calls.length, 1); // 单发，exactly-once
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.equal(calls[0].err.message, 'registry broken');
+});
+
+test('loginOauth: outer catch — genLoginId throws → IO_FAILED', async () => {
+	const handlers = buildProviderAuthHandlers({
+		sdk: createStubSdk(),
+		resolveAgentDir: () => AGENT_DIR,
+		oauth: createStubOAuth(),
+		registry: createStubRegistry(),
+		genLoginId: () => { throw new Error('uuid fail'); },
+		scheduleBackground: () => {},
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { region: 'cn' }, respond });
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.equal(calls[0].err.message, 'uuid fail');
 });

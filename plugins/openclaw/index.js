@@ -790,13 +790,15 @@ const plugin = {
 			}
 		});
 
-		// provider 认证管理 RPC（API key 写入 / 列表 / 撤销）。SDK 走懒加载 dynamic import，
-		// 不增加本插件 cold-load 开销，也让测试环境无需 openclaw 包就能加载 index.js。
-		// loadSdk 字面量必须留在本入口源码里：OpenClaw plugin loader 只扫入口文件识别
+		// provider 认证管理 RPC（API key 写入 / 列表 / 撤销 + OAuth 登录/取消）。SDK 走懒加载
+		// dynamic import，不增加本插件 cold-load 开销，也让测试环境无需 openclaw 包就能加载 index.js。
+		// load* 字面量必须留在本入口源码里：OpenClaw plugin loader 只扫入口文件识别
 		// `openclaw/plugin-sdk/*` 字符串字面量、命中后才把整张依赖图过 jiti 改写到自家 dist；
-		// 字面量留在子模块里 loader 看不到 → 整张图走原生 Node 解析必败（plugin 部署目录不带 openclaw 包）
+		// 字面量留在子模块里 loader 看不到 → 整张图走原生 Node 解析必败（plugin 部署目录不带 openclaw 包）。
+		// config-mutation 供 OAuth 写 provider 节点 baseUrl（hot-reload，零打断）
 		registerProviderAuthHandlers(api, {
 			loadSdk: () => import('openclaw/plugin-sdk/provider-auth'),
+			loadConfigMutation: () => import('openclaw/plugin-sdk/config-mutation'),
 		});
 
 		// 模型默认配置 RPC（coclaw.model.set / list）。三个 SDK 子入口的字面量
