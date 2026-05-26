@@ -162,14 +162,6 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		expect(input.attributes('type')).toBe('password');
 	});
 
-	test('form 内含隐藏 username 字段（消除浏览器“password 表单应含 username”告警），值为 provider id', async () => {
-		const w = await goToStep2(makeWrapper(), 'groq');
-		const username = w.find('form input[autocomplete="username"]');
-		expect(username.exists()).toBe(true);
-		expect(username.attributes('type')).toBe('text');
-		expect(username.element.value).toBe('groq');
-	});
-
 	test('shows dashboard link when provider has dashboardUrl (groq has one)', async () => {
 		const w = await goToStep2(makeWrapper());
 		expect(w.find('[data-testid="add-provider-dashboard-link"]').exists()).toBe(true);

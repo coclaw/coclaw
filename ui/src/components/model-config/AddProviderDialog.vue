@@ -71,8 +71,8 @@
 
 				<!-- Step 2: 输 API key（用 form 包裹密码框：消除浏览器“password 不在 form 内”告警；提交 + 原生回车都走 onSubmit）-->
 				<form v-else class="flex flex-col gap-3" @submit.prevent="onSubmit">
-					<!-- 隐藏 username 字段：消除“password 表单应含 username 字段”告警；此处凭据归属即 provider id -->
-					<input type="text" :value="selectedProvider" autocomplete="username" class="hidden" aria-hidden="true" tabindex="-1" readonly />
+					<!-- API key 是秘钥而非登录凭据：不加 username 字段、保持 autocomplete=off，刻意把密码管家挡在外面（主流做法）。
+					     代价是 Chrome 控制台留一条“表单应含 username 字段”的可达性提示——对秘钥框无害，接受。 -->
 					<!-- 输入框自带 placeholder，无需额外 label；aria-label 保留可达性。type=password 透传给原生 input -->
 					<UInput
 						v-model="apiKey"
