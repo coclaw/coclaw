@@ -35,6 +35,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL, VALID_REGIONS } from './minimax-oauth.js';
+import { remoteLog } from '../remote-log.js';
 
 const VALID_CRED_TYPES = new Set(['api_key', 'oauth', 'token']);
 const PORTAL_PROFILE_ID = `${PORTAL_PROVIDER_ID}:default`;
@@ -70,6 +71,7 @@ function isNonEmptyString(v) {
  * @param {object} [opts.registry] - oauth-registry（registerLogin / getLogin / removeLogin）
  * @param {Function} [opts.genLoginId] - () → loginId，默认 randomUUID
  * @param {Function} [opts.scheduleBackground] - (promise) → void，挂后台轮询；默认 fire-and-forget + .catch
+ * @param {Function} [opts.logRemote] - (text) → void，OAuth 终态诊断推送；默认模块级 remoteLog（测试注入 spy）
  * @returns {{ setApiKey, list, remove, loginOauth, cancelOauth }}
  */
 export function buildProviderAuthHandlers({
@@ -79,6 +81,7 @@ export function buildProviderAuthHandlers({
 	registry,
 	genLoginId = randomUUID,
 	scheduleBackground = (p) => { p.catch(() => {}); },
+	logRemote = remoteLog,
 }) {
 	// TODO: 将来若要支持"设默认模型 / 多账号顺序"等需要写 cfg 的操作，会撞上
 	// gateway 重启窗口的 UX 问题——参 docs/model-config-api.md § 3 / § 5（占位章节）。
@@ -174,7 +177,7 @@ export function buildProviderAuthHandlers({
 	// --- OAuth（MiniMax device-code，真·两阶段 res） ---
 
 	// 写凭据 + 写 cfg；恰好 respond 一次，不外抛（成功 ok / 失败 IO_FAILED 都在内部消化）
-	async function persistOAuthSuccess({ region, token, respond }) {
+	async function persistOAuthSuccess({ region, token, loginId, respond }) {
 		try {
 			const credential = {
 				type: 'oauth',
@@ -194,6 +197,7 @@ export function buildProviderAuthHandlers({
 					code: 'IO_FAILED',
 					message: 'failed to write auth-profiles store',
 				});
+				logRemote(`providerAuth.oauth.io-failed loginId=${loginId} stage=credential`);
 				return;
 			}
 			// 写 provider 节点 baseUrl —— hot-reload 路径，零打断（afterWrite:auto，禁传 restart）。
@@ -218,12 +222,14 @@ export function buildProviderAuthHandlers({
 				},
 			});
 			respond(true, { status: 'ok', profileId: PORTAL_PROFILE_ID });
+			logRemote(`providerAuth.oauth.ok loginId=${loginId} profileId=${PORTAL_PROFILE_ID}`);
 		}
 		catch (err) {
 			respond(false, { status: 'error' }, {
 				code: 'IO_FAILED',
 				message: String(err?.message ?? err),
 			});
+			logRemote(`providerAuth.oauth.io-failed loginId=${loginId} stage=config msg=${String(err?.message ?? err)}`);
 		}
 	}
 
@@ -244,6 +250,7 @@ export function buildProviderAuthHandlers({
 					code: 'OAUTH_CANCELLED',
 					message: 'MiniMax OAuth login was cancelled',
 				});
+				logRemote(`providerAuth.oauth.cancelled loginId=${loginId}`);
 				return;
 			}
 			if (outcome.status === 'timeout') {
@@ -251,6 +258,7 @@ export function buildProviderAuthHandlers({
 					code: 'OAUTH_TIMEOUT',
 					message: 'MiniMax OAuth timed out before authorization completed',
 				});
+				logRemote(`providerAuth.oauth.timeout loginId=${loginId}`);
 				return;
 			}
 			if (outcome.status === 'error') {
@@ -258,10 +266,11 @@ export function buildProviderAuthHandlers({
 					code: 'OAUTH_FAILED',
 					message: outcome.message || 'MiniMax OAuth authorization failed',
 				});
+				logRemote(`providerAuth.oauth.error loginId=${loginId} msg=${outcome.message || 'authorization failed'}`);
 				return;
 			}
 			// success：persistOAuthSuccess 内部恰好 respond 一次，不外抛
-			await persistOAuthSuccess({ region, token: outcome.token, respond });
+			await persistOAuthSuccess({ region, token: outcome.token, loginId, respond });
 		}
 		catch (err) {
 			// 防御：pollUntilSettled 未预期抛错（多半是 /oauth/token 轮询期的网络/传输失败）。
@@ -271,6 +280,7 @@ export function buildProviderAuthHandlers({
 				code: 'OAUTH_FAILED',
 				message: String(err?.message ?? err),
 			});
+			logRemote(`providerAuth.oauth.error loginId=${loginId} stage=poll msg=${String(err?.message ?? err)}`);
 		}
 		finally {
 			registry.removeLogin(loginId);

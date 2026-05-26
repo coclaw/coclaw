@@ -23,3 +23,9 @@ login writes, minus the optional default-model aliases (left to `coclaw.model.se
 
 The device-code flow is replicated from the upstream MiniMax extension (shared
 client_id / endpoints / scope) with injectable `fetch` for offline unit tests.
+The background poll self-terminates within an independent hard window so an
+oversized server-supplied `expired_in`/`interval` can no longer make it poll
+unbounded or leak the in-flight registry entry (a stalled individual request
+still relies on the underlying `fetch`'s own timeout). Server-returned token
+expiry and `resource_url` are type-validated before use, and each terminal
+outcome emits a low-frequency diagnostic log.

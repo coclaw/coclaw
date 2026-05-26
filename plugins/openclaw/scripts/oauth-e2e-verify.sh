@@ -15,6 +15,7 @@
 #   - openclaw gateway 跑着；jq 已装
 #   - 有可授权的 MiniMax（cn / token plan）账号
 #   - 验证前 minimax-portal 未绑定（脚本会先 precheck，避免污染你已有的真实绑定）
+#   - 默认读 $HOME/.openclaw/openclaw.json；自定义 state-dir / profile 时用 OPENCLAW_CONFIG 指向真实配置文件
 #
 # 用法：bash plugins/openclaw/scripts/oauth-e2e-verify.sh
 
@@ -133,7 +134,10 @@ API_FIELD=$(jq -r ".models.providers.\"$PROVIDER\".api // empty" "$CONFIG_PATH" 
 
 note "断言 gateway 未重启（PID 不变）"
 GW_PID_AFTER=$(openclaw gateway status 2>/dev/null | grep -oiE 'pid[^0-9]*[0-9]+' | grep -oE '[0-9]+' | head -1)
-if [[ -n "$GW_PID_BEFORE" && "$GW_PID_BEFORE" == "$GW_PID_AFTER" ]]; then
+if [[ -z "$GW_PID_BEFORE" || -z "$GW_PID_AFTER" ]]; then
+	# PID 没解析出来（status 文本格式变了）——不能据此断言重启，跳过避免误报 FAIL
+	printf "    ${YELLOW}PID 解析失败（before=%s after=%s），跳过重启断言${NC}\n" "$GW_PID_BEFORE" "$GW_PID_AFTER"
+elif [[ "$GW_PID_BEFORE" == "$GW_PID_AFTER" ]]; then
 	ok "PID 不变（$GW_PID_AFTER）"
 else
 	bad "PID 变化 before=$GW_PID_BEFORE after=$GW_PID_AFTER（可能触发了重启，与 hot-reload 预期不符）"

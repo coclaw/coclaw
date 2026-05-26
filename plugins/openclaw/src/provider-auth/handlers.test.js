@@ -769,6 +769,7 @@ function createStubOAuth(overrides = {}) {
 function buildOAuthHandlers({ sdkOverrides = {}, oauthOverrides = {}, registry, mutateConfigFile } = {}) {
 	const bg = [];
 	const mutateCalls = [];
+	const logs = [];
 	const defaultMutate = async ({ afterWrite, mutate }) => {
 		const draft = { models: undefined };
 		mutate(draft);
@@ -786,8 +787,9 @@ function buildOAuthHandlers({ sdkOverrides = {}, oauthOverrides = {}, registry, 
 		registry: reg,
 		genLoginId: () => 'LOGIN-1',
 		scheduleBackground: (p) => { bg.push(p); },
+		logRemote: (text) => { logs.push(text); },
 	});
-	return { handlers, bg, mutateCalls, registry: reg, sdk };
+	return { handlers, bg, mutateCalls, registry: reg, sdk, logs };
 }
 
 test('loginOauth: invalid region → INVALID_ARGS, no device-code request', async () => {
@@ -873,7 +875,7 @@ test('loginOauth: requestDeviceCode failure → single IO_FAILED frame, no regis
 
 test('loginOauth phase-2 success: writes oauth credential + provider cfg, responds ok, clears registry', async () => {
 	const upsertCalls = [];
-	const { handlers, bg, mutateCalls, registry } = buildOAuthHandlers({
+	const { handlers, bg, mutateCalls, registry, logs } = buildOAuthHandlers({
 		sdkOverrides: {
 			upsertAuthProfileWithLock: async (p) => { upsertCalls.push(p); return { version: 1, profiles: {} }; },
 		},
@@ -881,6 +883,10 @@ test('loginOauth phase-2 success: writes oauth credential + provider cfg, respon
 	const { respond, calls } = makeRespond();
 	await handlers.loginOauth({ params: { region: 'cn' }, respond });
 	await Promise.all(bg);
+
+	// 终态打了一条 ok 诊断（终态级、低频）
+	assert.equal(logs.length, 1);
+	assert.match(logs[0], /^providerAuth\.oauth\.ok loginId=LOGIN-1 profileId=/);
 
 	// 写凭据：oauth 形态 + 共享锁入口 + main agentDir
 	assert.equal(upsertCalls.length, 1);
@@ -927,7 +933,7 @@ test('loginOauth phase-2 success: missing resourceUrl falls back to cn config ba
 });
 
 test('loginOauth phase-2: upsert returns null → status error + IO_FAILED, no cfg write', async () => {
-	const { handlers, bg, mutateCalls } = buildOAuthHandlers({
+	const { handlers, bg, mutateCalls, registry, logs } = buildOAuthHandlers({
 		sdkOverrides: { upsertAuthProfileWithLock: async () => null },
 	});
 	const { respond, calls } = makeRespond();
@@ -940,10 +946,12 @@ test('loginOauth phase-2: upsert returns null → status error + IO_FAILED, no c
 	assert.equal(final.err.code, 'IO_FAILED');
 	assert.match(final.err.message, /failed to write/);
 	assert.equal(mutateCalls.length, 0);
+	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']); // finally 清理
+	assert.match(logs.at(-1), /^providerAuth\.oauth\.io-failed loginId=LOGIN-1 stage=credential/);
 });
 
 test('loginOauth phase-2: mutateConfigFile throws → status error + IO_FAILED', async () => {
-	const { handlers, bg } = buildOAuthHandlers({
+	const { handlers, bg, registry, logs } = buildOAuthHandlers({
 		mutateConfigFile: async () => { throw new Error('cfg locked'); },
 	});
 	const { respond, calls } = makeRespond();
@@ -955,10 +963,12 @@ test('loginOauth phase-2: mutateConfigFile throws → status error + IO_FAILED',
 	assert.deepEqual(final.data, { status: 'error' });
 	assert.equal(final.err.code, 'IO_FAILED');
 	assert.equal(final.err.message, 'cfg locked');
+	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']); // finally 清理
+	assert.match(logs.at(-1), /^providerAuth\.oauth\.io-failed loginId=LOGIN-1 stage=config/);
 });
 
 test('loginOauth phase-2: poll error → status error + OAUTH_FAILED with message', async () => {
-	const { handlers, bg } = buildOAuthHandlers({
+	const { handlers, bg, registry, logs } = buildOAuthHandlers({
 		oauthOverrides: { pollUntilSettled: async () => ({ status: 'error', message: 'auth denied' }) },
 	});
 	const { respond, calls } = makeRespond();
@@ -969,6 +979,8 @@ test('loginOauth phase-2: poll error → status error + OAUTH_FAILED with messag
 	assert.deepEqual(final.data, { status: 'error' });
 	assert.equal(final.err.code, 'OAUTH_FAILED');
 	assert.equal(final.err.message, 'auth denied');
+	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']); // finally 清理
+	assert.match(logs.at(-1), /^providerAuth\.oauth\.error loginId=LOGIN-1 msg=auth denied/);
 });
 
 test('loginOauth phase-2: poll error without message uses default message', async () => {
@@ -982,7 +994,7 @@ test('loginOauth phase-2: poll error without message uses default message', asyn
 });
 
 test('loginOauth phase-2: poll timeout → status timeout + OAUTH_TIMEOUT', async () => {
-	const { handlers, bg } = buildOAuthHandlers({
+	const { handlers, bg, registry, logs } = buildOAuthHandlers({
 		oauthOverrides: { pollUntilSettled: async () => ({ status: 'timeout' }) },
 	});
 	const { respond, calls } = makeRespond();
@@ -992,10 +1004,12 @@ test('loginOauth phase-2: poll timeout → status timeout + OAUTH_TIMEOUT', asyn
 	const final = calls.at(-1);
 	assert.deepEqual(final.data, { status: 'timeout' });
 	assert.equal(final.err.code, 'OAUTH_TIMEOUT');
+	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']); // finally 清理
+	assert.match(logs.at(-1), /^providerAuth\.oauth\.timeout loginId=LOGIN-1/);
 });
 
 test('loginOauth phase-2: poll cancelled → status cancelled + OAUTH_CANCELLED', async () => {
-	const { handlers, bg } = buildOAuthHandlers({
+	const { handlers, bg, registry, logs } = buildOAuthHandlers({
 		oauthOverrides: { pollUntilSettled: async () => ({ status: 'cancelled' }) },
 	});
 	const { respond, calls } = makeRespond();
@@ -1005,11 +1019,13 @@ test('loginOauth phase-2: poll cancelled → status cancelled + OAUTH_CANCELLED'
 	const final = calls.at(-1);
 	assert.deepEqual(final.data, { status: 'cancelled' });
 	assert.equal(final.err.code, 'OAUTH_CANCELLED');
+	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']); // finally 清理
+	assert.match(logs.at(-1), /^providerAuth\.oauth\.cancelled loginId=LOGIN-1/);
 });
 
 test('loginOauth phase-2: pollUntilSettled throws → defensive OAUTH_FAILED + registry cleared', async () => {
 	const registry = createStubRegistry();
-	const { handlers, bg } = buildOAuthHandlers({
+	const { handlers, bg, logs } = buildOAuthHandlers({
 		registry,
 		oauthOverrides: { pollUntilSettled: async () => { throw new Error('poll exploded'); } },
 	});
@@ -1023,6 +1039,7 @@ test('loginOauth phase-2: pollUntilSettled throws → defensive OAUTH_FAILED + r
 	assert.equal(final.err.code, 'OAUTH_FAILED');
 	assert.equal(final.err.message, 'poll exploded');
 	assert.deepEqual(registry.events.at(-1), ['remove', 'LOGIN-1']);
+	assert.match(logs.at(-1), /^providerAuth\.oauth\.error loginId=LOGIN-1 stage=poll msg=poll exploded/);
 });
 
 test('loginOauth: mutate creates models container when draft has none, and reuses existing providers', async () => {
@@ -1070,6 +1087,7 @@ test('loginOauth: defaults (no genLoginId / scheduleBackground) — fire-and-for
 		resolveAgentDir: () => AGENT_DIR,
 		oauth: createStubOAuth(),
 		registry,
+		logRemote: () => {},
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.loginOauth({ params: { region: 'cn' }, respond });
@@ -1133,6 +1151,7 @@ test('loginOauth: outer catch — genLoginId throws → IO_FAILED', async () => 
 		registry: createStubRegistry(),
 		genLoginId: () => { throw new Error('uuid fail'); },
 		scheduleBackground: () => {},
+		logRemote: () => {},
 	});
 	const { respond, calls } = makeRespond();
 	await handlers.loginOauth({ params: { region: 'cn' }, respond });

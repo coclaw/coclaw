@@ -12,7 +12,8 @@
  * - `requestDeviceCode`：PKCE → POST /oauth/code，拿 user_code / verification_uri /
  *   expired_in（**绝对 ms epoch 截止时刻**，与上游 `while (Date.now() < expired_in)` 同义）/ interval
  * - `pollUntilSettled`：单 async 循环轮询 POST /oauth/token，pending→sleep 再轮；
- *   success / error / 到期 / abort 四个出口，以 expired_in 为自身超时保证终态必在窗口内 fire
+ *   success / error / 到期 / abort 四个出口。超时取 expired_in 与本地 MAX_LOGIN_WINDOW 的较早者——
+ *   服务端给离谱大 expired_in 也由本地硬窗口兜住，循环必定自我终止（不会永久挂死/泄漏）
  *
  * 注意两个 baseUrl 不是一回事：
  * - OAuth 端点 base（建 /oauth/code、/oauth/token）：cn `https://api.minimaxi.com`
@@ -32,6 +33,23 @@ const OAUTH_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:user_code';
 
 // 轮询间隔下限：服务端可能给更小或不给，统一兜到 2s（与上游一致）
 const MIN_POLL_INTERVAL = 2000;
+
+// 轮询间隔上限：服务端给离谱大值（误用单位 / 恶意）时兜住——否则单轮 sleep 可跨越数天，
+// 或 >2^31ms 时 setTimeout 被钳成 1ms 变成热轮询。60s 远高于任何正常设备码轮询间隔
+// （典型 ≤10s），不会误伤合法值。导出供测试引用。
+export const MAX_POLL_INTERVAL = 60_000;
+
+// 登录轮询的独立硬窗口：不论服务端给的 expired_in 多离谱，轮询最多跑这么久就必定超时收尾。
+// 杜绝"有限但巨大的 expired_in 让 now()>=expiresAt 恒假 → 永不超时 + registry 泄漏 + 发起方挂死"
+// （round-1 的 expired_in 守卫只挡了非数/NaN/Infinity，挡不住有限巨大值）。1h 远高于任何正常
+// 设备码寿命（典型分钟级），合法登录到不了上限，只有离谱值才会被它兜住。导出供测试引用。
+export const MAX_LOGIN_WINDOW = 60 * 60 * 1000;
+
+// 把服务端给的轮询间隔规整到 [MIN, MAX] 的有限值；非数 / NaN / Infinity → MIN
+function clampInterval(raw) {
+	const n = (typeof raw === 'number' && Number.isFinite(raw)) ? raw : MIN_POLL_INTERVAL;
+	return Math.min(Math.max(n, MIN_POLL_INTERVAL), MAX_POLL_INTERVAL);
+}
 
 // 跑模型用的 provider 节点 id（"token plan" 无独立 id，凭据 + 配置都落这）
 export const PORTAL_PROVIDER_ID = 'minimax-portal';
@@ -103,7 +121,16 @@ async function parseTokenResponse(response) {
 	if (payload.status !== 'success') {
 		return { status: 'pending' };
 	}
-	if (!payload.access_token || !payload.refresh_token || !payload.expired_in) {
+	// token 的 expired_in 是凭据自身有效期，下游 OpenClaw 刷新逻辑按数字时间戳比较；
+	// 非有限正数（字符串 / NaN / 0 / 负）一律视为不全，避免把脏值落进凭据（与设备码 expired_in 守卫对齐）
+	const tokenExpires = payload.expired_in;
+	if (
+		!payload.access_token
+		|| !payload.refresh_token
+		|| typeof tokenExpires !== 'number'
+		|| !Number.isFinite(tokenExpires)
+		|| tokenExpires <= 0
+	) {
 		return { status: 'error', message: 'MiniMax OAuth returned incomplete token payload.' };
 	}
 	return {
@@ -111,8 +138,9 @@ async function parseTokenResponse(response) {
 		token: {
 			access: payload.access_token,
 			refresh: payload.refresh_token,
-			expires: payload.expired_in,
-			resourceUrl: payload.resource_url,
+			expires: tokenExpires,
+			// resource_url 会成为 provider 配置的 baseUrl；非字符串丢弃，让 handler 回落区域默认
+			resourceUrl: typeof payload.resource_url === 'string' ? payload.resource_url : undefined,
 		},
 	};
 }
@@ -189,7 +217,8 @@ export function createMiniMaxOAuth(deps) {
 			userCode: payload.user_code,
 			verificationUri: payload.verification_uri,
 			expiresAt: payload.expired_in,
-			interval: Math.max(payload.interval || MIN_POLL_INTERVAL, MIN_POLL_INTERVAL),
+			// 规整到 [MIN, MAX] 有限值：服务端给非数会变 NaN 透到 UI，给离谱大值会拖垮轮询
+			interval: clampInterval(payload.interval),
 		};
 	}
 
@@ -206,10 +235,13 @@ export function createMiniMaxOAuth(deps) {
 	 */
 	async function pollUntilSettled({ region, userCode, verifier, expiresAt, interval, signal }) {
 		const endpoints = getEndpoints(region);
-		const pollInterval = Math.max(interval || MIN_POLL_INTERVAL, MIN_POLL_INTERVAL);
+		const pollInterval = clampInterval(interval);
+		// 独立硬上限：真实截止取服务端 expiresAt 与本地 now()+MAX_LOGIN_WINDOW 的较早者。
+		// 服务端给离谱大 expiresAt 时由本地窗口兜住，循环必定自我终止（不再永久挂死/泄漏）。
+		const deadline = Math.min(expiresAt, now() + MAX_LOGIN_WINDOW);
 		for (;;) {
 			if (signal?.aborted) return { status: 'cancelled' };
-			if (now() >= expiresAt) return { status: 'timeout' };
+			if (now() >= deadline) return { status: 'timeout' };
 			const response = await fetchImpl(endpoints.tokenEndpoint, {
 				method: 'POST',
 				headers: {
@@ -226,7 +258,8 @@ export function createMiniMaxOAuth(deps) {
 			const result = await parseTokenResponse(response);
 			if (result.status === 'success') return { status: 'success', token: result.token };
 			if (result.status === 'error') return { status: 'error', message: result.message };
-			// pending：等一个间隔再轮（abort 会让 sleep 提前返回，回顶判 aborted）
+			// pending：等一个间隔再轮（abort 会让 sleep 提前返回，回顶判 aborted）。
+			// pollInterval 已被 clampInterval 兜在 ≤MAX_POLL_INTERVAL，故循环必在 deadline+一个间隔内终止
 			await sleep(pollInterval, signal);
 		}
 	}

@@ -7,6 +7,8 @@ import {
 	PORTAL_PROVIDER_ID,
 	CONFIG_DEFAULT_BASE_URL,
 	VALID_REGIONS,
+	MAX_POLL_INTERVAL,
+	MAX_LOGIN_WINDOW,
 } from './minimax-oauth.js';
 
 // --- 共用 fake 工厂 ---
@@ -305,6 +307,81 @@ test('pollUntilSettled: interval falsy falls back to 2000', async () => {
 	);
 	await oauth.pollUntilSettled({ ...POLL_ARGS, interval: 0, signal: new AbortController().signal });
 	assert.equal(observed, 2000);
+});
+
+// === 服务端给离谱值时的独立硬上限（不论服务端说什么，到点必停） ===
+
+test('requestDeviceCode: oversized interval is capped to MAX_POLL_INTERVAL (accepted-frame value)', async () => {
+	const { oauth } = makeOAuth([
+		{ ok: true, jsonBody: { user_code: 'X', verification_uri: 'u', expired_in: 1, interval: 999_999_999, state: 'STATE' } },
+	]);
+	const out = await oauth.requestDeviceCode({ region: 'cn' });
+	assert.equal(out.interval, MAX_POLL_INTERVAL);
+});
+
+test('requestDeviceCode: non-numeric interval falls back to a finite number (never NaN to UI)', async () => {
+	const { oauth } = makeOAuth([
+		{ ok: true, jsonBody: { user_code: 'X', verification_uri: 'u', expired_in: 1, interval: 'soon', state: 'STATE' } },
+	]);
+	const out = await oauth.requestDeviceCode({ region: 'cn' });
+	assert.equal(Number.isFinite(out.interval), true);
+	assert.equal(out.interval, 2000);
+});
+
+test('pollUntilSettled: absurd expiresAt is bounded by an independent hard window → timeout, not infinite poll', async () => {
+	// 服务端把截止时刻给成离谱大值（如单位写错成微秒 ≈ 1e15）且一直回 pending。
+	// 没有独立硬上限时 now()>=expiresAt 恒为 false → 永不超时、永不清理、发起方挂死。
+	// 本测试钉死：循环以独立硬上限自我终止。无硬上限时 fetch 会被调到超过阈值而抛错（红）。
+	let clock = 0;
+	let polls = 0;
+	const oauth = createMiniMaxOAuth({
+		generatePkce: fakePkce,
+		toForm: fakeToForm,
+		fetchImpl: async () => {
+			polls += 1;
+			if (polls > 10) throw new Error('poll never terminated: no independent hard ceiling');
+			return { ok: true, statusText: '', json: async () => ({}), text: async () => JSON.stringify({ status: 'pending' }) };
+		},
+		// 每次读时钟前进半个硬窗口，几轮即跨过 hardDeadline
+		now: () => { const v = clock; clock += MAX_LOGIN_WINDOW / 2; return v; },
+		sleep: async () => {},
+	});
+	const out = await oauth.pollUntilSettled({
+		region: 'cn', userCode: 'U', verifier: 'V',
+		expiresAt: 1e15, interval: 2000, signal: new AbortController().signal,
+	});
+	assert.deepEqual(out, { status: 'timeout' });
+});
+
+test('pollUntilSettled: oversized interval clamps the inter-poll sleep to MAX_POLL_INTERVAL', async () => {
+	let observed;
+	const { oauth } = makeOAuth(
+		[
+			{ ok: true, jsonBody: { status: 'pending' } },
+			{ ok: true, jsonBody: { status: 'success', access_token: 'A', refresh_token: 'R', expired_in: 1 } },
+		],
+		{ sleep: async (ms) => { observed = ms; } },
+	);
+	await oauth.pollUntilSettled({ ...POLL_ARGS, interval: 999_999_999, signal: new AbortController().signal });
+	assert.ok(observed <= MAX_POLL_INTERVAL, `expected sleep clamped to ≤${MAX_POLL_INTERVAL}, saw ${observed}`);
+});
+
+test('pollUntilSettled: success with non-numeric token expired_in → incomplete error (parity with device-code guard)', async () => {
+	const { oauth } = makeOAuth([
+		{ ok: true, jsonBody: { status: 'success', access_token: 'A', refresh_token: 'R', expired_in: '3600' } },
+	]);
+	const out = await oauth.pollUntilSettled({ ...POLL_ARGS, signal: new AbortController().signal });
+	assert.equal(out.status, 'error');
+	assert.match(out.message, /incomplete token/);
+});
+
+test('pollUntilSettled: non-string resource_url is dropped (handler then falls back to default baseUrl)', async () => {
+	const { oauth } = makeOAuth([
+		{ ok: true, jsonBody: { status: 'success', access_token: 'A', refresh_token: 'R', expired_in: 9999, resource_url: 12345 } },
+	]);
+	const out = await oauth.pollUntilSettled({ ...POLL_ARGS, signal: new AbortController().signal });
+	assert.equal(out.status, 'success');
+	assert.equal(out.token.resourceUrl, undefined);
 });
 
 // === 默认依赖（不注入 randomState / randomRequestId / now / sleep，走生产默认） ===
