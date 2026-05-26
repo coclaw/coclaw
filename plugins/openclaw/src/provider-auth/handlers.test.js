@@ -765,6 +765,12 @@ function createStubOAuth(overrides = {}) {
 	};
 }
 
+// 内置静态表里 minimax-portal 的清单（与 portal-model-catalog.js 对齐）——成功用例断言写入的就是它
+const EXPECTED_PORTAL_MODELS = [
+	{ id: 'MiniMax-M2.7', name: 'MiniMax M2.7' },
+	{ id: 'MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed' },
+];
+
 // 把 oauth handler 构建出来；scheduleBackground 收集后台 promise，便于确定性 await
 function buildOAuthHandlers({ sdkOverrides = {}, oauthOverrides = {}, registry, mutateConfigFile } = {}) {
 	const bg = [];
@@ -873,7 +879,7 @@ test('loginOauth: requestDeviceCode failure → single IO_FAILED frame, no regis
 	assert.equal(bg.length, 0);
 });
 
-test('loginOauth phase-2 success: writes oauth credential + provider cfg, responds ok, clears registry', async () => {
+test('loginOauth phase-2 success: writes oauth credential + provider cfg (static catalog), responds ok, clears registry', async () => {
 	const upsertCalls = [];
 	const { handlers, bg, mutateCalls, registry, logs } = buildOAuthHandlers({
 		sdkOverrides: {
@@ -884,9 +890,9 @@ test('loginOauth phase-2 success: writes oauth credential + provider cfg, respon
 	await handlers.loginOauth({ params: { region: 'cn' }, respond });
 	await Promise.all(bg);
 
-	// 终态打了一条 ok 诊断（终态级、低频）
+	// 终态打了一条 ok 诊断（终态级、低频；带写入的模型数 = 静态表 2 个）
 	assert.equal(logs.length, 1);
-	assert.match(logs[0], /^providerAuth\.oauth\.ok loginId=LOGIN-1 profileId=/);
+	assert.match(logs[0], /^providerAuth\.oauth\.ok loginId=LOGIN-1 profileId=.* models=2$/);
 
 	// 写凭据：oauth 形态 + 共享锁入口 + main agentDir
 	assert.equal(upsertCalls.length, 1);
@@ -899,14 +905,14 @@ test('loginOauth phase-2 success: writes oauth credential + provider cfg, respon
 		refresh: 'REFRESH',
 		expires: 9999,
 	});
-	// 写配置：hot-reload afterWrite + provider 节点形态 + baseUrl 用动态 resourceUrl
+	// 写配置：hot-reload afterWrite + provider 节点形态 + baseUrl 用动态 resourceUrl + 内置静态清单
 	assert.equal(mutateCalls.length, 1);
 	assert.deepEqual(mutateCalls[0].afterWrite, { mode: 'auto' });
 	assert.deepEqual(mutateCalls[0].draft.models.providers[PORTAL_PROVIDER_ID], {
 		baseUrl: 'https://acct.example/anthropic',
 		api: 'anthropic-messages',
 		authHeader: true,
-		models: [],
+		models: EXPECTED_PORTAL_MODELS,
 	});
 	// phase-2 终态帧
 	assert.equal(calls.length, 2); // exactly-once：accepted + ok，无重复 respond

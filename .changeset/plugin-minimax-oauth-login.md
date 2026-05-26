@@ -15,11 +15,22 @@ sends the final frame on the same request id (success / error / timeout /
 cancelled). `cancelOauth` mirrors `agent.abort` — a single-shot abort of the
 in-flight login. On success the plugin writes an OAuth credential via the
 locked `upsertAuthProfileWithLock` and writes `models.providers.minimax-portal`
-(dynamic per-account `baseUrl`) through `mutateConfigFile` with `afterWrite:auto`
-— a hot-reload path, so no gateway restart and no dropped RTC/run. Running the
-model itself is handled by OpenClaw's bundled MiniMax extension; CoClaw only
-produces the credential + provider config — the same end state an upstream OAuth
-login writes, minus the optional default-model aliases (left to `coclaw.model.set`).
+(dynamic per-account `baseUrl` + model list) through `mutateConfigFile` with
+`afterWrite:auto` — a hot-reload path, so no gateway restart and no dropped RTC/run.
+
+The model list is required for the models to be usable: OpenClaw's bundled MiniMax
+extension only injects its static catalog during a provider-scoped discovery pass
+that a third-party binding cannot trigger, so without an explicit model list the
+provider shows zero models (unusable in the picker and rejected by
+`coclaw.model.set`). The plugin writes a small built-in static catalog
+(`MiniMax-M2.7` + `MiniMax-M2.7-highspeed`, matching upstream's hand-maintained
+`MINIMAX_TEXT_MODEL_ORDER`) rather than fetching `/models` over the network — the
+live endpoint returns several older model generations the user does not want, and
+a login-time fetch is no fresher than a static table (it goes stale until the next
+login anyway). To keep already-bound users in sync when the plugin ships new
+models, the gateway reconciles the bound provider's `models[]` against the built-in
+table on startup, writing only when they actually differ (a no-op when in sync, so
+config writes — and any future restart-on-write behavior — happen at most once).
 
 The device-code flow is replicated from the upstream MiniMax extension (shared
 client_id / endpoints / scope) with injectable `fetch` for offline unit tests.

@@ -35,6 +35,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL, VALID_REGIONS } from './minimax-oauth.js';
+import { getPortalModels } from './portal-model-catalog.js';
 import { remoteLog } from '../remote-log.js';
 
 const VALID_CRED_TYPES = new Set(['api_key', 'oauth', 'token']);
@@ -203,6 +204,11 @@ export function buildProviderAuthHandlers({
 			// 写 provider 节点 baseUrl —— hot-reload 路径，零打断（afterWrite:auto，禁传 restart）。
 			// baseUrl 优先用服务端动态返回的 resourceUrl，缺省回落 cn/global 默认（带 /anthropic 后缀）
 			const baseUrl = token.resourceUrl || CONFIG_DEFAULT_BASE_URL[region];
+			// 写模型清单进 provider 节点：上游对 minimax-portal 用写死静态清单且第三方触发不到其
+			// catalog discovery，不写则 catalog 为空、模型不可用。直接取内置静态表（与上游对齐），
+			// 不再网络拉取——避免登录拉一次后静态过时 + 带进旧模型。后续升级新模型靠启动对账补。
+			// 详见 docs/model-config-api.md § 2.3
+			const models = getPortalModels(PORTAL_PROVIDER_ID);
 			await sdk.mutateConfigFile({
 				afterWrite: { mode: 'auto' },
 				mutate(draft) {
@@ -217,12 +223,12 @@ export function buildProviderAuthHandlers({
 						baseUrl,
 						api: 'anthropic-messages',
 						authHeader: true,
-						models: [],
+						models,
 					};
 				},
 			});
 			respond(true, { status: 'ok', profileId: PORTAL_PROFILE_ID });
-			logRemote(`providerAuth.oauth.ok loginId=${loginId} profileId=${PORTAL_PROFILE_ID}`);
+			logRemote(`providerAuth.oauth.ok loginId=${loginId} profileId=${PORTAL_PROFILE_ID} models=${models.length}`);
 		}
 		catch (err) {
 			respond(false, { status: 'error' }, {

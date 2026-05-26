@@ -18,6 +18,7 @@ import { abortAgentRun } from './src/agent-abort.js';
 import { decideCancelResponse } from './src/agent-cancel-heuristic.js';
 import { remoteLog } from './src/remote-log.js';
 import { registerProviderAuthHandlers } from './src/provider-auth/index.js';
+import { reconcilePortalModels } from './src/provider-auth/reconcile.js';
 import { registerModelDefaultHandlers } from './src/model-default/index.js';
 import { getClawConfig } from './src/claw-config.js';
 
@@ -203,7 +204,16 @@ const plugin = {
 			.catch((err) => {
 				logger.warn?.(`[coclaw] chat history manager load/reconcile failed: ${String(err?.message ?? err)}`);
 			});
-		__pluginInitDone = Promise.all([topicLoadP, chatHistoryLoadP]);
+		// 启动对账 minimax-portal 模型清单：已绑定且与内置表不一致才刷新（一致零写入，
+		// 防"写配置触发重启"时的反复重启）。升级补了新模型靠这条让老用户重启后自动同步。
+		// config-mutation 字面量 specifier 必须出现在本入口源码里（loader 只扫入口识别 jiti alias）。
+		const portalSyncP = import('openclaw/plugin-sdk/config-mutation')
+			.then(({ mutateConfigFile }) => reconcilePortalModels({ getConfig: getClawConfig, mutateConfigFile }))
+			.then((r) => { if (r.changed) logger.info?.('[coclaw] minimax-portal model list synced from plugin catalog'); })
+			.catch((err) => {
+				logger.warn?.(`[coclaw] minimax-portal model reconcile failed: ${String(err?.message ?? err)}`);
+			});
+		__pluginInitDone = Promise.all([topicLoadP, chatHistoryLoadP, portalSyncP]);
 
 		// 追踪 chat 因 reset 产生的 session 流水。双源回调（hook + sessions.changed）共用 helper。
 		// recordSessionTransition 内部已 __reloadFromDisk + mutex，外层无需再 cache.has + load。

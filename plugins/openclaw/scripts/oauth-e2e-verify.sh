@@ -45,9 +45,9 @@ cleanup() {
 	note "清理（Create-Test-Delete 还原）"
 	# 拨掉可能仍在跑的后台轮询（幂等；未知/已终态也无害）
 	if [[ -n "$LOGIN_ID" ]]; then
-		openclaw gateway call coclaw.providerAuth.cancelOauth "{\"loginId\":\"$LOGIN_ID\"}" --json >/dev/null 2>&1 || true
+		openclaw gateway call coclaw.providerAuth.cancelOauth --params "{\"loginId\":\"$LOGIN_ID\"}" --json >/dev/null 2>&1 || true
 	fi
-	openclaw gateway call coclaw.providerAuth.remove "{\"provider\":\"$PROVIDER\"}" --json >/dev/null 2>&1 || true
+	openclaw gateway call coclaw.providerAuth.remove --params "{\"provider\":\"$PROVIDER\"}" --json >/dev/null 2>&1 || true
 	printf "    凭据已删。配置节点 models.providers.%s 无 CLI 可删（残留无害，见 § 6.14）。\n" "$PROVIDER"
 	printf "    如需手动清除：\n"
 	printf "      ${YELLOW}jq 'del(.models.providers.\"%s\")' %s > /tmp/oc.json && mv /tmp/oc.json %s && openclaw gateway restart${NC}\n" "$PROVIDER" "$CONFIG_PATH" "$CONFIG_PATH"
@@ -60,7 +60,7 @@ command -v jq >/dev/null 2>&1 || { echo "需要 jq，请先安装"; exit 1; }
 openclaw gateway status >/dev/null 2>&1 || { echo "gateway 未运行"; exit 1; }
 
 note "precheck：minimax-portal 当前未绑定"
-PRE_LIST=$(openclaw gateway call coclaw.providerAuth.list "{\"provider\":\"$PROVIDER\"}" --json 2>&1)
+PRE_LIST=$(openclaw gateway call coclaw.providerAuth.list --params "{\"provider\":\"$PROVIDER\"}" --json 2>&1)
 PRE_COUNT=$(echo "$PRE_LIST" | jq '.profiles | length' 2>/dev/null || echo "?")
 if [[ "$PRE_COUNT" != "0" ]]; then
 	echo "    minimax-portal 已存在 $PRE_COUNT 条 profile —— 为避免污染真实绑定，请先手动 remove 再跑本脚本"
@@ -77,7 +77,7 @@ GW_PID_BEFORE=$(openclaw gateway status 2>/dev/null | grep -oiE 'pid[^0-9]*[0-9]
 # === phase-1：发起登录，拿 accepted 帧 ===
 
 note "发起 loginOauth（region=cn），拿 accepted 帧"
-ACCEPTED=$(openclaw gateway call coclaw.providerAuth.loginOauth '{"region":"cn"}' --json 2>&1)
+ACCEPTED=$(openclaw gateway call coclaw.providerAuth.loginOauth --params '{"region":"cn"}' --json 2>&1)
 STATUS=$(echo "$ACCEPTED" | jq -r '.status // empty' 2>/dev/null)
 if [[ "$STATUS" != "accepted" ]]; then
 	bad "未拿到 accepted 帧：$ACCEPTED"
@@ -102,7 +102,7 @@ note "轮询 providerAuth.list 等待 oauth profile 落盘（最多 ${POLL_TIMEO
 DEADLINE=$(( $(date +%s) + POLL_TIMEOUT_SECONDS ))
 FOUND=""
 while [[ $(date +%s) -lt $DEADLINE ]]; do
-	LIST=$(openclaw gateway call coclaw.providerAuth.list "{\"provider\":\"$PROVIDER\"}" --json 2>&1)
+	LIST=$(openclaw gateway call coclaw.providerAuth.list --params "{\"provider\":\"$PROVIDER\"}" --json 2>&1)
 	TYPE=$(echo "$LIST" | jq -r '.profiles[0].type // empty' 2>/dev/null)
 	if [[ "$TYPE" == "oauth" ]]; then
 		FOUND=$LIST

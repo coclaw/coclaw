@@ -1355,3 +1355,12 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 - 修法 B（插件侧在 `list` handler 返回前用上游自己的归一化函数把 `cred.provider` 折叠成规范名再给前端）更干净——映射只在上游一份、前端保持简单。但前提是 plugin-sdk 暴露了 `normalizeProviderId`（待核实；当前插件未 import 该函数），且仍是跨工作区的发版前改动。
 
 **修复方向**：优先走修法 B——先核实 `openclaw/plugin-sdk` 是否暴露 `normalizeProviderId`（或等价 `normalizeProviderIdForAuth`）；若暴露，在 `provider-auth/handlers.js` `list` 的 `toListEntry` 出参处把 `provider` 归一化，并同步给 UI 一条"profiles[].provider 已规范化"的契约说明。若 SDK 未暴露，再评估前端兜底或推动上游导出。
+
+## MiniMax OAuth：global 区域登录流未真机验证
+
+**发现日期**：2026-05-26（MiniMax OAuth e2e 验证时识别）
+**关联**：`plugins/openclaw/src/provider-auth/minimax-oauth.js`（`createOAuthHandler` 路径）
+
+**背景**：设备码登录流仅 cn 区域实地跑通（真账号扫码、令牌落盘、配置热更、零重启全验过）。global 走相同代码、不同 baseUrl，机制一致但端点行为/响应未实测。拿到 global 账号时跑一遍同款 e2e（`scripts/oauth-e2e-verify.sh` 改 region 即可）。
+
+**模型清单已与 REST 解耦**：模型清单现取自内置静态表（`portal-model-catalog.js`），登录写一次 + 启动对账同步，cn/global 同款两个模型，不再有 region 相关的 `/models` 端点行为差异。详见 `docs/model-config-api.md` § 2.3.7。

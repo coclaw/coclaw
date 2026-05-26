@@ -214,10 +214,13 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 #### 2.3.7 关键依赖与边界
 
-- **CoClaw 只产出"凭据 + 配置"两样**；跑模型 / 模型 catalog 靠 OpenClaw 自带 minimax **bundled 扩展**（被动激活，`resolvePortalCatalog` 查到 oauth profile → `MINIMAX_OAUTH_MARKER`）——我们产出的终态与上游 OAuth 登录**一模一样**，不重写 provider runtime。
+- **CoClaw 产出"凭据 + 配置（含模型清单）"**；不重写 provider runtime（推理仍走 OpenClaw 的 `anthropic-messages` provider）。**注意**：OpenClaw 自带 minimax bundled 扩展虽然内置了 minimax-portal 的静态模型清单，但它**只在按 provider 限定范围的 discovery pass 被触发时**才注入 catalog，而该 pass 仅对"默认模型 provider"或"声明了 discovery 入口的插件"在网关启动时跑——minimax 两者都不是，第三方插件也没有 sanctioned 入口去触发它。**结论（已真机核实）：第三方驱动的 minimax-portal 绑定拿不到 bundled 自动注入，模型清单必须由 CoClaw 自己写入**（见下条）。
 - **RPC 连接中断不处理**：不追踪 UI 存活，断了 phase-2 帧丢弃无害（凭据可能已落盘，下次 `providerAuth.list` 能看到 `minimax-portal`）。现 RTC 基础设施很难断。
 - OAuth 凭据由 OpenClaw 自动 refresh（mental-model § 4.4），CoClaw 不自己刷；不可硬复制（`refresh_token_reused`），写入永远是 main agent（设计原则 #5）；撤销后 `models.authStatus` 须 `{refresh:true}` 强刷。
-- 上游 OAuth 还会写 `agents.defaults.models` 两个 model 别名——锦上添花，本期只写 provider 节点 `baseUrl` 即满足 agent 跑通；要对齐再加（同 hot 路径，安全）。
+- **模型清单是模型可用的必要条件**：不写清单则 OpenClaw catalog 中该 provider 名下零模型——UI 选不到、`coclaw.model.set` 报 not-found、agent 用不了。清单取自 CoClaw 内置的**静态表** `src/provider-auth/portal-model-catalog.js`（与上游 bundled `MINIMAX_TEXT_MODEL_ORDER` 对齐：`MiniMax-M2.7` + `MiniMax-M2.7-highspeed`，每条 `{id,name}`），登录成功时写进 provider 节点 `models[]`。
+  - **为什么静态而非登录时调 `/models` 拉**：MiniMax 的 `<baseUrl>/models` 用 OAuth token 确实能拉到 7 个模型，但其中 5 个是旧代、用户不需要；且登录拉一次后清单即静态（出新模型需重登才刷新），并不比静态表"更活"。OpenClaw 自己对 minimax 也是写死这两个、手动维护——CoClaw 照抄、负担持平，且甩掉网络拉取 + 旧模型噪音。**MiniMax 升代时手动更新本表。**
+  - **启动对账补同步**：清单只在登录那一刻写一次，插件升级后表里补了新模型而老用户不会重新扫码——配置里会停在旧清单。故 gateway 启动时跑一次对账（`src/provider-auth/reconcile.js`，挂在 `index.js` 的 full-mode init bundle）：已绑定且配置清单与表不一致才刷新。**关键：一致就一字不写**——`mutateConfigFile` 无条件写盘，而"写配置"将来万一被上游改成触发重启，无脑每次写会反复重启；先比对、只在真不一致时写，能保证即便如此也只重启一次。
+  - 这条与"零打断 hot-reload"不冲突：`models.providers.*` 仍是 hot 路径（`afterWrite:auto`）。
 
 #### 2.3.8 e2e（人机协同；cn 站授权）
 
