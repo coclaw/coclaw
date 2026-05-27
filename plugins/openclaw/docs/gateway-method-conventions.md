@@ -104,6 +104,8 @@ respond(false, { error: '...' });   // ❌
 
 旧格式把 error 字符串放在 payload 中，下游按"成功响应"解析会拿到一个无意义的 payload + 拿不到结构化 error。
 
+**例外——两阶段方法的终态 error 帧可带 `payload.status`**：真·两阶段方法（agent run、`providerAuth.loginOauth`）的终态帧合法携带 `payload.status`，error 终态帧也带：`respond(false, { status: 'error' }, { code, message })`（模板见上游 `server-methods/agent.ts`）。这**不是**上面禁用的"error 塞 payload"——结构化 error 仍在第 3 参，`status` 只是终态判别位（中继按 `payload.status !== 'accepted'` 区分中间态/终态）。别拿单发规则把它误报为违规（2026-05-26 OAuth deep-review 三 reviewer 连续误报的根因）。
+
 仓库内**两套 helper 并存**，按 handler 所属模块选用——没必要统一到一处，因错误码语义不同：
 
 - `plugins/openclaw/index.js` 内部 `respondError` / `respondInvalid`：服务 index.js 自身注册的核心 handler（bind/unbind/enroll/topics/files/info/agent.* 等），错误码 `INTERNAL_ERROR` / `INVALID_INPUT`。
