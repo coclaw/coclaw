@@ -1,5 +1,56 @@
 # @coclaw/openclaw-coclaw
 
+## 0.24.0
+
+### Minor Changes
+
+- 1709e5b: feat(openclaw): generic device-code OAuth login for external providers
+
+  `coclaw.providerAuth.loginOauth` now accepts a `provider` param and drives the
+  upstream provider plugin's own `device_code` login method instead of
+  hand-reimplementing each flow. It resolves the provider via the
+  `provider-catalog-runtime` SDK seam (`resolvePluginProviders`, always
+  `activate:false` so it stays a zero-side-effect read), runs the method with a
+  capture-prompter context, and turns its verification note into the existing
+  two-phase RPC (phase-1 `accepted` carrying `verificationUri` / `userCode` /
+  full `rawText`, phase-2 final after credentials persist). Extraction is fully
+  fault-tolerant — when the URL or code can't be parsed the structured fields are
+  `null` and the raw upstream text is always forwarded for the UI to handle.
+
+  This is not hardcoded to specific providers: any provider exposing a
+  `kind: 'device_code'` auth method works automatically (currently GitHub Copilot
+  and OpenAI Codex's device-code method), so future upstream device-code
+  providers are covered without changes. `minimax-portal` is explicitly excluded
+  and keeps its existing self-contained flow (it also writes a static model
+  catalog). Loopback/paste-back OAuth methods are refused. `cancelOauth` is
+  reused as-is.
+
+- c7cb317: feat(openclaw): add credential signals to `coclaw.model.list` output
+
+  The dashboard's "no API key, can't chat" guidance only counted CoClaw's own
+  auth-profiles store, so users who configured their provider key directly in the
+  OpenClaw config (inline `models.providers.<id>.apiKey`) were falsely flagged as
+  having no key.
+
+  `coclaw.model.list` now reports credential signals alongside the existing
+  `{ default, agents }`:
+
+  - each scope gains `providerUsable` — whether the primary's provider has a
+    usable credential, judged by OpenClaw's own `isProviderApiKeyConfigured`
+    (env + auth-profiles, with alias normalization done inside it) OR an inline
+    config key (`hasConfiguredSecretInput`). `null` primary → `false`.
+  - a new top-level `hasAnyUsableCredential` — auth-profiles store non-empty OR
+    any provider node carries an inline key.
+
+  The fields are additive; old plugins simply omit `hasAnyUsableCredential`, so
+  the UI feature-detects and suppresses the no-key/invalid banners when the
+  signal is absent (prefer fewer prompts over false positives).
+
+  Scope is deliberately limited to inline keys (the on-the-record production
+  false positive). Env-only-without-node providers, key-less IAM/local models,
+  and alias-spelling mismatches remain accepted residuals — same as today, so no
+  regression.
+
 ## 0.23.0
 
 ### Minor Changes

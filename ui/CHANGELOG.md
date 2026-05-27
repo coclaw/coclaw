@@ -1,5 +1,75 @@
 # @coclaw/ui
 
+## 0.28.0
+
+### Minor Changes
+
+- 8adf911: fix(ui): drive model-config guidance from the plugin's credential signals
+
+  The `/claws` dashboard and the model-config subpage used to decide "has any API
+  key" / "is the primary model usable" by only counting CoClaw's own
+  auth-profiles store. Users who put their provider key directly in the OpenClaw
+  config (inline `models.providers.<id>.apiKey`) were therefore falsely flagged
+  "no API key, can't chat" (on-the-record production false positive).
+
+  Both now consume the new credential signals from `coclaw.model.list`:
+
+  - `noKey` is driven by the top-level `hasAnyUsableCredential`.
+  - the dashboard's `invalid` is driven by `default.providerUsable` — credentials
+    only, the dashboard no longer pulls the full catalog to judge validity.
+  - a single feature-detect flag (`typeof hasAnyUsableCredential === 'boolean'`)
+    gates both consumers: old plugins omit the field, so the no-key / invalid
+    banners are suppressed (no-primary still shows). Prefer fewer prompts over
+    false positives.
+  - orange-bar visibility is decoupled from catalog fetch success, so a
+    `models.list` failure no longer suppresses banners that should show. The
+    view:all catalog is now fetched only for agent-card labels.
+
+  The subpage keeps the bare catalog comparison for "model delisted"
+  (`effective = providerUsable && catalog match`). Also fixes a subpage
+  false-positive where a failed write-time refresh could keep a stale `invalid`
+  warning visible.
+
+- 0cf3d20: feat(ui): allow revoking CoClaw-managed scan-login (oauth) providers
+
+  OAuth credential rows were read-only ("一期 OAuth read-only"). Now a whitelist
+  of CoClaw-managed scan-login oauth providers (currently only `minimax-portal`)
+  gets the revoke button, while every other oauth provider (e.g. `openai-codex`,
+  which is configured outside CoClaw and cannot be re-logged-in from here) stays
+  read-only — avoiding a "log out but can't log back in" one-way trap.
+
+  Revoking reuses the existing remove flow (confirm dialog incl. the
+  primary-carrier strong warning) and the existing `coclaw.providerAuth.remove`
+  RPC, which for oauth simply deletes the credential — a clean logout. The
+  button/dialog wording is unchanged (shared "remove"/"撤销" text for all types).
+
+  The whitelist id must stay in sync with the plugin's `PORTAL_PROVIDER_ID`
+  (`minimax-portal`); a guard test pins this.
+
+### Patch Changes
+
+- b493473: fix(ui): stop suppressing model-config guidance for old plugins; drop /claws full-catalog fetch
+
+  Two behavior tweaks following the credential-signal work:
+
+  - Removed the old-plugin feature-detect-suppress. Previously, when
+    `coclaw.model.list` lacked the credential signal (old plugin), the dashboard
+    orange bar and the subpage primary-model warning were suppressed (prefer
+    fewer prompts over false positives). For the target novice users, proactive
+    guidance is itself valuable, and the "new frontend + old plugin" window is
+    tiny (plugins auto-upgrade quickly), so old-plugin claws now get the normal
+    noKey/invalid guidance.
+  - `/claws` no longer fetches the full `models.list view:"all"` catalog. Its only
+    dashboard consumer was the agent-card model-name badge, which already does not
+    render because `status.model` is usually empty — so this is zero visible change
+    while saving a ~1000-model pull on every dashboard refresh. The full catalog is
+    now fetched only by the model-config subpage (its "model delisted" check is
+    unaffected, as it self-fetches).
+
+  The subpage's separate "write-time refresh failed → don't falsely report the
+  primary invalid" guard is preserved (decoupled from old-plugin detection into a
+  credential-signal-freshness flag).
+
 ## 0.27.0
 
 ### Minor Changes
