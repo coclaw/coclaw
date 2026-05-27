@@ -386,8 +386,9 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 ```ts
 {
-  default: { primary: string | null };
-  agents: Record<string, { primary: string | null }>;     // agentId 作 key
+  default: { primary: string | null, providerUsable: boolean };
+  agents: Record<string, { primary: string | null, providerUsable: boolean }>;  // agentId 作 key
+  hasAnyUsableCredential: boolean;     // 凭据信号（见下）；旧插件不带此字段
 }
 ```
 
@@ -396,9 +397,20 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 **agents 列表来源**：
 
 - `cfg.agents.list` 里所有合法 entry（id 是非空 string）
-- 永远补一条 `main: { primary: null }`（心智模型 § 3.5：main agent 默认存在）；若 cfg 已显式含 main entry 则用其值
+- 永远补一条 `main: { primary: null, providerUsable: false }`（心智模型 § 3.5：main agent 默认存在）；若 cfg 已显式含 main entry 则用其值
 
-`primary: null` 表示该 scope 未覆盖。**只回 raw**——effective primary（per-agent → default → 内置兜底）由 UI 自行解析。
+`primary: null` 表示该 scope 未覆盖。primary **只回 raw**——effective primary（per-agent → default → 内置兜底）由 UI 自行解析。
+
+#### 凭据信号（`providerUsable` / `hasAnyUsableCredential`，简化定稿 2026-05）
+
+为根治"手动配置用户被误报未配 key"（UI 设计 `ui/docs/model-config.md` § 7.4），list 顺带回传凭据判定，**避免新增 RPC**：
+
+- `<scope>.providerUsable`：该 scope 的 primary 那家 provider **有没有可用凭据**。判定 = OpenClaw 现成 `isProviderApiKeyConfigured`（覆盖环境变量 + 自管账本，**provider 旧名归一化由其内部完成、本插件不写别名逻辑**）**或** 该 provider 的配置内联 key 存在（`hasConfiguredSecretInput(cfg.models.providers[…].apiKey)`）。`primary` 为 `null` 时恒 `false`（UI 此时走 noPrimary，不看它）。
+- `hasAnyUsableCredential`：这台 claw **有没有任何可用凭据**（自管账本非空 **或** 任一 provider 节点有内联 key）。驱动 UI 的 noKey 引导。
+
+**刻意不覆盖（接受残留，仅影响 CoClaw 之外手动配置的过渡期用户，且现状同样误报 = 非回归）**：纯环境变量且无节点非主模型的 provider、"无 key 也算 authed"的 IAM（aws-sdk / bedrock）与本地无 key 模型、别名拼写零星误判。根因（含"全集判定函数 `hasAuthForModelProvider` 未对插件导出"）见 `docs/openclaw-research/model-config-mental-model.md` 典型陷阱清单。
+
+**旧插件兼容**：旧插件出参无 `hasAnyUsableCredential` 字段，UI 据此 feature-detect → 凭据信号未知则不渲染 noKey / invalid 橙条（宁可少提示不误报）。
 
 **错误码**：仅 `IO_FAILED`（runtime cfg 不可读）。
 

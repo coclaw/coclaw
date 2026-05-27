@@ -466,6 +466,11 @@ OpenRouter 在插件清单里登记了一条规则：用户引用 OpenRouter 模
 14. **`upsertApiKeyProfile` 的 `agentDir` 参数预期含 `/agent` 子目录**——传 `<state-dir>/agents/<id>/agent`（而不是 `<state-dir>/agents/<id>`），否则 secret 写到错位置 OpenClaw 读不到。统一用 `claw-paths.js` 拿 agentDir 不要手拼
 15. **`cfg.auth.profiles` 是冗余声明**——OpenClaw 所有读写路径只看 `auth-profiles.json`；cfg 那份是镜像 / 审计 / 多账号 order 才用得上（见 4.7）
 16. **`models.authStatus` 不列 api_key provider**——只列 OAuth/可刷新的；UI 想列"已绑哪些 api_key provider"必须走插件自己的 list RPC（读 store 然后遍历）
+17. **真正的凭据门禁比"三源 key"更宽，且"全集判定函数"没对插件开放**——`hasAuthForModelProvider`（`src/agents/model-provider-auth.ts`）= 归一化 + `hasRuntimeAvailableProviderAuth`（env + 内联 + **IAM：`authOverride==="aws-sdk"` / 裸 `amazon-bedrock` 不看 key** + **本地无 key 的 custom provider**，`src/agents/model-auth.ts`）+ `listProfilesForProvider`（profiles），是判"这家到底有没有可用 auth"的真·全集；但**未从任何 plugin-sdk barrel 导出**。插件能拿的只有 `isProviderApiKeyConfigured`（env+profiles，**漏内联 + 漏 IAM/本地**）。要在插件侧精确判定需推上游导出该函数，否则只能手搓 + 接受 IAM/本地/纯 env 残留（与第 8 条"三态"互补）
+18. **provider 旧名是"读时折叠"的硬编码别名表，绝不改写配置**——`normalizeProviderId`（`src/agents/provider-id.ts`，约 9 组：`doubao`/`bytedance`→`volcengine`、`kimi-code`/`kimi-coding`→`kimi`、`z.ai`/`z-ai`→`zai`、`modelstudio`/`qwencloud`→`qwen`、`moonshotai`→`moonshot`、`bedrock`/`aws-bedrock`→`amazon-bedrock`、`opencode-zen`→`opencode` 等）。只在 OpenClaw 读取/比对时临时折叠，**配置文件里能长期保留旧拼写**。凡是不走 OpenClaw 函数、自己拿两份 provider 字符串比对的地方都得先过这张表；但表只此一份、下游复刻必随上游加 provider 漂移——能委托 OpenClaw 判定就别自己比
+19. **`models.list view:"all"` 的 `provider` 字段不保证规范名**——discovered 来源原样塞（`src/agents/model-catalog.ts`，只 trim 不归一化），configured 来源另处才折叠。所以"拿主模型 provider 裸比目录 provider"对别名拼写会误判（"模型下架"类校验的残留来源）
+20. **`hasConfiguredSecretInput` 只是语法/存在感判定，不等于凭据可用**——非空字符串 → true；合规 SecretRef（`{source,provider,id}`）→ true；但 `{env:...}`/`{file:...}` 简写、空值 → false；且不验证 env 引用能否真解析（未设值的引用也算 true）。用它判"配了内联 key"只能当"配置信号"，不当"凭据可用"
+21. **别想在插件侧用 `byProvider` 判"模型在不在目录"**——`buildModelsProviderData().byProvider` 会把当前配置的主模型**无条件塞进去**（不经目录校验），拿它查主模型在不在目录是自我应验，测不出"模型下架"；且 `loadModelCatalog` 失败**返回 `[]` 不抛错**，靠抛错触发的兜底都触发不到。判"模型下架"的可靠源是 gateway `models.list view:"all"`（干净原始目录），不是 byProvider
 
 ---
 
