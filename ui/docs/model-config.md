@@ -132,21 +132,24 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 ### B. API 凭据区（下方）
 
-每行一个 provider profile:
+每行一个凭据，**跨三种来源**（`source`，见 plugin `model-config-api.md` § 2.4）——根治"模型能用却显示没配 key"：
 
 ```
-┌────────────────────────────────────────┐
-│ API key                       [+ 添加]  │
-├────────────────────────────────────────┤
-│ groq         gsk_xxxx…ABCD     [撤销]  │
-│ anthropic    sk-an…XYZW        [撤销]  │
-│ deepseek     sk-de…1234        [撤销]  │
-└────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│ API key                                     [+ 添加]  │
+├──────────────────────────────────────────────────────┤
+│ Groq        [CoClaw]      gsk_xxxx…ABCD       [撤销]  │  ← 账本(本平台添加/扫码)
+│ minimax     [配置文件]    sk-mm…1234          [撤销]  │  ← 内联(openclaw.json 手写)
+│ openai      [环境变量]    去主机移除           [撤销]  │  ← env(灰显+禁用)
+└──────────────────────────────────────────────────────┘
 ```
 
-- 单 provider 展示:provider 名 + keyPreview(头 4 + … + 尾 4)+ 撤销动作
-- 列表为空时显示提示:"还没配任何 provider,先添加一个 API key"
-- 「+ 添加」打开"添加 provider"流程
+- 每行：provider 名 + **来源小标签**（账本 `CoClaw` / 配置文件 / 环境变量）+ keyPreview(头 4 + … + 尾 4) + 撤销动作
+- **来源决定可撤性**（`removable`）：账本 / 内联可撤；**env 不可撤**（在 OpenClaw 主机进程环境里，插件改不了）——该行灰显、撤销按钮禁用，次行提示"到 OpenClaw 主机移除"
+- 同一 provider 可多来源并存（如账本 + 内联各一份），各自独立成行、撤销互不影响；`providerIds`（喂 picker / add-dialog）按**已列出的来源**跨源去重——故只有内联 key 的 provider 其模型也能在 picker 选到
+- **env 来源只列出"支撑当前主模型、且无账本/内联覆盖"的那条**（sole-source）；纯 env、非主模型的 provider 不列出、也不进 picker（接受残留，见 §7.4 与插件 `model-config-api.md`）
+- 列表为空（账本 + 内联皆空，且无支撑主模型的 sole-source env）时显示提示:"还没配任何 provider,先添加一个 API key"
+- 「+ 添加」打开"添加 provider"流程（已配 provider——含内联/env——从可选列表剔除，避免再加一份低优先级、不生效的 key）
 
 ---
 
@@ -268,9 +271,11 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 [取消]  [仍然撤销]
 ```
 
-判断条件：当前 `model.list.default.primary` 拆出 `<provider>` 等于待撤的 provider。
+判断条件：当前 `model.list.default.primary` 拆出 `<provider>` 等于待撤的 provider（按 provider 段匹配，对内联来源同样适用）。
 
-提交：`coclaw.providerAuth.remove({ provider })`，成功 → 凭据列表刷新 + 主模型区刷新（若已失效会自动显示橙条）
+**内联来源（source='inline'）追加提示**：正文末尾多一行"这会从你的 OpenClaw 配置文件里删掉这把 key"——撤内联改的是 `openclaw.json`（删 `apiKey` 字段、保留节点其余定义），与账本撤销（只删凭据账本）语义不同，需告知用户。可与强提示并存（内联 + 主模型载体 → 两段都显示）。
+
+提交：`coclaw.providerAuth.remove({ provider, source })`——`source` 透传决定后端分派（账本删凭据账本 / 内联删 key 字段；env 行已禁用、不会走到这）。成功 → 凭据列表刷新 + 主模型区刷新（若已失效会自动显示橙条）
 
 **关于撤完后 primary 字段**：UI **不主动**调 `model.set({ primary: null })` 把 primary 清空——保持原字符串留在 cfg 里，让"主模型失效"橙条自然引导用户重选。理由：一是减少额外 RPC 与失败处理；二是用户重选时直接覆盖比"先清空再选"更顺。
 

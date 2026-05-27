@@ -139,6 +139,7 @@
 		<RemoveProviderConfirmDialog
 			v-model:open="removeOpen"
 			:provider="removeTarget"
+			:source="removeSource"
 			:current-primary="primary || ''"
 			:is-primary-carrier="removeTargetIsPrimaryCarrier"
 			:busy="removeBusy"
@@ -214,6 +215,8 @@ export default {
 			catalog: [],
 			removeOpen: false,
 			removeTarget: '',
+			// 待撤凭据的来源（profile / inline / env）；决定 remove RPC 的分派 + 确认弹窗的配置文件提示
+			removeSource: 'profile',
 			removeBusy: false,
 			// add provider / 主模型 picker 对话框开合（dialog 内部各自管 busy）
 			addOpen: false,
@@ -249,9 +252,18 @@ export default {
 			return this.loadAttempted && !this.loadOk.profiles && !this.loadOk.primary && !this.loadOk.catalog;
 		},
 		providerIds() {
-			return this.profiles
-				.map(p => (p && typeof p.provider === 'string') ? p.provider : null)
-				.filter(v => !!v);
+			// 跨三源去重：同一 provider 可能账本 + 内联 + env 各一条，picker/add-dialog 只需 provider 列表。
+			// 含内联/env 是关键——picker 按此过滤可选模型，否则"只有内联 key 的 provider"选不到模型；
+			// add-dialog 据此剔除已配 provider，避免再加一份低优先级、不生效的 key。
+			const seen = new Set();
+			const out = [];
+			for (const p of this.profiles) {
+				const id = (p && typeof p.provider === 'string') ? p.provider : '';
+				if (!id || seen.has(id)) continue;
+				seen.add(id);
+				out.push(id);
+			}
+			return out;
 		},
 		primaryEffective() {
 			// 凭据半（插件 verdict）+ 目录半（裸比对，保留"模型下架"检测）
@@ -303,6 +315,7 @@ export default {
 				// 撤销对话框是属于上一台 claw 的，强制关掉避免新 claw confirm 时拿到旧 provider
 				this.removeOpen = false;
 				this.removeTarget = '';
+				this.removeSource = 'profile';
 				this.removeBusy = false;
 				// add / picker 同样属于上一台 claw，强制关掉防止状态泄漏
 				this.addOpen = false;
@@ -526,9 +539,12 @@ export default {
 		},
 
 		// --- 撤销 provider：T2 完整 E2E ---
-		onRemoveProvider(providerId) {
-			if (!providerId) return;
-			this.removeTarget = providerId;
+		// ProviderAuthRow emit 带 { provider, source }：source 决定 remove RPC 的分派
+		// （账本删凭据 / 内联删 key 字段）与确认弹窗的配置文件提示。env 行删除按钮已禁用，不会到这。
+		onRemoveProvider({ provider, source } = {}) {
+			if (!provider) return;
+			this.removeTarget = provider;
+			this.removeSource = (source === 'inline' || source === 'env') ? source : 'profile';
 			this.removeOpen = true;
 		},
 		onCancelRemove() {
@@ -536,10 +552,12 @@ export default {
 			if (this.removeBusy) return;
 			this.removeOpen = false;
 			this.removeTarget = '';
+			this.removeSource = 'profile';
 		},
 		async onConfirmRemove() {
 			const id = this.clawId;
 			const provider = this.removeTarget;
+			const source = this.removeSource;
 			if (!id || !provider || this.removeBusy) return;
 			const conn = useClawConnections().get(id);
 			if (!conn) {
@@ -547,11 +565,14 @@ export default {
 				this.notify.error(this.$t('modelConfig.common.connError'));
 				this.removeOpen = false;
 				this.removeTarget = '';
+				this.removeSource = 'profile';
 				return;
 			}
 			this.removeBusy = true;
 			try {
-				await conn.request('coclaw.providerAuth.remove', { provider }, { timeout: RPC_TIMEOUT });
+				// 带 source：账本删凭据 / 内联删 key 字段（§2.5）。旧插件忽略 source、只按 provider 删账本——
+				// 但旧插件也列不出内联（list 无 source 字段），故不会出现"对旧插件发 inline source"的不一致
+				await conn.request('coclaw.providerAuth.remove', { provider, source }, { timeout: RPC_TIMEOUT });
 				if (this.__unmounted || id !== this.clawId) return; // 切页 / 切 claw 后只静默退出
 				this.removeOpen = false;
 				// 成功不 notify：撤销后列表会刷掉该行，用户可直接分辨（与设主模型同精神，失败才提示）
@@ -567,6 +588,7 @@ export default {
 				}
 				if (this.__unmounted) return;
 				this.removeTarget = '';
+				this.removeSource = 'profile';
 			}
 			catch (err) {
 				if (this.__unmounted || id !== this.clawId) return;
@@ -574,6 +596,7 @@ export default {
 					// 显式取消：默默关闭，不报错（与加 provider / 设主模型两弹窗对齐）
 					this.removeOpen = false;
 					this.removeTarget = '';
+					this.removeSource = 'profile';
 					return;
 				}
 				// 错误码 → i18n key 走共享 util；fallback 是 removeFailed（带 provider 参数）

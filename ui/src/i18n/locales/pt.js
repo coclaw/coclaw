@@ -503,12 +503,19 @@ export const ptMessages = {
 			emptyState: 'Nenhum provedor configurado ainda. Adicione uma chave de API para começar.',
 			loadFailed: 'Falha ao carregar. Tente novamente.',
 			removeFailed: 'Falha ao remover {provider}.',
+			source: {
+				profile: 'CoClaw',
+				inline: 'Arquivo de configuração',
+				env: 'Ambiente',
+			},
+			envReadonlyHint: 'Vem de uma variável de ambiente do host — remova-a no host do OpenClaw.',
 			remove: {
 				title: 'Remover {provider}?',
 				descNormal: 'Após a remoção, todos os modelos de {provider} ficarão indisponíveis.',
 				descAffectPrimary: 'Seu modelo principal atual {primary} é executado em {provider}. Após a remoção, o principal ficará inválido e o agente não poderá conversar — você precisará escolher um novo principal.',
 				confirmButton: 'Remover',
 				confirmButtonStrong: 'Remover mesmo assim',
+				descInlineNote: 'Isso excluirá a chave do seu arquivo de configuração do OpenClaw.',
 			},
 			add: {
 				stepSelectTitle: 'Selecionar provedor',

@@ -503,12 +503,19 @@ export const ruMessages = {
 			emptyState: 'Ещё нет ни одного поставщика. Добавьте ключ API, чтобы начать.',
 			loadFailed: 'Не удалось загрузить. Попробуйте ещё раз.',
 			removeFailed: 'Не удалось удалить {provider}.',
+			source: {
+				profile: 'CoClaw',
+				inline: 'Файл конфигурации',
+				env: 'Окружение',
+			},
+			envReadonlyHint: 'Задано через переменную окружения хоста — удалите её на хосте OpenClaw.',
 			remove: {
 				title: 'Удалить {provider}?',
 				descNormal: 'После удаления все модели {provider} станут недоступны.',
 				descAffectPrimary: 'Текущая основная модель {primary} работает на {provider}. После удаления основная станет недействительной, и агент не сможет общаться — потребуется выбрать новую основную.',
 				confirmButton: 'Удалить',
 				confirmButtonStrong: 'Всё равно удалить',
+				descInlineNote: 'Это удалит ключ из вашего файла конфигурации OpenClaw.',
 			},
 			add: {
 				stepSelectTitle: 'Выбор поставщика',

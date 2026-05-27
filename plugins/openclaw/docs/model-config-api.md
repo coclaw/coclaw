@@ -229,9 +229,17 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 `loginOauth` 是 gateway method，命令行可达（§ 6.13）。CLI `openclaw gateway call coclaw.providerAuth.loginOauth --params '{"region":"cn"}' --json`（**入参走 `--params <json>` 选项、非位置参数**；2026-05-27 在 v2026.5.7 核实，旧位置语法会报 "too many arguments"）默认**收首帧即返**（`--expect-final` 默认关，专为 agent 留），故脚本能立即拿到并打印 `verificationUri` + `userCode`。流程：脚本调用 → 打印网址 + 码 → **暂停等用户到 `api.minimaxi.com` 授权** → 脚本轮询 `coclaw.providerAuth.list '{"provider":"minimax-portal"}'` 直到出现 oauth profile（带超时）→ 断言 `openclaw.json` 的 `models.providers.minimax-portal.baseUrl` 已写 + gateway 未重启 → **Create-Test-Delete 还原**（`coclaw.providerAuth.remove` 删凭据；provider 配置节点无 CLI 可删，脚本打印手动 `jq` 清理命令，残留无害见 § 6.14）。事件类 CLI 收不到，故验**落盘副作用**而非终态帧。
 
-### 2.4 `coclaw.providerAuth.list`（本期实施；跨认证类型）
+### 2.4 `coclaw.providerAuth.list`（本期实施；跨认证类型 + 跨来源）
 
-**列出所有已绑定的 profile，不限认证类型**——api_key / oauth / token 全部在内。弥补 `models.authStatus` 只列 OAuth/refreshable provider 的坑（mental-model 陷阱 #16）。
+**列出所有可见凭据，跨认证类型（api_key / oauth / token）且跨来源（账本 / 内联 / 环境变量）。** 弥补两个坑：① `models.authStatus` 只列 OAuth/refreshable provider（mental-model 陷阱 #16）；② 早期只读账本，漏了用户手写在 `openclaw.json` 的内联 key 与环境变量 key，导致"模型能用却显示没配 key"的列表/引导不一致（陷阱 #22，三源详见 mental-model「provider key 三源」）。
+
+#### 凭据三源（本节核心）
+
+| `source` | 存放位置 | CoClaw 能否撤销 (`removable`) |
+|---|---|---|
+| `profile` | 自管账本 auth-profiles store（UI `setApiKey` / OAuth 登录写入） | ✅ 走 `removeProviderAuthProfilesWithLock` |
+| `inline` | `cfg.models.providers.<id>.apiKey`（用户手写 / OAuth 登录写的节点若带 key） | ✅ 走 `mutateConfigFile` 删 `apiKey` 字段（§ 2.5） |
+| `env` | 进程环境变量（`resolveEnvApiKey` 命中） | ❌ 不在配置/账本中，插件无法撤销，仅展示 |
 
 #### 协议形状
 
@@ -239,19 +247,23 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 ```ts
 {
-  provider?: string;     // 可选，按 provider 过滤
+  provider?: string;     // 可选，过滤作用于已合并的三源结果；env 候选范围见实现要点 #3
 }
 ```
 
-**出参**：
+**出参**（`source` / `removable` 为本次新增，**additive 向后兼容**——旧前端忽略未知字段；旧插件给不出这俩字段，前端按 `source` 缺省 'profile'、`removable` 缺省 true 退化处理，至多漏列内联/env 来源，等价旧行为不回归）：
 
 ```ts
 {
   profiles: Array<{
-    profileId: string;             // 如 "groq:default"
-    provider: string;              // provider id
-    type: 'api_key' | 'oauth' | 'token';
-    keyPreview?: string;           // 仅 api_key 模式带；head4 + ... + tail4
+    profileId: string;             // 账本来源 = 真实 profileId（如 "groq:default"）；
+                                   // 内联/env 来源 = 合成稳定 id "<provider>#inline" / "<provider>#env"
+                                   // （保证前端列表 key 唯一：同一 provider 多来源并存时不撞）
+    provider: string;              // provider id（账本/内联用其各自原始拼写，env 用解析命中的 provider）
+    source: 'profile' | 'inline' | 'env';   // 新增：凭据来源
+    removable: boolean;            // 新增：CoClaw 能否撤销（profile/inline=true，env=false）
+    type: 'api_key' | 'oauth' | 'token';     // 内联/env 恒为 'api_key'
+    keyPreview?: string;           // api_key 模式带；head4 + ... + tail4（内联明文 key 也给；env/`{env}`引用形态可省）
     email?: string;                // 仅 oauth 模式（OpenClaw 自带字段）
     displayName?: string;
     expiresAt?: number;            // ms epoch；仅 oauth / 部分 token（详见 § 6.7）
@@ -261,41 +273,47 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 #### 实现要点
 
-1. 调 SDK `ensureAuthProfileStore(agentDir)`（**位置参数**，不是 object params）
-2. 遍历 `store.profiles`，按 provider 过滤
-3. `key` / `token` 字段**绝对不放进出参**；只输出 `keyPreview = formatApiKeyPreview(cred.key)`
-4. OAuth credential 的 access / refresh token 也不外露——只露 email / displayName / expiresAt
+1. **账本来源**：调 SDK `ensureAuthProfileStore(agentDir)`（**位置参数**），遍历 `store.profiles`，按 provider 过滤，`source='profile'`、`removable=true`。
+2. **内联来源**：读 cfg（注入 `loadConfig`），遍历 `cfg.models.providers`，`hasConfiguredSecretInput(node.apiKey)` 为真的标 `source='inline'`、`removable=true`。**只看 `apiKey` 字段**——OAuth 登录写的节点（如 `minimax-portal`）没有 `apiKey`，天然不会被误收（§ 6.14）。
+3. **env 来源**：对候选 provider 集合跑 `resolveEnvApiKey(provider)`，命中的标 `source='env'`、`removable=false`。候选集 = 账本 ∪ 内联 ∪ 已配主模型的 provider 段（与 model.list 凭据信号的候选口径一致，避免漏报）。**口径外的"纯 env、非账本/内联、又非主模型段"provider 不列出**——即便带 `provider` 过滤也列不出（接受残留：env 既不可撤、又只有支撑主模型时才影响可用性，列出无意义，与 mental-model 同一定调）。
+4. **同 provider 多来源并存合法**：如某 provider 账本有 key、内联也有 key → 输出两条不同 `source` 的 entry（如实反映两处各有一份，撤销互不影响）。
+5. `key` / `token` 原文**绝对不放进出参**；只输出 `keyPreview = formatApiKeyPreview(...)`。OAuth credential 的 access / refresh token 也不外露——只露 email / displayName / expiresAt。
 
 #### 与上游 `models auth list` 的关系
 
 上游 CLI 输出更原始（含 raw provider id、按 profile 维度）；本 RPC 是给 CoClaw UI 用的，已经做了遮蔽和裁剪。两者不互相替代——上游 CLI 是开发者诊断用的，本 RPC 是产品 UI 用的。
 
-### 2.5 `coclaw.providerAuth.remove`（本期实施；跨认证类型）
+### 2.5 `coclaw.providerAuth.remove`（本期实施；跨认证类型 + 按来源分派）
 
-**按 provider 维度一锅端**——清掉该 provider 下的所有 profile（不分 api_key / oauth / token），详见 § 6.8 取舍。
+**撤销某 provider 的凭据，按来源分派**——账本一锅端清 profile（不分 api_key / oauth / token，§ 6.8）；内联删 `apiKey` 字段；env 不可撤销直接拒。
 
-> 对 OAuth provider，`remove` 即"登出"语义——只删凭据、**不删**登录时写的 `cfg.models.providers` 节点；UI 按凭据过滤令残留节点不可见，故对 UI 已是干净登出（详见 § 6.14）。无需单独的 logout RPC。
+> **账本 vs 内联，撤销语义相反，别混**：
+> - **账本（含 OAuth）**：`remove` 即"登出"——只删账本凭据、**不删**登录时写的 `cfg.models.providers` 节点（残留节点无 key、UI 按凭据过滤不可见，§ 6.14）。
+> - **内联**：要删的**就是** `cfg.models.providers.<id>.apiKey` 这个字段本身。**只删 key 字段，保留节点其余内容**（`baseUrl` / `api` / `models` 等是用户手写的自定义 provider 定义，删整节点会连带抹掉用户的服务地址 + 内联模型定义，把"没 key"恶化成"模型不存在"）。删 key 后若节点变空 `{}` → 顺手清掉空节点（避免留不合法空壳）。
 
 #### 协议形状
 
-**入参**：
+**入参**（`source` 为本次新增可选项，缺省 `'profile'` 兼容旧前端）：
 
 ```ts
-{ provider: string }
+{
+  provider: string;
+  source?: 'profile' | 'inline';   // 缺省 'profile'；'env' 非法（见错误码）
+}
 ```
 
 **出参**：`{}`（成功时空 payload；判断成功失败看协议层标志位，见 § 6.6）。
 
-幂等：撤销不存在的 provider 不报错。
+幂等：撤销不存在的凭据不报错（账本无 profile / 内联无该节点或无 apiKey → 视为已撤销，返回成功）。
 
-**错误码**：同 setApiKey。
+**错误码**：同 setApiKey；额外 `source:'env'`（或其它非法 source）→ `INVALID_ARGS`（env 来源插件无法撤销，UI 侧本就把 env 行的删除按钮禁用，此为后端兜底）。
 
 #### 实现要点
 
-1. 调 SDK `removeProviderAuthProfilesWithLock({ provider, agentDir })`（异步，**带文件锁**——与 `upsertAuthProfileWithLock` 共享同一把）
-2. **判 null = 失败**：该 helper 同样 `try/catch` 吞错返 `null`，handler 必须 `if (result === null) → IO_FAILED`
-3. **不动 cfg.auth.profiles**——见 mental-model § 4.7
-4. 同 provider 多 profileId（如 `:default` + `:work`）会一次清干净——上游 helper 内部按 provider 维度删
+1. **`source='profile'`（缺省）**：调 SDK `removeProviderAuthProfilesWithLock({ provider, agentDir })`（异步，**带文件锁**——与 `upsertAuthProfileWithLock` 共享同一把）。**判 null = 失败** → `IO_FAILED`。同 provider 多 profileId 一次清干净。**不动 cfg**（mental-model § 4.7）。
+2. **`source='inline'`**：走 `mutateConfigFile`（read-modify-write，已为 OAuth 注入），在 `mutate` 回调里：定位 `cfg.models.providers[provider]`（按原始拼写；找不到 → 幂等成功），`delete node.apiKey`；若 `delete` 后 `Object.keys(node).length === 0` → `delete cfg.models.providers[provider]`。`afterWrite:{ mode:'auto' }`（hot 路径零打断，§ 6.14，**不传 restart**）。
+3. **`source='env'` 或未知值**：`respondInvalid` → `INVALID_ARGS`，不做任何写。
+4. **写完无需 `secrets.reload`**：同 § 2.6，本期无"running channel 立即生效"诉求。
 
 ### 2.6 写完后的 cache 行为
 

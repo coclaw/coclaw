@@ -503,12 +503,19 @@ export const viMessages = {
 			emptyState: 'Chưa có nhà cung cấp nào. Thêm khóa API để bắt đầu.',
 			loadFailed: 'Tải thất bại. Vui lòng thử lại.',
 			removeFailed: 'Gỡ {provider} thất bại.',
+			source: {
+				profile: 'CoClaw',
+				inline: 'Tệp cấu hình',
+				env: 'Biến môi trường',
+			},
+			envReadonlyHint: 'Lấy từ biến môi trường của máy chủ — hãy xóa nó trên máy chủ OpenClaw.',
 			remove: {
 				title: 'Gỡ {provider}?',
 				descNormal: 'Sau khi gỡ, mọi mô hình của {provider} sẽ không khả dụng.',
 				descAffectPrimary: 'Mô hình chính hiện tại {primary} đang chạy trên {provider}. Sau khi gỡ, mô hình chính sẽ không còn hợp lệ và agent không thể trò chuyện — bạn cần chọn mô hình chính mới.',
 				confirmButton: 'Gỡ',
 				confirmButtonStrong: 'Vẫn gỡ',
+				descInlineNote: 'Thao tác này sẽ xóa key khỏi tệp cấu hình OpenClaw của bạn.',
 			},
 			add: {
 				stepSelectTitle: 'Chọn nhà cung cấp',

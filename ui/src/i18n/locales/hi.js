@@ -503,12 +503,19 @@ export const hiMessages = {
 			emptyState: 'अभी तक कोई प्रदाता कॉन्फ़िगर नहीं है। आरंभ करने के लिए एक API कुंजी जोड़ें।',
 			loadFailed: 'लोड करना विफल। कृपया पुनः प्रयास करें।',
 			removeFailed: '{provider} को हटाने में विफल।',
+			source: {
+				profile: 'CoClaw',
+				inline: 'कॉन्फ़िग फ़ाइल',
+				env: 'एनवायरनमेंट',
+			},
+			envReadonlyHint: 'होस्ट के एनवायरनमेंट वेरिएबल से आती है — इसे OpenClaw होस्ट पर हटाएँ।',
 			remove: {
 				title: 'क्या {provider} हटाएँ?',
 				descNormal: 'हटाने के बाद, {provider} के सभी मॉडल अनुपलब्ध हो जाएँगे।',
 				descAffectPrimary: 'आपका वर्तमान मुख्य मॉडल {primary}, {provider} पर चलता है। हटाने के बाद मुख्य अमान्य हो जाएगा और एजेंट चैट नहीं कर पाएगा — आपको एक नया मुख्य चुनना होगा।',
 				confirmButton: 'हटाएँ',
 				confirmButtonStrong: 'फिर भी हटाएँ',
+				descInlineNote: 'इससे आपकी OpenClaw कॉन्फ़िग फ़ाइल से यह key हट जाएगी।',
 			},
 			add: {
 				stepSelectTitle: 'प्रदाता चुनें',

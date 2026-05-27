@@ -503,12 +503,19 @@ export const zhCNMessages = {
 			emptyState: '还没配任何模型服务商，先添加一个 API key',
 			loadFailed: '加载失败，请重试',
 			removeFailed: '撤销 {provider} 失败',
+			source: {
+				profile: 'CoClaw',
+				inline: '配置文件',
+				env: '环境变量',
+			},
+			envReadonlyHint: '来自系统环境变量，需到 OpenClaw 主机上移除。',
 			remove: {
 				title: '撤销 {provider}？',
 				descNormal: '撤销后 {provider} 的所有模型将无法使用。',
 				descAffectPrimary: '当前默认主模型 {primary} 落在 {provider} 上。撤销后主模型将失效，agent 无法对话，需要重新选一个主模型。',
 				confirmButton: '撤销',
 				confirmButtonStrong: '仍然撤销',
+				descInlineNote: '这会从你的 OpenClaw 配置文件里删掉这把 key。',
 			},
 			add: {
 				stepSelectTitle: '选择模型服务商',

@@ -503,12 +503,19 @@ export const enMessages = {
 			emptyState: 'No provider configured yet. Add an API key to get started.',
 			loadFailed: 'Failed to load. Please retry.',
 			removeFailed: 'Failed to remove {provider}.',
+			source: {
+				profile: 'CoClaw',
+				inline: 'Config file',
+				env: 'Environment',
+			},
+			envReadonlyHint: 'Set via a host environment variable — remove it on the OpenClaw host.',
 			remove: {
 				title: 'Remove {provider}?',
 				descNormal: 'After removing, all {provider} models will be unavailable.',
 				descAffectPrimary: 'Your current primary model {primary} runs on {provider}. After removing, the primary will become invalid and the agent will not be able to chat — you will need to pick a new primary.',
 				confirmButton: 'Remove',
 				confirmButtonStrong: 'Remove anyway',
+				descInlineNote: 'This will delete the key from your OpenClaw config file.',
 			},
 			add: {
 				stepSelectTitle: 'Select provider',

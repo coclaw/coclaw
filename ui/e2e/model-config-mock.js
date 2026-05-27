@@ -35,9 +35,9 @@ export const GROQ_PRIMARY_LABEL = 'Llama 3.3 70B';
 export const GROQ_PRIMARY_ALT_LABEL = 'Llama 3.1 8B';
 
 /**
- * 构造一条 api_key profile（providerAuth.list 出参形态）
+ * 构造一条账本来源（source='profile'）的 api_key profile（providerAuth.list 出参形态）
  * @param {string} provider
- * @returns {{ profileId: string, provider: string, type: string, keyPreview: string }}
+ * @returns {{ profileId: string, provider: string, type: string, keyPreview: string, source: string, removable: boolean }}
  */
 export function mockProfile(provider) {
 	return {
@@ -45,6 +45,8 @@ export function mockProfile(provider) {
 		provider,
 		type: 'api_key',
 		keyPreview: 'sk-t…3333',
+		source: 'profile',
+		removable: true,
 	};
 }
 
@@ -53,13 +55,17 @@ export function mockProfile(provider) {
  * addInitScript 对该 page 后续所有页面加载生效。
  *
  * @param {import('@playwright/test').Page} page
- * @param {{ profiles?: object[], primary?: string|null, catalog?: object[], legacy?: boolean }} initialState
+ * @param {{ profiles?: object[], inlineProviders?: string[], envProviders?: string[], primary?: string|null, catalog?: object[], legacy?: boolean }} initialState
+ *   - inlineProviders: provider id 列表，模拟写在 openclaw.json 的内联 key（source='inline'，可撤）
+ *   - envProviders: provider id 列表，模拟环境变量 key（source='env'，只读；仅 sole-source 才列）
  *   - legacy: true → 模拟旧插件，coclaw.model.list 出参不带凭据信号字段
  *     （default.providerUsable / 顶层 hasAnyUsableCredential），用于验证"不再特判旧插件、该弹就弹"
  */
 export function setupModelConfigMock(page, initialState) {
 	const initial = {
 		profiles: Array.isArray(initialState?.profiles) ? initialState.profiles : [],
+		inlineProviders: Array.isArray(initialState?.inlineProviders) ? initialState.inlineProviders : [],
+		envProviders: Array.isArray(initialState?.envProviders) ? initialState.envProviders : [],
 		primary: initialState?.primary ?? null,
 		catalog: Array.isArray(initialState?.catalog) ? initialState.catalog : MOCK_CATALOG,
 		legacy: initialState?.legacy === true,
@@ -92,10 +98,27 @@ export function setupModelConfigMock(page, initialState) {
 			ClawConnection.prototype.request = function (method, params = {}, options = {}) {
 				const st = read() || { profiles: [], primary: null, catalog: [] };
 				st.profiles = Array.isArray(st.profiles) ? st.profiles : [];
+				st.inlineProviders = Array.isArray(st.inlineProviders) ? st.inlineProviders : [];
+				st.envProviders = Array.isArray(st.envProviders) ? st.envProviders : [];
 				st.catalog = Array.isArray(st.catalog) ? st.catalog : [];
 
 				if (method === 'coclaw.providerAuth.list') {
-					return Promise.resolve({ profiles: st.profiles.slice() });
+					// 镜像插件三源合并（§2.4）：账本 + 内联 + env（仅 sole-source）
+					const out = [];
+					const covered = new Set();
+					for (const p of st.profiles) {
+						out.push(Object.assign({}, p, { source: 'profile', removable: true }));
+						covered.add(p.provider);
+					}
+					for (const prov of st.inlineProviders) {
+						out.push({ profileId: `${prov}#inline`, provider: prov, type: 'api_key', keyPreview: 'sk-i…nlin', source: 'inline', removable: true });
+						covered.add(prov);
+					}
+					for (const prov of st.envProviders) {
+						if (covered.has(prov)) continue; // env 仅在未被账本/内联覆盖时才列
+						out.push({ profileId: `${prov}#env`, provider: prov, type: 'api_key', source: 'env', removable: false });
+					}
+					return Promise.resolve({ profiles: out });
 				}
 				if (method === 'coclaw.providerAuth.setApiKey') {
 					const provider = params && params.provider;
@@ -112,7 +135,15 @@ export function setupModelConfigMock(page, initialState) {
 				}
 				if (method === 'coclaw.providerAuth.remove') {
 					const provider = params && params.provider;
-					st.profiles = st.profiles.filter((p) => p.provider !== provider);
+					const source = (params && params.source) || 'profile';
+					// 镜像 § 2.5 分派：inline 删内联 key 字段；profile（缺省）删账本；
+					// env 不可撤（UI 已禁用按钮，到这也不动）
+					if (source === 'inline') {
+						st.inlineProviders = st.inlineProviders.filter((p) => p !== provider);
+					}
+					else if (source !== 'env') {
+						st.profiles = st.profiles.filter((p) => p.provider !== provider);
+					}
 					write(st);
 					// 按设计 § 5.4：撤销不主动清 primary，让"失效"橙条自然引导重选
 					return Promise.resolve({});
@@ -126,13 +157,14 @@ export function setupModelConfigMock(page, initialState) {
 						});
 					}
 					// 镜像插件简化契约（§7.4）：凭据信号回传在 model.list 出参里。
-					// E2E mock 只管自管账本（profiles），不模拟内联 key —— 故按"账本是否含该 provider"判定。
+					// 凭据信号跨三源（账本 + 内联 + env），与 providerAuth.list 口径一致。
 					const providerOf = (p) => {
 						if (typeof p !== 'string') return null;
 						const i = p.indexOf('/');
 						return (i > 0 && i < p.length - 1) ? p.slice(0, i) : null;
 					};
-					const provs = st.profiles.map((p) => p && p.provider).filter(Boolean);
+					const provs = st.profiles.map((p) => p && p.provider).filter(Boolean)
+						.concat(st.inlineProviders, st.envProviders);
 					const primaryProvider = providerOf(st.primary);
 					const providerUsable = !!primaryProvider && provs.indexOf(primaryProvider) !== -1;
 					return Promise.resolve({

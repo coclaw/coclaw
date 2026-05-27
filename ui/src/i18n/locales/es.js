@@ -503,12 +503,19 @@ export const esMessages = {
 			emptyState: 'Aún no hay ningún proveedor configurado. Añade una clave de API para empezar.',
 			loadFailed: 'Error al cargar. Por favor reintenta.',
 			removeFailed: 'Error al eliminar {provider}.',
+			source: {
+				profile: 'CoClaw',
+				inline: 'Archivo de configuración',
+				env: 'Entorno',
+			},
+			envReadonlyHint: 'Proviene de una variable de entorno del host: elimínala en el host de OpenClaw.',
 			remove: {
 				title: '¿Eliminar {provider}?',
 				descNormal: 'Después de eliminarlo, todos los modelos de {provider} no estarán disponibles.',
 				descAffectPrimary: 'Tu modelo principal actual {primary} se ejecuta en {provider}. Después de eliminarlo, el principal quedará inválido y el agente no podrá conversar — tendrás que elegir uno nuevo.',
 				confirmButton: 'Eliminar',
 				confirmButtonStrong: 'Eliminar de todos modos',
+				descInlineNote: 'Esto eliminará la clave de tu archivo de configuración de OpenClaw.',
 			},
 			add: {
 				stepSelectTitle: 'Seleccionar proveedor',

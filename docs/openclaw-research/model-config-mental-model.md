@@ -471,6 +471,7 @@ OpenRouter 在插件清单里登记了一条规则：用户引用 OpenRouter 模
 19. **`models.list view:"all"` 的 `provider` 字段不保证规范名**——discovered 来源原样塞（`src/agents/model-catalog.ts`，只 trim 不归一化），configured 来源另处才折叠。所以"拿主模型 provider 裸比目录 provider"对别名拼写会误判（"模型下架"类校验的残留来源）
 20. **`hasConfiguredSecretInput` 只是语法/存在感判定，不等于凭据可用**——非空字符串 → true；合规 SecretRef（`{source,provider,id}`）→ true；但 `{env:...}`/`{file:...}` 简写、空值 → false；且不验证 env 引用能否真解析（未设值的引用也算 true）。用它判"配了内联 key"只能当"配置信号"，不当"凭据可用"
 21. **别想在插件侧用 `byProvider` 判"模型在不在目录"**——`buildModelsProviderData().byProvider` 会把当前配置的主模型**无条件塞进去**（不经目录校验），拿它查主模型在不在目录是自我应验，测不出"模型下架"；且 `loadModelCatalog` 失败**返回 `[]` 不抛错**，靠抛错触发的兜底都触发不到。判"模型下架"的可靠源是 gateway `models.list view:"all"`（干净原始目录），不是 byProvider
+22. **凭据"读"是三源、"列举/撤销"曾只认账本一源 → 列表与现实打架**——key 解析吃 env + 内联 `cfg.models.providers.<id>.apiKey` + 账本 profiles 三源（第 17 条），但早期 `coclaw.providerAuth.list` 只遍历账本 store：用户把 key 直接手写在 `openclaw.json`（内联）或塞环境变量时，模型照常能用，列表却空着说"没配 key"，引导自相矛盾。**撤销更没有统一入口**：账本走 `removeProviderAuthProfilesWithLock`、内联只能 `mutateConfigFile` 删 `apiKey` 字段（删字段不删节点——`baseUrl`/`api`/`models` 是用户自定义 provider 定义）、env 进程级根本撤不了。且 **OpenClaw 自己从不删内联 key**（`logout --provider` 只清账本、re-onboard 仍保留内联），把它当用户私有手写配置。CoClaw 越过这条线让内联可撤。**已治本**：list 合并三源、每条带 `source`/`removable`，remove 按 `source` 分派（plugin `model-config-api.md` § 2.4 / § 2.5）
 
 ---
 
@@ -711,6 +712,8 @@ return { status: { profileId } };
 **为什么不用上层封装 `upsertApiKeyProfile`**：该封装内部走同步、**无锁**的 `upsertAuthProfile`，与带锁的 remove 并发时会绕过文件锁丢写。带锁版本与 `buildApiKeyCredential` 配合使用，行为与封装内部完全等价（两次幂等的 `normalizeSecretInput` ≡ 一次）。
 
 #### `coclaw.providerAuth.list({ provider? })`
+
+> ⚠️ **下方片段是早期"只读账本"形态，已演进为三源合并**（账本 + 内联 + env，每条带 `source`/`removable`，见第 22 条 + plugin `model-config-api.md` § 2.4）。保留片段示意账本侧遮蔽规则；完整三源契约以插件 doc 为准。
 
 ```js
 import { ensureAuthProfileStore, formatApiKeyPreview } from 'openclaw/plugin-sdk/provider-auth';

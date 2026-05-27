@@ -503,12 +503,19 @@ export const deMessages = {
 			emptyState: 'Noch kein Provider konfiguriert. Füge einen API-Schlüssel hinzu, um zu beginnen.',
 			loadFailed: 'Laden fehlgeschlagen. Bitte erneut versuchen.',
 			removeFailed: 'Entfernen von {provider} fehlgeschlagen.',
+			source: {
+				profile: 'CoClaw',
+				inline: 'Konfigurationsdatei',
+				env: 'Umgebung',
+			},
+			envReadonlyHint: 'Stammt aus einer Umgebungsvariablen des Hosts — entfernen Sie sie auf dem OpenClaw-Host.',
 			remove: {
 				title: '{provider} entfernen?',
 				descNormal: 'Nach dem Entfernen sind alle {provider}-Modelle nicht mehr verfügbar.',
 				descAffectPrimary: 'Dein aktuelles Hauptmodell {primary} läuft auf {provider}. Nach dem Entfernen wird das Hauptmodell ungültig und der Agent kann nicht chatten — du musst ein neues Hauptmodell auswählen.',
 				confirmButton: 'Entfernen',
 				confirmButtonStrong: 'Trotzdem entfernen',
+				descInlineNote: 'Dadurch wird der Schlüssel aus Ihrer OpenClaw-Konfigurationsdatei gelöscht.',
 			},
 			add: {
 				stepSelectTitle: 'Provider auswählen',

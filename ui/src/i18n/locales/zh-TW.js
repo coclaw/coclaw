@@ -503,12 +503,19 @@ export const zhTWMessages = {
 			emptyState: '尚未設定任何模型服務商，先新增一個 API key',
 			loadFailed: '載入失敗，請重試',
 			removeFailed: '撤銷 {provider} 失敗',
+			source: {
+				profile: 'CoClaw',
+				inline: '設定檔',
+				env: '環境變數',
+			},
+			envReadonlyHint: '來自系統環境變數，需到 OpenClaw 主機上移除。',
 			remove: {
 				title: '撤銷 {provider}？',
 				descNormal: '撤銷後 {provider} 的所有模型將無法使用。',
 				descAffectPrimary: '當前預設主模型 {primary} 屬於 {provider}。撤銷後主模型將失效，agent 無法對話，需要重新選擇主模型。',
 				confirmButton: '撤銷',
 				confirmButtonStrong: '仍要撤銷',
+				descInlineNote: '這會從你的 OpenClaw 設定檔裡刪掉這把 key。',
 			},
 			add: {
 				stepSelectTitle: '選擇模型服務商',

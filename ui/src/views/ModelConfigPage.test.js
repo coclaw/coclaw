@@ -13,10 +13,10 @@ vi.mock('../components/MobilePageHeader.vue', () => ({
 vi.mock('../components/model-config/RemoveProviderConfirmDialog.vue', () => ({
 	default: {
 		name: 'RemoveProviderConfirmDialog',
-		props: ['open', 'provider', 'currentPrimary', 'isPrimaryCarrier', 'busy'],
+		props: ['open', 'provider', 'source', 'currentPrimary', 'isPrimaryCarrier', 'busy'],
 		emits: ['update:open', 'confirm', 'cancel'],
 		template: `
-			<div v-if="open" class="remove-dialog" :data-carrier="String(isPrimaryCarrier)">
+			<div v-if="open" class="remove-dialog" :data-carrier="String(isPrimaryCarrier)" :data-source="source">
 				<span class="rd-provider">{{ provider }}</span>
 				<span class="rd-primary">{{ currentPrimary }}</span>
 				<button class="rd-confirm" @click="$emit('confirm')">confirm</button>
@@ -136,8 +136,8 @@ function makeWrapper({ route, online = true, dcReady = true } = {}) {
 					props: ['profile', 'disabled'],
 					emits: ['remove'],
 					template: `
-						<div class="provider-row" :data-provider="profile?.provider">
-							<button class="row-remove" :disabled="disabled" @click="$emit('remove', profile?.provider ?? '')">x</button>
+						<div class="provider-row" :data-provider="profile?.provider" :data-source="profile?.source">
+							<button class="row-remove" :disabled="disabled" @click="$emit('remove', { provider: profile?.provider ?? '', source: profile?.source ?? 'profile' })">x</button>
 						</div>
 					`,
 				},
@@ -808,7 +808,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
 		// 找到 groq 的 row 并触发 remove
 		const groqRow = rows.find(r => r.props('profile').provider === 'groq');
-		await groqRow.vm.$emit('remove', 'groq');
+		await groqRow.vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		const dialog = w.find('.remove-dialog');
 		expect(dialog.exists()).toBe(true);
@@ -824,7 +824,7 @@ describe('ModelConfigPage — remove flow', () => {
 		await flushPromises();
 		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
 		const openaiRow = rows.find(r => r.props('profile').provider === 'openai');
-		await openaiRow.vm.$emit('remove', 'openai');
+		await openaiRow.vm.$emit('remove', { provider: 'openai', source: 'profile' });
 		await w.vm.$nextTick();
 		const dialog = w.find('.remove-dialog');
 		expect(dialog.attributes('data-carrier')).toBe('false');
@@ -837,7 +837,7 @@ describe('ModelConfigPage — remove flow', () => {
 		await flushPromises();
 		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
 		const groqRow = rows.find(r => r.props('profile').provider === 'groq');
-		await groqRow.vm.$emit('remove', 'groq');
+		await groqRow.vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		await w.find('.rd-cancel').trigger('click');
 		await flushPromises();
@@ -853,13 +853,13 @@ describe('ModelConfigPage — remove flow', () => {
 		await flushPromises();
 		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
 		const groqRow = rows.find(r => r.props('profile').provider === 'groq');
-		await groqRow.vm.$emit('remove', 'groq');
+		await groqRow.vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 
 		// 准备 refresh-after-write 的返回：把 groq 从列表去掉
 		mockRequest.mockImplementation(async (method, params) => {
 			if (method === 'coclaw.providerAuth.remove') {
-				expect(params).toEqual({ provider: 'groq' });
+				expect(params).toEqual({ provider: 'groq', source: 'profile' });
 				return {};
 			}
 			if (method === 'coclaw.providerAuth.list') return asProfiles([
@@ -895,7 +895,7 @@ describe('ModelConfigPage — remove flow', () => {
 		await flushPromises();
 		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
 		const groqRow = rows.find(r => r.props('profile').provider === 'groq');
-		await groqRow.vm.$emit('remove', 'groq');
+		await groqRow.vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		mockRequest.mockResolvedValue({});
 		await w.find('.rd-confirm').trigger('click');
@@ -909,7 +909,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 
 		const err = new Error('bad');
@@ -930,7 +930,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 
 		const err = new Error('io');
@@ -950,7 +950,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 
 		const err = new Error('to');
@@ -970,7 +970,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 
 		const err = new Error('weird');
@@ -990,7 +990,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 
 		mockRequest.mockImplementation(async (method) => {
@@ -1022,7 +1022,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
-		await rows.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+		await rows.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		mockClawConnGet.mockReturnValue(undefined);
 		await w.find('.rd-confirm').trigger('click');
@@ -1038,7 +1038,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'openai').vm.$emit('remove', 'openai');
+			.find(r => r.props('profile').provider === 'openai').vm.$emit('remove', { provider: 'openai', source: 'profile' });
 		await w.vm.$nextTick();
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.remove') return {};
@@ -1064,7 +1064,7 @@ describe('ModelConfigPage — remove flow', () => {
 		await flushPromises();
 		// 触发 dialog 打开
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.remove') return {};
@@ -1116,7 +1116,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		// 让 remove RPC 永不 resolve，第二次 confirm 应被 busy 拦下
 		let resolveRemove;
@@ -1143,7 +1143,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		let resolveRemove;
 		mockRequest.mockImplementation((method) => {
@@ -1167,7 +1167,7 @@ describe('ModelConfigPage — remove flow', () => {
 		await flushPromises();
 		// 打开 dialog
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		expect(w.vm.removeOpen).toBe(true);
 		// 切到新 claw
@@ -1223,7 +1223,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		// remove RPC 永不 resolve；触发 unmount 后 resolve
 		let resolveRemove;
@@ -1248,7 +1248,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		const err = new Error('connect timeout');
 		err.code = 'CONNECT_TIMEOUT';
@@ -1267,7 +1267,7 @@ describe('ModelConfigPage — remove flow', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		await w.findAllComponents({ name: 'ProviderAuthRow' })
-			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', 'groq');
+			.find(r => r.props('profile').provider === 'groq').vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
 		const err = new Error('dc closed');
 		err.code = 'DC_CLOSED';
@@ -1297,6 +1297,197 @@ describe('ModelConfigPage — remove flow', () => {
 		expect(rows).toHaveLength(2);
 		// 两行都渲染了；store layer 自由组合
 		expect(rows.map(r => r.props('profile').provider).sort()).toEqual(['groq', 'minimax']);
+		w.unmount();
+	});
+});
+
+describe('ModelConfigPage — three-source credentials (§2.4)', () => {
+	function primedThreeSource() {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default', source: 'profile', removable: true },
+				{ provider: 'minimax', type: 'api_key', keyPreview: 'm…Y', profileId: 'minimax#inline', source: 'inline', removable: true },
+				{ provider: 'openai', type: 'api_key', profileId: 'openai#env', source: 'env', removable: false },
+			]);
+			// 主模型落在内联的 minimax 上 → 撤内联时是 carrier，验证强提示对内联也适用
+			if (method === 'coclaw.model.list') return asModelList('minimax/M2.7', { providerUsable: true });
+			if (method === 'models.list') return asCatalog([
+				{ id: 'M2.7', provider: 'minimax' },
+				{ id: 'llama', provider: 'groq' },
+				{ id: 'gpt-4', provider: 'openai' },
+			]);
+			if (method === 'coclaw.providerAuth.remove') return {};
+			return {};
+		});
+	}
+
+	test('renders all three sources as rows; providerIds dedupes across sources', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
+		expect(rows).toHaveLength(3);
+		expect(rows.map(r => r.props('profile').source).sort()).toEqual(['env', 'inline', 'profile']);
+		// 三个不同 provider → providerIds 三条
+		expect(w.vm.providerIds.slice().sort()).toEqual(['groq', 'minimax', 'openai']);
+		w.unmount();
+	});
+
+	test('providerIds dedupes when the same provider appears in multiple sources', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'minimax', type: 'api_key', keyPreview: 'a…1', profileId: 'minimax:default', source: 'profile', removable: true },
+				{ provider: 'minimax', type: 'api_key', keyPreview: 'b…2', profileId: 'minimax#inline', source: 'inline', removable: true },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('minimax/M2.7', { providerUsable: true });
+			if (method === 'models.list') return asCatalog([{ id: 'M2.7', provider: 'minimax' }]);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.profiles).toHaveLength(2);
+		// 同 provider 两来源 → providerIds 去重为一条（picker/add-dialog 不重复）
+		expect(w.vm.providerIds).toEqual(['minimax']);
+		w.unmount();
+	});
+
+	test('profile+inline same provider: removing the profile row still warns as primary carrier', async () => {
+		// minimax 同时有账本+内联、且是主模型载体 → 撤任一来源都应强警告（provider 段匹配，宁可过警告）
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'minimax', type: 'api_key', keyPreview: 'a…1', profileId: 'minimax:default', source: 'profile', removable: true },
+				{ provider: 'minimax', type: 'api_key', keyPreview: 'b…2', profileId: 'minimax#inline', source: 'inline', removable: true },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('minimax/M2.7', { providerUsable: true });
+			if (method === 'models.list') return asCatalog([{ id: 'M2.7', provider: 'minimax' }]);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		const profileRow = w.findAllComponents({ name: 'ProviderAuthRow' })
+			.find(r => r.props('profile').source === 'profile');
+		await profileRow.vm.$emit('remove', { provider: 'minimax', source: 'profile' });
+		await w.vm.$nextTick();
+		expect(w.find('.remove-dialog').attributes('data-carrier')).toBe('true');
+		w.unmount();
+	});
+
+	test('removing an inline credential passes source=inline to the dialog and the remove RPC', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
+		const inlineRow = rows.find(r => r.props('profile').source === 'inline');
+		await inlineRow.vm.$emit('remove', { provider: 'minimax', source: 'inline' });
+		await w.vm.$nextTick();
+		const dialog = w.find('.remove-dialog');
+		// 确认弹窗拿到 source=inline（驱动"会改 OpenClaw 配置文件"提示）
+		expect(dialog.attributes('data-source')).toBe('inline');
+		// minimax 是主模型载体 → 强提示分支（provider 段匹配，对内联也适用）
+		expect(dialog.attributes('data-carrier')).toBe('true');
+		await w.find('.rd-confirm').trigger('click');
+		await flushPromises();
+		const removeCall = mockRequest.mock.calls.find(c => c[0] === 'coclaw.providerAuth.remove');
+		expect(removeCall[1]).toEqual({ provider: 'minimax', source: 'inline' });
+		w.unmount();
+	});
+
+	test('env credential is passed through to the row with removable=false (row disables its own button)', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
+		const envRow = rows.find(r => r.props('profile').source === 'env');
+		expect(envRow.props('profile').removable).toBe(false);
+		w.unmount();
+	});
+
+	test('removing a profile credential still defaults source=profile end-to-end', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		const rows = w.findAllComponents({ name: 'ProviderAuthRow' });
+		const profileRow = rows.find(r => r.props('profile').source === 'profile');
+		await profileRow.vm.$emit('remove', { provider: 'groq', source: 'profile' });
+		await w.vm.$nextTick();
+		expect(w.find('.remove-dialog').attributes('data-source')).toBe('profile');
+		await w.find('.rd-confirm').trigger('click');
+		await flushPromises();
+		const removeCall = mockRequest.mock.calls.find(c => c[0] === 'coclaw.providerAuth.remove');
+		expect(removeCall[1]).toEqual({ provider: 'groq', source: 'profile' });
+		w.unmount();
+	});
+
+	// removeSource 必须在所有关闭路径复位回 'profile'：否则下次撤销默认 source 会被上次的 inline/env 污染
+	// （先开 inline 让 removeSource 非默认，再分别走各关闭路径验证复位）
+	async function openInlineRemove(w) {
+		const inlineRow = w.findAllComponents({ name: 'ProviderAuthRow' })
+			.find(r => r.props('profile').source === 'inline');
+		await inlineRow.vm.$emit('remove', { provider: 'minimax', source: 'inline' });
+		await w.vm.$nextTick();
+		expect(w.vm.removeSource).toBe('inline');
+	}
+
+	test('removeSource resets to profile on cancel', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		await openInlineRemove(w);
+		await w.find('.rd-cancel').trigger('click');
+		await flushPromises();
+		expect(w.vm.removeSource).toBe('profile');
+		w.unmount();
+	});
+
+	test('removeSource resets to profile on successful confirm', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		await openInlineRemove(w);
+		await w.find('.rd-confirm').trigger('click');
+		await flushPromises();
+		expect(w.vm.removeSource).toBe('profile');
+		w.unmount();
+	});
+
+	test('removeSource resets to profile when connection is gone at confirm', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		await openInlineRemove(w);
+		mockClawConnGet.mockReturnValue(undefined);
+		await w.find('.rd-confirm').trigger('click');
+		await flushPromises();
+		expect(mockNotify.error).toHaveBeenCalledWith('modelConfig.common.connError');
+		expect(w.vm.removeOpen).toBe(false);
+		expect(w.vm.removeSource).toBe('profile');
+		w.unmount();
+	});
+
+	test('removeSource resets to profile on canceled-error confirm', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		await openInlineRemove(w);
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.remove') throw Object.assign(new Error('aborted'), { code: 'ERR_CANCELED' });
+			return {};
+		});
+		await w.find('.rd-confirm').trigger('click');
+		await flushPromises();
+		expect(w.vm.removeSource).toBe('profile');
+		w.unmount();
+	});
+
+	test('removeSource resets to profile on claw switch', async () => {
+		primedThreeSource();
+		const w = makeWrapper();
+		await flushPromises();
+		await openInlineRemove(w);
+		w.vm.$route.params.clawId = 'claw2';
+		w.vm.$options.watch.clawId.handler.call(w.vm);
+		await w.vm.$nextTick();
+		expect(w.vm.removeSource).toBe('profile');
 		w.unmount();
 	});
 });

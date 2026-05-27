@@ -38,6 +38,7 @@ import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL, VALID_REGIONS } from './mi
 import { getPortalModels } from './portal-model-catalog.js';
 import { remoteLog } from '../remote-log.js';
 import { getClawConfig } from '../claw-config.js';
+import { listAllPrimaries, providerSegmentOf } from '../model-default/resolve.js';
 import { deepMergeInto } from '../utils/deep-merge.js';
 import {
 	isVerificationNote,
@@ -149,14 +150,29 @@ export function buildProviderAuthHandlers({
 				respondInvalid(respond, 'provider must be a non-empty string when provided');
 				return;
 			}
+			// 账本来源（source='profile'）
 			const store = sdk.ensureAuthProfileStore(resolveAgentDir());
-			const profiles = [];
+			const ledger = [];
 			const raw = store?.profiles ?? {};
 			for (const [profileId, cred] of Object.entries(raw)) {
 				if (!isWellFormedCredential(cred)) continue;
-				if (filterProvider && cred.provider !== filterProvider) continue;
-				profiles.push(toListEntry(profileId, cred, sdk.formatApiKeyPreview));
+				ledger.push(toListEntry(profileId, cred, sdk.formatApiKeyPreview));
 			}
+			// 内联来源（source='inline'）：读 cfg；cfg 读不到时退化为仅账本，不连累 ledger 路径
+			let cfg = null;
+			try { cfg = resolveConfig(); }
+			catch { cfg = null; }
+			const inline = listInlineEntries(cfg, {
+				hasConfiguredSecretInput: sdk.hasConfiguredSecretInput,
+				formatApiKeyPreview: sdk.formatApiKeyPreview,
+			});
+			// env 来源（source='env'）：候选=账本∪内联∪主模型段；仅未被账本/内联覆盖的 sole-source 才列
+			const covered = new Set([...ledger, ...inline].map((e) => e.provider));
+			const candidates = new Set([...covered, ...collectPrimaryProviderSegments(cfg)]);
+			const env = listEnvEntries(candidates, covered, { resolveEnvApiKey: sdk.resolveEnvApiKey });
+
+			let profiles = [...ledger, ...inline, ...env];
+			if (filterProvider) profiles = profiles.filter((e) => e.provider === filterProvider);
 			respond(true, { profiles });
 		}
 		catch (err) {
@@ -171,16 +187,40 @@ export function buildProviderAuthHandlers({
 				respondInvalid(respond, 'provider must be a non-empty string');
 				return;
 			}
-			const result = await sdk.removeProviderAuthProfilesWithLock({
-				provider,
-				agentDir: resolveAgentDir(),
-			});
-			// 同 setApiKey：锁/磁盘失败时上游返回 null
-			if (result === null) {
-				respondIoFailed(respond, new Error('failed to update auth-profiles store'));
+			const source = params?.source ?? 'profile';
+			if (source === 'profile') {
+				const result = await sdk.removeProviderAuthProfilesWithLock({
+					provider,
+					agentDir: resolveAgentDir(),
+				});
+				// 同 setApiKey：锁/磁盘失败时上游返回 null
+				if (result === null) {
+					respondIoFailed(respond, new Error('failed to update auth-profiles store'));
+					return;
+				}
+				respond(true, {});
 				return;
 			}
-			respond(true, {});
+			if (source === 'inline') {
+				// 内联撤销：只删 cfg.models.providers[provider].apiKey 字段，保留节点其余内容
+				//（baseUrl/api/models 是用户的自定义 provider 定义，删整节点会把"没 key"恶化成"模型不存在"）。
+				// 删 key 后节点变空 {} → 顺手清掉空节点。afterWrite:auto → hot 路径零打断（docs § 2.5 / § 6.14）。
+				await sdk.mutateConfigFile({
+					afterWrite: { mode: 'auto' },
+					mutate(draft) {
+						const providers = draft?.models?.providers;
+						if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return;
+						const node = providers[provider];
+						if (!node || typeof node !== 'object') return; // 幂等：无该节点视为已撤销
+						delete node.apiKey;
+						if (Object.keys(node).length === 0) delete providers[provider];
+					},
+				});
+				respond(true, {});
+				return;
+			}
+			// env 及未知 source：插件无法撤销（env 在进程环境里）→ 后端兜底拒绝
+			respondInvalid(respond, `cannot remove credential with source "${source}"`);
 		}
 		catch (err) {
 			respondIoFailed(respond, err);
@@ -528,13 +568,15 @@ function isWellFormedCredential(cred) {
 }
 
 /**
- * 把单条 credential 转成 list RPC 出参元素。
+ * 把单条账本 credential 转成 list RPC 出参元素（source='profile'，可撤销）。
  * 关键：原始 key / token / OAuth access/refresh 绝不出 handler。
  */
 function toListEntry(profileId, cred, formatApiKeyPreview) {
 	const out = {
 		profileId,
 		provider: cred.provider,
+		source: 'profile',
+		removable: true,
 		type: cred.type,
 	};
 	if (cred.type === 'api_key' && typeof cred.key === 'string' && cred.key.length > 0) {
@@ -546,4 +588,79 @@ function toListEntry(profileId, cred, formatApiKeyPreview) {
 		out.expiresAt = cred.expires;
 	}
 	return out;
+}
+
+/**
+ * 内联来源：cfg.models.providers 里 apiKey 配了的节点（用户手写 / OAuth 写的节点若带 key）。
+ * 只看 apiKey 字段——OAuth 登录写的节点无 apiKey，天然不会被误收（docs § 6.14）。
+ * @param {object} cfg
+ * @param {object} deps - { hasConfiguredSecretInput, formatApiKeyPreview }
+ * @returns {object[]} source='inline'、removable=true 的出参元素
+ */
+function listInlineEntries(cfg, { hasConfiguredSecretInput, formatApiKeyPreview }) {
+	const out = [];
+	const providers = cfg?.models?.providers;
+	if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return out;
+	for (const [provider, node] of Object.entries(providers)) {
+		if (!node || typeof node !== 'object') continue;
+		if (!hasConfiguredSecretInput(node.apiKey)) continue;
+		const entry = {
+			profileId: `${provider}#inline`,
+			provider,
+			source: 'inline',
+			removable: true,
+			type: 'api_key',
+		};
+		// 仅明文 string key 给预览；{env}/{file} 引用形态不预览（避免怪异展示）
+		if (typeof node.apiKey === 'string' && !node.apiKey.startsWith('{')) {
+			entry.keyPreview = formatApiKeyPreview(node.apiKey);
+		}
+		out.push(entry);
+	}
+	return out;
+}
+
+/**
+ * env 来源：对候选 provider 集合探测环境变量；仅当该 provider 未被账本/内联覆盖（sole source）才列，
+ * 避免与已可撤销的行重复添噪。env 来源不可撤销（removable=false），仅展示。
+ * @param {Iterable<string>} candidates - 候选 provider（账本∪内联∪主模型段）
+ * @param {Set<string>} covered - 已由账本/内联列出的 provider（原始拼写）
+ * @param {object} deps - { resolveEnvApiKey }
+ * @returns {object[]} source='env'、removable=false 的出参元素
+ */
+function listEnvEntries(candidates, covered, { resolveEnvApiKey }) {
+	const out = [];
+	const seen = new Set();
+	for (const provider of candidates) {
+		if (!provider || covered.has(provider) || seen.has(provider)) continue;
+		const hit = resolveEnvApiKey(provider);
+		if (!hit?.apiKey) continue;
+		seen.add(provider);
+		out.push({
+			profileId: `${provider}#env`,
+			provider,
+			source: 'env',
+			removable: false,
+			type: 'api_key',
+		});
+	}
+	return out;
+}
+
+/**
+ * 收集 default + 各 agent 主模型的 provider 段（去重交给调用方的 Set）。
+ * 复用 model-default/resolve.js，不重复造主模型读取逻辑。
+ * @param {object} cfg
+ * @returns {string[]}
+ */
+function collectPrimaryProviderSegments(cfg) {
+	const all = listAllPrimaries(cfg);
+	const segs = [];
+	const push = (primary) => {
+		const seg = providerSegmentOf(primary);
+		if (seg) segs.push(seg);
+	};
+	push(all.default.primary);
+	for (const v of Object.values(all.agents)) push(v.primary);
+	return segs;
 }

@@ -59,6 +59,14 @@ export default {
 			type: Boolean,
 			default: false,
 		},
+		/**
+		 * 凭据来源（profile / inline / env）；inline 时正文追加"会改动 OpenClaw 配置文件"提示。
+		 * 缺省 'profile'（账本撤销不涉及配置文件）。
+		 */
+		source: {
+			type: String,
+			default: 'profile',
+		},
 		/** RPC 在飞，禁用按钮防双击 */
 		busy: {
 			type: Boolean,
@@ -74,13 +82,17 @@ export default {
 			return getProviderMeta(this.provider).displayName;
 		},
 		description() {
-			if (this.isPrimaryCarrier) {
-				return this.$t('modelConfig.providerAuth.remove.descAffectPrimary', {
+			const base = this.isPrimaryCarrier
+				? this.$t('modelConfig.providerAuth.remove.descAffectPrimary', {
 					primary: this.currentPrimary,
 					provider: this.displayName,
-				});
+				})
+				: this.$t('modelConfig.providerAuth.remove.descNormal', { provider: this.displayName });
+			// 内联来源：撤销会改动 OpenClaw 配置文件，正文追加一行提示（whitespace-pre-line 渲染换行）
+			if (this.source === 'inline') {
+				return `${base}\n\n${this.$t('modelConfig.providerAuth.remove.descInlineNote')}`;
 			}
-			return this.$t('modelConfig.providerAuth.remove.descNormal', { provider: this.displayName });
+			return base;
 		},
 		confirmLabel() {
 			return this.isPrimaryCarrier

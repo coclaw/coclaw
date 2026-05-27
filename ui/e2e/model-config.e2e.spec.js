@@ -343,3 +343,61 @@ test('模型配置 S5：旧插件（出参无凭据信号）→ 据"无凭据"�
 	await expect(bar).toBeVisible({ timeout: 30_000 });
 	await expect(bar).toContainText(await tr(page, 'modelConfig.guidance.noKeyWarning'));
 });
+
+// ================================================================
+// S6：三源凭据——内联 key 可列可撤（带配置文件提示）+ env 行只读（§2.4 / §2.5）
+// ================================================================
+test('模型配置 S6：内联 key 列出可撤（配置文件提示+强提示）、env 行只读禁删 @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// 起始：无账本；内联 groq（承载 primary）+ env anthropic（只读）。模拟"列表空但模型能用"的真实场景。
+	await setupModelConfigMock(page, {
+		profiles: [],
+		inlineProviders: ['groq'],
+		envProviders: ['anthropic'],
+		primary: GROQ_PRIMARY,
+		catalog: MOCK_CATALOG,
+	});
+	await login(page);
+	await ensureMockReady(page);
+
+	await gotoClawsCold(page);
+	const clawId = await getOnlineClawId(page);
+	await waitDashReady(page, clawId);
+	// 内联 key 让主模型有效（凭据信号跨三源）→ 无橙条（核心：列表空也不误报）
+	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
+
+	// 齿轮进子页
+	const gear = page.getByTestId(`btn-model-config-${clawId}`);
+	await expect(gear).toBeEnabled({ timeout: 30_000 });
+	await gear.click();
+	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
+	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY, { timeout: 30_000 });
+
+	// 两条来源标签都在；env 行带"去主机移除"提示
+	await expect(page.getByText(await tr(page, 'modelConfig.providerAuth.source.inline'), { exact: true })).toBeVisible();
+	await expect(page.getByText(await tr(page, 'modelConfig.providerAuth.source.env'), { exact: true })).toBeVisible();
+	await expect(page.getByText(await tr(page, 'modelConfig.providerAuth.envReadonlyHint'))).toBeVisible();
+
+	// 两个撤销按钮：内联 groq 可点、env anthropic 禁用（列表顺序：内联在前、env 在后）
+	const removeButtons = page.getByTestId('btn-remove-provider');
+	await expect(removeButtons).toHaveCount(2);
+	await expect(removeButtons.nth(0)).toBeEnabled();
+	await expect(removeButtons.nth(1)).toBeDisabled();
+
+	// 撤内联 groq（承载 primary）：强提示 + 配置文件提示同时出现
+	await removeButtons.nth(0).click();
+	const confirm = page.getByTestId('btn-remove-confirm');
+	await expect(confirm).toBeVisible({ timeout: 10_000 });
+	await expect(confirm).toHaveText(await tr(page, 'modelConfig.providerAuth.remove.confirmButtonStrong'));
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toContainText(await tr(page, 'modelConfig.providerAuth.remove.descInlineNote'));
+	await confirm.click();
+	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
+
+	// 内联 groq 行消失、主模型切失效；env anthropic 行仍在（不可撤）
+	await expect(page.getByText('Groq', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+	await expect(page.getByTestId('primary-warning')).toBeVisible({ timeout: 15_000 });
+	await expect(page.getByTestId('primary-warning')).toContainText(await tr(page, 'modelConfig.primary.invalidWarning'));
+	await expect(page.getByText('Anthropic Claude')).toBeVisible();
+});

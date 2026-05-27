@@ -17,6 +17,10 @@ function createStubSdk(overrides = {}) {
 		}),
 		ensureAuthProfileStore: () => ({ version: 1, profiles: {} }),
 		removeProviderAuthProfilesWithLock: async () => ({ version: 1, profiles: {} }),
+		// list 三源新增依赖；默认全不命中（内联无 key / env 无命中）
+		hasConfiguredSecretInput: () => false,
+		resolveEnvApiKey: () => null,
+		mutateConfigFile: async () => {},
 		// 简单 head4..tail4 mock；短串退化到 head2..tail2 / head1.. 形式
 		formatApiKeyPreview: (raw) => {
 			const t = raw.trim();
@@ -42,10 +46,13 @@ function makeRespond() {
 
 const AGENT_DIR = '/fake/state/agents/main/agent';
 
-function build(sdkOverrides = {}) {
+function build(sdkOverrides = {}, opts = {}) {
 	return buildProviderAuthHandlers({
 		sdk: createStubSdk(sdkOverrides),
 		resolveAgentDir: () => AGENT_DIR,
+		// 默认 cfg=null：list 不枚举内联/env，行为等同旧版（仅账本），保证既有用例确定性。
+		// 三源用例显式注入 resolveConfig。
+		resolveConfig: opts.resolveConfig ?? (() => null),
 	});
 }
 
@@ -540,6 +547,217 @@ test('remove: undefined params object → INVALID_ARGS (defensive)', async () =>
 	const handlers = build();
 	const { respond, calls } = makeRespond();
 	await handlers.remove({ respond });
+	assert.equal(calls[0].err.code, 'INVALID_ARGS');
+});
+
+// === list: 内联来源（source='inline'） ===
+
+const hasSecret = (v) => typeof v === 'string' && v.length > 0;
+
+test('list: 内联 key → source=inline、removable=true、带 keyPreview、profileId 合成', async () => {
+	const handlers = build(
+		{ hasConfiguredSecretInput: hasSecret },
+		{ resolveConfig: () => ({ models: { providers: {
+			minimax: { apiKey: 'sk-inline-abcd-1234-WXYZ', baseUrl: 'https://x', api: 'openai-completions', models: [] },
+		} } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: {}, respond });
+	const out = calls[0].data.profiles;
+	assert.equal(out.length, 1);
+	assert.equal(out[0].provider, 'minimax');
+	assert.equal(out[0].source, 'inline');
+	assert.equal(out[0].removable, true);
+	assert.equal(out[0].type, 'api_key');
+	assert.equal(out[0].profileId, 'minimax#inline');
+	assert.equal(out[0].keyPreview, 'sk-i…WXYZ');
+	assert.equal('apiKey' in out[0], false);
+	assert.equal('key' in out[0], false);
+});
+
+test('list: 内联 {env}/{file} 引用形态 → 仍列出但不给 keyPreview', async () => {
+	const handlers = build(
+		{ hasConfiguredSecretInput: hasSecret },
+		{ resolveConfig: () => ({ models: { providers: {
+			groq: { apiKey: '{env:GROQ_API_KEY}', baseUrl: 'https://x', models: [] },
+		} } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: {}, respond });
+	const out = calls[0].data.profiles[0];
+	assert.equal(out.source, 'inline');
+	assert.equal('keyPreview' in out, false);
+});
+
+test('list: 内联节点无 apiKey（如 OAuth 写的节点）→ 不列入内联', async () => {
+	const handlers = build(
+		{ hasConfiguredSecretInput: hasSecret },
+		{ resolveConfig: () => ({ models: { providers: {
+			'minimax-portal': { baseUrl: 'https://x', api: 'anthropic-messages', authHeader: true, models: [] },
+		} } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: {}, respond });
+	assert.equal(calls[0].data.profiles.length, 0);
+});
+
+test('list: 同 provider 账本+内联并存 → 两条不同 source 的 entry', async () => {
+	const handlers = build(
+		{
+			hasConfiguredSecretInput: hasSecret,
+			ensureAuthProfileStore: () => ({ version: 1, profiles: {
+				'minimax:default': { type: 'api_key', provider: 'minimax', key: 'sk-ledger-0000-1111' },
+			} }),
+		},
+		{ resolveConfig: () => ({ models: { providers: {
+			minimax: { apiKey: 'sk-inline-2222-3333', baseUrl: 'https://x', models: [] },
+		} } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: {}, respond });
+	const out = calls[0].data.profiles;
+	assert.equal(out.length, 2);
+	const sources = out.map((e) => e.source).sort();
+	assert.deepEqual(sources, ['inline', 'profile']);
+});
+
+// === list: env 来源（source='env'，sole-source 才列） ===
+
+test('list: env sole-source（主模型那家只有 env key）→ source=env、removable=false', async () => {
+	const handlers = build(
+		{ resolveEnvApiKey: (p) => (p === 'anthropic' ? { apiKey: 'sk-env', source: 'env: ANTHROPIC_API_KEY' } : null) },
+		{ resolveConfig: () => ({ agents: { defaults: { model: 'anthropic/claude' } } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: {}, respond });
+	const out = calls[0].data.profiles;
+	assert.equal(out.length, 1);
+	assert.equal(out[0].provider, 'anthropic');
+	assert.equal(out[0].source, 'env');
+	assert.equal(out[0].removable, false);
+	assert.equal(out[0].profileId, 'anthropic#env');
+	assert.equal('keyPreview' in out[0], false);
+});
+
+test('list: provider 已被账本覆盖 → 不再额外列 env（去重，不添噪）', async () => {
+	const handlers = build(
+		{
+			resolveEnvApiKey: () => ({ apiKey: 'sk-env' }), // env 对任何 provider 都命中
+			ensureAuthProfileStore: () => ({ version: 1, profiles: {
+				'anthropic:default': { type: 'api_key', provider: 'anthropic', key: 'sk-ledger-0000-1111' },
+			} }),
+		},
+		{ resolveConfig: () => ({ agents: { defaults: { model: 'anthropic/claude' } } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: {}, respond });
+	const out = calls[0].data.profiles;
+	assert.equal(out.length, 1);
+	assert.equal(out[0].source, 'profile'); // 只有账本那条，没有 env 重复条
+});
+
+test('list: filterProvider 跨三源统一过滤', async () => {
+	const handlers = build(
+		{
+			hasConfiguredSecretInput: hasSecret,
+			ensureAuthProfileStore: () => ({ version: 1, profiles: {
+				'groq:default': { type: 'api_key', provider: 'groq', key: 'sk-groq-0000-1111' },
+			} }),
+		},
+		{ resolveConfig: () => ({ models: { providers: {
+			minimax: { apiKey: 'sk-inline-2222-3333', baseUrl: 'https://x', models: [] },
+		} } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: { provider: 'minimax' }, respond });
+	const out = calls[0].data.profiles;
+	assert.equal(out.length, 1);
+	assert.equal(out[0].provider, 'minimax');
+	assert.equal(out[0].source, 'inline');
+});
+
+test('list: env-only 但非主模型 provider → 不列（接受残留，决策 #6）', async () => {
+	// anthropic env 命中，但无账本/内联、且主模型是另一家 → 不在候选集，故不列
+	const handlers = build(
+		{ resolveEnvApiKey: (p) => (p === 'anthropic' ? { apiKey: 'sk-env' } : null) },
+		{ resolveConfig: () => ({ agents: { defaults: { model: 'openai/gpt' } } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: {}, respond });
+	assert.equal(calls[0].data.profiles.length, 0);
+});
+
+test('list: filterProvider 命中 env-only 非主模型 → 仍空（过滤复活不了非候选 env）', async () => {
+	const handlers = build(
+		{ resolveEnvApiKey: (p) => (p === 'anthropic' ? { apiKey: 'sk-env' } : null) },
+		{ resolveConfig: () => ({ agents: { defaults: { model: 'openai/gpt' } } }) },
+	);
+	const { respond, calls } = makeRespond();
+	await handlers.list({ params: { provider: 'anthropic' }, respond });
+	assert.equal(calls[0].data.profiles.length, 0);
+});
+
+// === remove: 按 source 分派 ===
+
+test('remove: source 缺省=profile → 仍走账本删除（向后兼容）', async () => {
+	let called = null;
+	const handlers = build({ removeProviderAuthProfilesWithLock: async (p) => { called = p; return { version: 1, profiles: {} }; } });
+	const { respond, calls } = makeRespond();
+	await handlers.remove({ params: { provider: 'groq' }, respond });
+	assert.equal(calls[0].ok, true);
+	assert.equal(called.provider, 'groq');
+});
+
+test('remove: source=inline → mutateConfigFile 只删 apiKey 字段，保留节点其余内容', async () => {
+	const draft = { models: { providers: {
+		minimax: { apiKey: 'sk-x', baseUrl: 'https://x', api: 'openai-completions', models: [{ id: 'm' }] },
+		mini: { apiKey: 'sk-y', baseUrl: 'https://y', models: [] },
+	} } };
+	let afterWriteMode = null;
+	const handlers = build({
+		mutateConfigFile: async ({ mutate, afterWrite }) => { afterWriteMode = afterWrite?.mode; mutate(draft); },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.remove({ params: { provider: 'minimax', source: 'inline' }, respond });
+	assert.equal(calls[0].ok, true);
+	assert.equal(afterWriteMode, 'auto');
+	// 只删了 apiKey，节点其余保留
+	assert.equal('apiKey' in draft.models.providers.minimax, false);
+	assert.equal(draft.models.providers.minimax.baseUrl, 'https://x');
+	assert.deepEqual(draft.models.providers.minimax.models, [{ id: 'm' }]);
+	// 另一家不受影响
+	assert.equal(draft.models.providers.mini.apiKey, 'sk-y');
+});
+
+test('remove: source=inline → 删 key 后节点变空则清掉整节点', async () => {
+	const draft = { models: { providers: { foo: { apiKey: 'sk-only' } } } };
+	const handlers = build({ mutateConfigFile: async ({ mutate }) => { mutate(draft); } });
+	const { respond, calls } = makeRespond();
+	await handlers.remove({ params: { provider: 'foo', source: 'inline' }, respond });
+	assert.equal(calls[0].ok, true);
+	assert.equal('foo' in draft.models.providers, false);
+});
+
+test('remove: source=inline 幂等 → 无该节点/无 providers 也成功', async () => {
+	const draft = { models: { providers: {} } };
+	const handlers = build({ mutateConfigFile: async ({ mutate }) => { mutate(draft); } });
+	const { respond, calls } = makeRespond();
+	await handlers.remove({ params: { provider: 'ghost', source: 'inline' }, respond });
+	assert.equal(calls[0].ok, true);
+});
+
+test('remove: source=env → INVALID_ARGS（env 插件撤销不了）', async () => {
+	const handlers = build();
+	const { respond, calls } = makeRespond();
+	await handlers.remove({ params: { provider: 'anthropic', source: 'env' }, respond });
+	assert.equal(calls[0].ok, false);
+	assert.equal(calls[0].err.code, 'INVALID_ARGS');
+});
+
+test('remove: 未知 source → INVALID_ARGS', async () => {
+	const handlers = build();
+	const { respond, calls } = makeRespond();
+	await handlers.remove({ params: { provider: 'x', source: 'bogus' }, respond });
 	assert.equal(calls[0].err.code, 'INVALID_ARGS');
 });
 
