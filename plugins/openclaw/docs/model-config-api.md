@@ -272,6 +272,8 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 **按 provider 维度一锅端**——清掉该 provider 下的所有 profile（不分 api_key / oauth / token），详见 § 6.8 取舍。
 
+> 对 OAuth provider，`remove` 即"登出"语义——只删凭据、**不删**登录时写的 `cfg.models.providers` 节点；UI 按凭据过滤令残留节点不可见，故对 UI 已是干净登出（详见 § 6.14）。无需单独的 logout RPC。
+
 #### 协议形状
 
 **入参**：
@@ -588,6 +590,14 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 ### 6.15 写 OAuth 凭据用 `upsertAuthProfileWithLock`，不用 `writeOAuthCredentials`
 
 公开的 `writeOAuthCredentials` 内部走**无锁**同步 `upsertAuthProfile`，与带锁的 `removeProviderAuthProfilesWithLock` 并发会绕锁丢写。改用带锁的 `upsertAuthProfileWithLock` + 手搓 oauth credential——核实该 helper 收 `AuthProfileCredential` 联合类型（含 oauth）直接存盘，落盘结果与 `writeOAuthCredentials` 等价但锁正确（与 § 2.2 setApiKey 的"不用上层封装"取舍同源）。
+
+### 6.16 TODO（专项研究）：OAuth 能力扩展到外部 provider
+
+当前 CoClaw 的 OAuth 仅覆盖 **MiniMax** 登录（§ 2.3），登出复用 `remove`（§ 2.5 / § 6.14）。但 `providerAuth.list`（§ 2.4）是 main agent **全部凭据**的窗口——会列出用户在 CoClaw 之外（如上游 CLI）自行登录的外部 oauth provider（2026-05-27 实测见到 `openai-codex`）。这类外部 oauth provider，CoClaw 其实**同样有能力纳入登录 / 登出 / 管理**（device-code 复刻思路对其它标准 device-code oauth provider 可推广；openai-codex 走 localhost 回环流，远端场景需另解，参 § 2.3.1 对比）。
+
+→ **待专项研究**：哪些外部 oauth provider 值得纳入、各自登录流在"UI 在远端 / claw 在内网"下的可行性、登出与管理的统一形态。在此之前若 UI 要放开 oauth 撤销，可按"CoClaw 能往返（既能登录又能登出）的才放"作**临时口径**，但这不是永久设计边界——研究后大概率扩展。
+
+> 为什么 `minimax-portal` 必须由本插件写 `cfg.models.providers`、而 `openai-codex` 不用写：前者不在 OpenClaw 内置 provider 字典里（登录不写则 catalog 为空、模型不可用），后者是 bundled provider、模型清单自带——根因与三处来源对照见 mental-model § 5.2 / 附录 D / F.4-F.5。
 
 ---
 
