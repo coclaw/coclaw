@@ -436,6 +436,8 @@ id / name / provider / alias / contextWindow / contextTokens / reasoning / input
 
 **`cost` / `maxTokens` / `api` / `baseUrl` / `headers` / `params` / `agentRuntime` 在接口输出层被砍**——要展示价格或单次输出上限，必须**绕过 RPC 直接读主配置文件的 `models.providers.<厂家>.models[]`**。
 
+> ⚠️ 注意"直读主配置"只对**已写进 config 的 provider** 管用。对**纯内置 provider**（如 pi-ai 出厂的 `minimax` / `minimax-cn`，没有 config 条目），`maxTokens` 连进程内的 `loadModelCatalog` 都拿不到——它在 catalog 构建层（pi-ai 条目映射）就被丢，不只是 RPC 投影。细节与影响（CoClaw 为何仍须硬写 maxTokens）见附录 F.4 / F.5。
+
 ### 5.5 OpenRouter 的"光秃秃 modelId 自动补前缀"机制
 
 OpenRouter 在插件清单里登记了一条规则：用户引用 OpenRouter 模型时如果只写一个**光秃秃的名字**（不含斜杠），自动补 `openrouter/` 前缀。
@@ -784,3 +786,50 @@ if (result === null) {
 | 主要 helper | `upsertAuthProfile` + `updateConfig(applyAuthProfileConfig)` | `buildApiKeyCredential` + `upsertAuthProfileWithLock`（带锁、与 remove 共享） |
 
 **结论**：CoClaw **不抄** CLI 模板，因为运行环境约束不同。设计取舍记录在 4.7。
+
+---
+
+## 附录 F：能否让扫码 provider（minimax-portal）白嫖内置 catalog 模型清单？（2026-05-27 调研 + 决策）
+
+> 问题：CoClaw 给扫码/token-plan provider `minimax-portal` 维护一张**硬编码**模型表写进 config（`plugins/openclaw/src/provider-auth/portal-model-catalog.js`），登录 + 启动对账时写入。能不能改成**运行时从 OpenClaw 自带 catalog 白嫖**、免维护、自动跟上游同步？
+> 结论：**部分可行，但救不了关键字段（maxTokens），决定暂保留硬编码表**。下面是钉死的机制 + 决策依据，全部真机/源码核实。
+
+### F.1 `view:'all'` 是凭据无关的"全宇宙目录"
+
+- `models.list` 的 `view` 合法值只有 `default` / `configured` / `all`（`openclaw-repo/src/gateway/protocol/schema/agents-models-skills.ts:198-205`；`available` 等非法）。
+- `view:'all'` 走 `loadGatewayModelCatalog({readOnly:false})` 后**原样返回**，跳过 `default`/`configured` 才跑的可见性/凭据过滤 `resolveVisibleModelCatalog`（`src/gateway/server-methods/models.ts:84-85` 直返 vs `88-96` 过滤）。
+- **实测**：把 `minimax`/`minimax-cn` 的 api-key 凭据从 auth-profiles 删光（env / openclaw.json 也无 key）后重启，`view:'all'` 里它俩仍各出 2 条（带 `contextWindow:204800 / reasoning:true`）。即 **view:'all' 出不出某模型与凭据无关**。
+
+### F.2 catalog 三来源里，谁不靠凭据
+
+`loadModelCatalog`（`src/agents/model-catalog.ts:317`）合并三源（与 §1.2 / 附录 D 同，这里补"凭据"维度）：
+
+1. **pi-ai 出厂字典** `@mariozechner/pi-ai/dist/models.generated.js`，经 `instantiatePiModelRegistry().getAll()`（model-catalog.ts:371-418）——**纯静态、不靠任何凭据**。`minimax`(块 @5874) / `minimax-cn`(@5910) 的 M2.7 两条就在这。
+2. provider 插件 augment（`augmentModelCatalogWithProviderPlugins`，仅 `readOnly:false` 才跑）——**凭据门控**：minimax 的 `resolveApiCatalog` 解不到 key 就 `return null`。
+3. config 里 `models.providers.*`（`buildConfiguredModelCatalog`）。
+
+→ **minimax/minimax-cn 无凭据照出，是因为它们在 pi-ai 字典里（源1）；minimax-portal 不在字典、注册时也不声明静态 models（OAuth 成功写 `models:[]`），只能靠源3（写 config）。** 这就是不对称的根。
+
+### F.3 插件运行时能怎么拿这份 catalog
+
+- **主路径**：`import('openclaw/plugin-sdk/agent-runtime')` → `loadModelCatalog({config})`。该子路径在安装的 dist 里确有导出（`dist/plugin-sdk/agent-runtime.js` re-export `loadModelCatalog`；`package.json` exports 含 `./plugin-sdk/agent-runtime`，是 295 个 plugin-sdk 子路径之一）。插件内已有同源用法：model-default handler 调 `buildModelsProviderData(cfg, undefined, {view:'all'})`（`openclaw/plugin-sdk/models-provider-runtime`）。
+- **必须 `readOnly:false`**：readOnly 路径只读磁盘 `models.json`（派生缓存，不含 pi-ai 内置）+ manifest 静态目录，**不调 pi-ai 字典**（model-catalog.ts:245-315）→ readOnly 拿不到 minimax。
+- **保底路径**：插件向 gateway 发 `models.list {view:'all'}` RPC（同源、效果同主路径）。
+
+### F.4 致命限制：maxTokens 拿不到（承重点）
+
+- `loadModelCatalog` 把 pi-ai 条目映射成目录条目时**只保留 `{id,name,provider,contextWindow,contextTokens,reasoning,input,compat}`，丢掉 `maxTokens` 和 `cost`**（model-catalog.ts:408-417）。这是在 **catalog 构建层**就丢，不只是 §5.4 说的 RPC 投影层——所以 §5.4 的"绕过 RPC 直读主配置"补救只对**已写进 config 的 provider** 管用，对 `minimax`/`minimax-cn` 这种**纯内置 provider** 仍拿不回 maxTokens。
+- 其它入口也给不了：`plugin-sdk/minimax` 只导出 model ids（`MINIMAX_TEXT_MODEL_REFS`）无 maxTokens，且**不是合法 dist 子路径**。
+- 即 pi-ai 源数据本身写着 `maxTokens:131072`（models.generated.js minimax 块），但**没有任何 sanctioned 运行时 API 能把它取出来**。
+
+### F.5 为什么 maxTokens 不能丢（16x 截断）
+
+- config 里某模型缺 `maxTokens` 时，OpenClaw 归一化填 `min(DEFAULT_MODEL_MAX_TOKENS, contextWindow)`，而 `DEFAULT_MODEL_MAX_TOKENS = 8192`（`src/config/defaults.ts:45` 定义、`:209-211` 填充）。
+- minimax-portal 真实 maxTokens=131072。若白嫖目录不补 maxTokens → 单次最大输出被钉死 **8192**（16x 截断，长回复被砍）。**所以 maxTokens 必须显式写死**——这条把"彻底零硬编码"判了死刑。
+
+### F.6 结论 + 决策（2026-05-27）
+
+- **彻底"零硬编码"做不到**：maxTokens 取不到、缺了又 16x 截断 → 必须本地写死一个常量；登录那一刻目录若偶发取不到，还需种子兜底。
+- 能做的最多是"半白嫖"：`list + name + reasoning + contextWindow` 从 catalog 自动同步（新模型 / 上游升级自动跟上），`maxTokens` 用本地常量补、空时回退种子。
+- **当前决策：暂保留现有硬编码表**。理由：既然无法完全去硬编码（maxTokens + 种子都省不掉），"半白嫖"带来的边际收益（MiniMax 出新模型时不发 CoClaw 版本就能自动出现）不足以抵其新增的运行时依赖 + 兜底分支 + 测试复杂度。MiniMax 加模型频率极低，手动更新那张表即可。
+- **重评触发条件**（写进 `/check-openclaw-compat` 必查项 K，升级时核）：上游把 maxTokens 纳入 catalog 输出 / 出 sanctioned API；或 pi-ai 字典新增 `minimax-portal`；或 `DEFAULT_MODEL_MAX_TOKENS` 抬高到 ≥ minimax 真实值。任一成立则重启"半白嫖"评估。
