@@ -398,8 +398,6 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 `primary: null` 表示该 scope 未覆盖。**只回 raw**——effective primary（per-agent → default → 内置兜底）由 UI 自行解析。
 
-> 📌 **计划（未实施）**：每个 primary 值将加 `usable: boolean | null` 有效性标志，根治 UI 仪表盘分层债（finding #5）+ #4 别名误判。详见 [§ 3.8](#38-计划未实施modellist-输出-usable-有效性标志--catalog-查询别名归一化)。
-
 **错误码**：仅 `IO_FAILED`（runtime cfg 不可读）。
 
 ### 3.5 实现位置
@@ -420,7 +418,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 - ❌ baseHash 乐观锁重试
 - ❌ plugin event 失败通知
 - ❌ CLI 入口（一期 UI-only；debug 用 `openclaw gateway call coclaw.model.list --json`）
-- ❌ effective primary 的**层叠解析**输出（per-agent → default → 内置兜底，由 UI 自解）。注：这里否决的是"哪个 primary 生效"的层叠解析；primary **是否还能用**的有效性布尔（`usable`）是另一回事，计划加入 list 出参，见 § 3.8
+- ❌ effective primary 的**层叠解析**输出（per-agent → default → 内置兜底，由 UI 自解）
 - ❌ `@profile` 后缀（modelId 末尾的账号 hint，与 D1 解耦）
 
 ### 3.7 扩展路径
@@ -428,49 +426,6 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 - 加 fallbacks：`set({ agentId?, primary?, fallbacks? })` + list 出参每个 value 加 `fallbacks` 字段
 - 整删某 agent 的 model 字段：加 `coclaw.model.delete({ agentId })`
 - chat / topic 级：完全新命名空间 `coclaw.chat.model.*` / `coclaw.topic.model.*`
-
-### 3.8 计划（未实施）：`model.list` 输出 `usable` 有效性标志 + catalog 查询别名归一化
-
-> 状态：**设计已定，未实施**（2026-05-26）。源自 model-config 发版前 deep-review 的 finding #5 + #4。本节即落地 spec；实施后把内容并入 § 3.3 / § 3.4 出参契约、删除"计划"标注。配套 UI 改动见 `ui/docs/model-config.md` § 7.4。
-
-#### 动机
-
-- **finding #5（分层债）**：UI 仪表盘（`/claws`）为了在外层算"主模型还灵不灵"（橙条引导用），把全量 catalog（`models.list view:"all"`）拉进了**每台 claw 的仪表盘刷新**——违背 UI 侧"低频写、按需读"分层（重数据只该在模型设置子页按需拉、退出销毁）。根因是**有效性判定放在了前端**，而该判定需要全量 catalog 比对，于是被迫把整本目录搬进仪表盘层。
-- **finding #4（别名漂移）**：前端 `computePrimaryEffective` 是对插件 `model.set` 写入校验（`handlers.js` 的 `validateProviderCredAndCatalog`）的**重复实现**，两边用 `===` 硬比 provider、都漏了上游 `normalizeProviderId` 折叠别名 → 别名形 provider（如 `moonshotai` vs 规范名 `moonshot`）被误判失效。重复实现必然漂移，#4 即实证。
-
-#### 根治方向
-
-判定**下沉插件侧单一事实源**，`coclaw.model.list` 直接返回有效性布尔；UI 删掉本地判定与全量 catalog 拉取。经 DC 搬给 UI 的从"整本目录"缩成"一个布尔"——P2P/relay 链路上目录 JSON 才是负载大头，是**真减**不是把开销挪个地方。
-
-#### 出参变更（additive，老消费者忽略即可）
-
-每个 primary 值加 `usable` 字段：
-
-```ts
-{
-  default: { primary: string | null, usable: boolean | null };
-  agents: Record<string, { primary: string | null, usable: boolean | null }>;
-}
-```
-
-- `usable` 三态语义：
-  - `true` —— primary 非空，且 provider 有可用凭据，且 model 命中全量 catalog
-  - `false` —— primary 非空，但 provider 无凭据 **或** model 不在 catalog（真·失效）
-  - `null` —— **判不了**：primary 为 null（无可判）**或** catalog 暂不可用（未知态，见实现要点 3）
-- ⚠️ `usable` 与本文档既有 **"effective primary（层叠解析）"是两个不同概念**，勿混：后者指 per-agent → default → 内置兜底解析出"哪个 primary 生效"（仍由 UI 自解，§ 3.6）；`usable` 只回答"这个 primary 现在还能不能用"。**刻意用 `usable` 而非 `effective`** 避免与"effective primary"撞名（最终字段名可由 owner 复核——UI 内部状态现叫 `primaryEffective`，映射即可）。
-
-#### 实现要点
-
-1. 把 `handlers.js` 的 `validateProviderCredAndCatalog`（现返回 error message 或 null）抽成**返回 bool 的 predicate**，`set`（校验拒绝）与 `list`（算 `usable`）**共用同一份判定**——从根上消除前后端两份实现的漂移源。
-2. **数据全程进程内，不发 gateway RPC**：靠已注入的两个 SDK 子入口（DI、懒加载）——`buildModelsProviderData`（`openclaw/plugin-sdk/models-provider-runtime`）建 catalog、`isProviderAuthProfileConfigured`（`openclaw/plugin-sdk/provider-auth`）查凭据。核源 `commands-models.ts` 全程读 cfg + `loadModelCatalog` 建内存 Map，不发任何 RPC（`await` 仅因读 catalog 涉文件/注册表 IO）。`list` 现仅 `loadConfig`（纯配置读、不碰 catalog）；改后多**一次** `buildModelsProviderData(cfg, undefined, { view:'all' })`，各 primary 只做 Map 查 + 逐 provider 凭据查（廉价内存操作），相对"把整本目录经 DC 搬给每台 claw"可忽略。
-3. **catalog 不可用时不报 `IO_FAILED`**：`buildModelsProviderData` 抛错 / 拿不到时，所有非空 primary 的 `usable` 回 `null`（未知态），`list` 整体**仍成功**——保住"数据拿不到就不显示橙条"的语义（与 UI § 7.2 一致）。`loadConfig` 失败仍是 `IO_FAILED`（不变）。
-4. **别名归一化（顺带根治 #4 的插件侧盲点）**：catalog 查询前对 provider 做一次 `normalizeProviderId`。`buildModelsProviderData` 的 `byProvider` map **本就按规范名 key**（核源 `commands-models.ts:110` `normalizeProviderId(p)`），现 `handlers.js:65` 拿**原始** provider 直接 `.get(provider)` 没归一化——这正是 `model.set` 误拒别名形 primary 的根因（写入路径也有此盲点，不只显示层）。归一化后 set/list 两条路径一并治好。`normalizeProviderId` 从 **`openclaw/plugin-sdk/provider-model-shared`** 导入（已核实该子路径 re-export 它；映射只在上游一份，**不在插件复刻**——避免与上游脱节，符合发版求稳/拒投机性复杂度的取舍）。
-   - ✅ **凭据校验 `isProviderAuthProfileConfigured` 无需改**：其内部 `resolveProviderIdForAuth` 已做归一化（核源 `agents/auth-profiles/order.ts`）。别名盲点**只在 catalog 查询那一处**，别误改凭据路径。
-
-#### 跨模块顺序与定位
-
-- 按项目规范**先改协议/文档（本节 + UI § 7.4）再改实现**；插件 + UI 两侧均补/改测试（插件覆盖率门槛 branches 95% 其余 100%）。
-- 属**设计完善项**（版本已发布，作为后续完善跟进，非发版前热修）。落地前需先把"判不了"（catalog 不可用）契约钉死。
 
 ---
 
