@@ -60,3 +60,18 @@ export function getProviderMeta(id) {
 	if (hit) return hit;
 	return { displayName: id, popular: false };
 }
+
+/**
+ * CoClaw 管理的扫码(oauth)登录服务商白名单。
+ *
+ * oauth 凭据默认不可在 UI 撤销（read-only）——只有“CoClaw 自己能发起扫码登录”的
+ * 服务商才允许撤销：撤销后用户能在 CoClaw 内重新登录回来，构成往返闭环。
+ * 像 openai-codex 这类 OpenClaw 自带、须在 CLI 外部配置的 oauth 服务商不在此列，
+ * 否则就成了“只能登出不能再登”的单向陷阱。
+ *
+ * 耦合：此处 id 必须与插件端 PORTAL_PROVIDER_ID（'minimax-portal'）保持一致，
+ * 插件改名时本白名单要同步跟改。
+ *
+ * @type {Set<string>}
+ */
+export const COCLAW_OAUTH_PROVIDERS = new Set(['minimax-portal']);

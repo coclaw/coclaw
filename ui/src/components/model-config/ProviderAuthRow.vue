@@ -6,7 +6,7 @@
 			<p v-if="secondary" class="truncate text-xs text-muted">{{ secondary }}</p>
 		</div>
 
-		<!-- 撤销按钮：仅 api_key / token 可撤，oauth 一期 read-only -->
+		<!-- 撤销按钮：api_key / token 可撤；oauth 默认只读，仅 CoClaw 管理的扫码服务商例外 -->
 		<UButton
 			v-if="removable"
 			data-testid="btn-remove-provider"
@@ -21,7 +21,7 @@
 </template>
 
 <script>
-import { getProviderMeta } from '../../constants/provider-meta.js';
+import { getProviderMeta, COCLAW_OAUTH_PROVIDERS } from '../../constants/provider-meta.js';
 
 export default {
 	name: 'ProviderAuthRow',
@@ -52,8 +52,10 @@ export default {
 			return p.email || p.displayName || '';
 		},
 		removable() {
-			// 一期 OAuth profile 仅展示不可撤；其它类型（api_key / token / 未知）均可撤
-			return this.profile?.type !== 'oauth';
+			// api_key / token / 未知类型一律可撤；oauth 默认只读，仅 CoClaw 管理的扫码服务商例外
+			const p = this.profile ?? {};
+			if (p.type !== 'oauth') return true;
+			return COCLAW_OAUTH_PROVIDERS.has(p.provider);
 		},
 	},
 	methods: {

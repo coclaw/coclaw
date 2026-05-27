@@ -48,6 +48,14 @@ describe('ProviderAuthRow', () => {
 		expect(w.text()).toContain('u@example.com');
 	});
 
+	test('CoClaw-managed scan-login oauth (minimax-portal) is removable', async () => {
+		const w = makeWrapper({ provider: 'minimax-portal', type: 'oauth', email: 'u@example.com', profileId: 'minimax-portal:default' });
+		const btn = w.find('[data-testid="btn-remove-provider"]');
+		expect(btn.exists()).toBe(true);
+		await btn.trigger('click');
+		expect(w.emitted('remove')[0]).toEqual(['minimax-portal']);
+	});
+
 	test('token-type profile is removable (treated like api_key)', () => {
 		const w = makeWrapper({ provider: 'someTokenProvider', type: 'token', displayName: 'My Token', profileId: 'tok:default' });
 		expect(w.find('[data-testid="btn-remove-provider"]').exists()).toBe(true);
