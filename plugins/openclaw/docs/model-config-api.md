@@ -628,6 +628,8 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 
 > 卸载 CoClaw 后这条 `minimax-portal` 节点会残留——无害（合法 OpenClaw 节点，与用户自己用上游 CLI 登录后果相同），不触发 schema 校验失败（区别于硬约束禁写的 `channels.coclaw` / `plugins.entries`）。
 
+**登出（logout）= 只删凭据，不删此节点**（2026-05-27 实测定案）。曾担心"只删凭据、留着此节点"会在 UI 切模型界面留下"僵尸模型"，实测证伪：UI 主模型选择器拿 `models.list view:all` 的全量 catalog **与 `providerAuth.list`（有凭据的 provider）取交集**，只列两边都有的（见 `ui/src/components/model-config/PrimaryModelPickerDialog.vue` 的 `allowed.has(m.provider)` 过滤）。删凭据后 `minimax-portal` 不在交集里，那 2 个模型即便仍在 catalog 也**不露面**；模型配置页"已配 provider"列同样源自 `providerAuth.list`，该行连同移除按钮一并消失。故现有 `coclaw.providerAuth.remove`（仅删凭据）**对 UI 已是干净登出**，无需新增 logout RPC、无需删此 cfg 节点。反向：删此节点反而越界——无法证明该节点一定是本插件写的（官方 MiniMax 插件可能自己补同名节点），删它有与官方插件来回覆盖之险（与 `reconcile.js` 按 id 子集判覆盖、不硬删别人模型同源）。
+
 ### 6.15 写 OAuth 凭据用 `upsertAuthProfileWithLock`，不用 `writeOAuthCredentials`
 
 公开的 `writeOAuthCredentials` 内部走**无锁**同步 `upsertAuthProfile`，与带锁的 `removeProviderAuthProfilesWithLock` 并发会绕锁丢写。改用带锁的 `upsertAuthProfileWithLock` + 手搓 oauth credential——核实该 helper 收 `AuthProfileCredential` 联合类型（含 oauth）直接存盘，落盘结果与 `writeOAuthCredentials` 等价但锁正确（与 § 2.2 setApiKey 的"不用上层封装"取舍同源）。
