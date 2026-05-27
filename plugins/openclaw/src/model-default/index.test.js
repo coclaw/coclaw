@@ -87,6 +87,33 @@ test('list 调用走到 handler 并返回出参', async () => {
 	assert.equal(r.calls[0].payload.default.primary, 'openai-codex/gpt-5.5');
 });
 
+test('list 出参带凭据信号：内联 key 让 providerUsable / hasAnyUsableCredential 为真', async () => {
+	// 钉住 index.js 把三个凭据探针接进 sdk bundle 的接线（isProviderApiKeyConfigured /
+	// hasConfiguredSecretInput / ensureAuthProfileStore）。env+账本都说没有，只有内联 key 存在：
+	// 若任一探针漏接 → deps 里对应项为 undefined → 调用即抛 → list 落 IO_FAILED，
+	// 下面 ok / providerUsable / hasAnyUsableCredential 三条断言都会失败（mutation 可捕获）。
+	const api = makeApi();
+	const mods = makeSdkModules();
+	mods.providerAuth.isProviderApiKeyConfigured = () => false;
+	mods.providerAuth.hasConfiguredSecretInput = (v) => typeof v === 'string' && v.length > 0;
+	mods.providerAuth.ensureAuthProfileStore = () => ({ profiles: {} });
+	registerModelDefaultHandlers(api, {
+		loadConfigMutation: async () => mods.configMutation,
+		loadModelsProviderRuntime: async () => mods.modelsRuntime,
+		loadProviderAuth: async () => mods.providerAuth,
+		loadConfig: () => ({
+			agents: { defaults: { model: 'openai-codex/gpt-5.5' } },
+			models: { providers: { 'openai-codex': { apiKey: 'sk-inline-test' } } },
+		}),
+		resolveAgentDir: () => '/fake',
+	});
+	const r = makeRespond();
+	await api.__call('coclaw.model.list', { params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.equal(r.calls[0].payload.default.providerUsable, true);
+	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
+});
+
 test('set 调用走到 handler 并写盘', async () => {
 	const api = makeApi();
 	const mods = makeSdkModules();
