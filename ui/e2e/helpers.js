@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 
 // --- 常量 ---
 export const TEST_LOGIN_NAME = 'test';
-export const TEST_PASSWORD = '123456';
+export const TEST_PASSWORD = '12345678';
 
 // --- 认证 ---
 

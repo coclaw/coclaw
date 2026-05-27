@@ -6,7 +6,7 @@ test('local account auth flow should work with new layout @auth', async ({ page 
 	await expect(page.getByTestId('login-page')).toBeVisible();
 
 	await page.getByTestId('login-name').fill('test');
-	await page.getByTestId('login-password').fill('123456');
+	await page.getByTestId('login-password').fill('12345678');
 	await page.getByTestId('btn-login').click();
 
 	// 登录后根据 claw 状态重定向到不同页面；只需验证已离开登录页且进入认证区域

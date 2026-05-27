@@ -56,7 +56,7 @@ test.describe('认证 API 故障 @auth', () => {
 
 		await page.goto('/login');
 		await page.getByTestId('login-name').fill('test');
-		await page.getByTestId('login-password').fill('123456');
+		await page.getByTestId('login-password').fill('12345678');
 		await page.getByTestId('btn-login').click();
 
 		const errorEl = page.getByTestId('error');
@@ -74,7 +74,7 @@ test.describe('认证 API 故障 @auth', () => {
 
 		await page.goto('/login');
 		await page.getByTestId('login-name').fill('test');
-		await page.getByTestId('login-password').fill('123456');
+		await page.getByTestId('login-password').fill('12345678');
 		await page.getByTestId('btn-login').click();
 
 		// 错误文本应出现（axios network error）

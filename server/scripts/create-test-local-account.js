@@ -3,7 +3,7 @@ import { findLocalAuthByLoginName } from '../src/repos/local-auth.repo.js';
 import { createLocalAccount } from '../src/services/local-auth.svc.js';
 
 const TEST_LOGIN_NAME = 'test';
-const TEST_PASSWORD = '123456';
+const TEST_PASSWORD = '12345678';
 
 async function main() {
 	const existing = await findLocalAuthByLoginName(TEST_LOGIN_NAME);

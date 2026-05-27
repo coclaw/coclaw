@@ -11,7 +11,7 @@ const MOBILE_VP = { width: 390, height: 844 };
 async function login(page) {
 	await page.goto('/login');
 	await page.getByTestId('login-name').fill('test');
-	await page.getByTestId('login-password').fill('123456');
+	await page.getByTestId('login-password').fill('12345678');
 	await page.getByTestId('btn-login').click();
 	await page.waitForTimeout(2000);
 }

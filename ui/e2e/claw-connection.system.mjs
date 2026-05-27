@@ -26,7 +26,7 @@ const { createPinia, setActivePinia } = await import('pinia');
 
 const BASE_URL = 'http://localhost:3000';
 const LOGIN_NAME = 'test';
-const PASSWORD = '123456';
+const PASSWORD = '12345678';
 
 // --- 工具函数 ---
 
