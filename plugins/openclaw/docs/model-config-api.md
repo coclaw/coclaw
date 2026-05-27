@@ -225,7 +225,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 #### 2.3.8 e2e（人机协同；cn 站授权）
 
-`loginOauth` 是 gateway method，命令行可达（§ 6.13）。CLI `openclaw gateway call coclaw.providerAuth.loginOauth '{"region":"cn"}' --json` 默认**收首帧即返**（`--expect-final` 默认关，专为 agent 留），故脚本能立即拿到并打印 `verificationUri` + `userCode`。流程：脚本调用 → 打印网址 + 码 → **暂停等用户到 `api.minimaxi.com` 授权** → 脚本轮询 `coclaw.providerAuth.list '{"provider":"minimax-portal"}'` 直到出现 oauth profile（带超时）→ 断言 `openclaw.json` 的 `models.providers.minimax-portal.baseUrl` 已写 + gateway 未重启 → **Create-Test-Delete 还原**（`coclaw.providerAuth.remove` 删凭据；provider 配置节点无 CLI 可删，脚本打印手动 `jq` 清理命令，残留无害见 § 6.14）。事件类 CLI 收不到，故验**落盘副作用**而非终态帧。
+`loginOauth` 是 gateway method，命令行可达（§ 6.13）。CLI `openclaw gateway call coclaw.providerAuth.loginOauth --params '{"region":"cn"}' --json`（**入参走 `--params <json>` 选项、非位置参数**；2026-05-27 在 v2026.5.7 核实，旧位置语法会报 "too many arguments"）默认**收首帧即返**（`--expect-final` 默认关，专为 agent 留），故脚本能立即拿到并打印 `verificationUri` + `userCode`。流程：脚本调用 → 打印网址 + 码 → **暂停等用户到 `api.minimaxi.com` 授权** → 脚本轮询 `coclaw.providerAuth.list '{"provider":"minimax-portal"}'` 直到出现 oauth profile（带超时）→ 断言 `openclaw.json` 的 `models.providers.minimax-portal.baseUrl` 已写 + gateway 未重启 → **Create-Test-Delete 还原**（`coclaw.providerAuth.remove` 删凭据；provider 配置节点无 CLI 可删，脚本打印手动 `jq` 清理命令，残留无害见 § 6.14）。事件类 CLI 收不到，故验**落盘副作用**而非终态帧。
 
 ### 2.4 `coclaw.providerAuth.list`（本期实施；跨认证类型）
 
@@ -591,13 +591,90 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 
 公开的 `writeOAuthCredentials` 内部走**无锁**同步 `upsertAuthProfile`，与带锁的 `removeProviderAuthProfilesWithLock` 并发会绕锁丢写。改用带锁的 `upsertAuthProfileWithLock` + 手搓 oauth credential——核实该 helper 收 `AuthProfileCredential` 联合类型（含 oauth）直接存盘，落盘结果与 `writeOAuthCredentials` 等价但锁正确（与 § 2.2 setApiKey 的"不用上层封装"取舍同源）。
 
-### 6.16 TODO（专项研究）：OAuth 能力扩展到外部 provider
+### 6.16 OAuth 能力扩展到外部 provider（2026-05-27 专项研究结论）
 
-当前 CoClaw 的 OAuth 仅覆盖 **MiniMax** 登录（§ 2.3），登出复用 `remove`（§ 2.5 / § 6.14）。但 `providerAuth.list`（§ 2.4）是 main agent **全部凭据**的窗口——会列出用户在 CoClaw 之外（如上游 CLI）自行登录的外部 oauth provider（2026-05-27 实测见到 `openai-codex`）。这类外部 oauth provider，CoClaw 其实**同样有能力纳入登录 / 登出 / 管理**（device-code 复刻思路对其它标准 device-code oauth provider 可推广；openai-codex 走 localhost 回环流，远端场景需另解，参 § 2.3.1 对比）。
+**核心问题**：上游有没有"统一的、插件可用的 OAuth login/logout"，若有则不必逐个 provider 手工复刻登录？**结论：登出有、登录半有半无。**
 
-→ **待专项研究**：哪些外部 oauth provider 值得纳入、各自登录流在"UI 在远端 / claw 在内网"下的可行性、登出与管理的统一形态。在此之前若 UI 要放开 oauth 撤销，可按"CoClaw 能往返（既能登录又能登出）的才放"作**临时口径**，但这不是永久设计边界——研究后大概率扩展。
+#### 6.16.1 登出（已统一，且 CoClaw 已在用）
 
-> 为什么 `minimax-portal` 必须由本插件写 `cfg.models.providers`、而 `openai-codex` 不用写：前者不在 OpenClaw 内置 provider 字典里（登录不写则 catalog 为空、模型不可用），后者是 bundled provider、模型清单自带——根因与三处来源对照见 mental-model § 5.2 / 附录 D / F.4-F.5。
+`removeProviderAuthProfilesWithLock({ provider })`（上游 `src/agents/auth-profiles/profiles.ts`）**按 provider 一锅端删凭据，不分认证类型**（oauth / token / api_key 同一路径），CoClaw 现有 `coclaw.providerAuth.remove`（§ 2.5）直接调它——**对任何 provider 都是干净登出**。⚠️ 唯一边界：它**只删本地凭据存档，不发远端 token 吊销网络请求**（厂商侧 token 仍有效到自然过期）。对"UI 登出"语义足够（§ 6.14）。
+
+#### 6.16.2 登录（无现成泛化函数，但有可拼装的接缝）
+
+- **没有** `loginProvider(providerId)` 这类现成泛化入口。plugin-sdk 只 `@deprecated` 导出三个**逐个命名**的登录命令（`loginOpenAICodexOAuth` / `loginChutes` / `githubCopilotLoginCommand`，`src/plugin-sdk/provider-auth-login.ts`），全标"改用 provider 自己的 auth hooks"——押注它们有上游删除风险。
+- **但泛化接缝可拼**：`resolvePluginProviders`（`plugin-sdk/provider-catalog-runtime` 子路径导出，注明"供 provider 契约测试"、不在 index.ts）→ 拿 provider 的 `auth: ProviderAuthMethod[]` → 调 `method.run(ctx)`。上游 CLI `openclaw models auth login` 的通用调度（`src/commands/models/auth.ts` resolve → pick method → `method.run`）走的就是这条；CoClaw 理论上可复制。
+- **输出侧天然统一、可复用**：`run(ctx)` 返回 `ProviderAuthResult { profiles:[{profileId,credential}], configPatch? }`，**调用方负责落盘**（上游 `persistProviderAuthResult` 写凭据 + 应用 configPatch）——这与 CoClaw 给 MiniMax 的落盘形态**完全一致**（`upsertAuthProfileWithLock` + `mutateConfigFile`）。所以"登录成功后怎么存"对所有 provider 零额外代码。
+- **输入侧才是真成本**：`ctx` 是 `ProviderAuthContext`，里面 `runtime`（仅 `{log,error,exit}`，随手造）/ `isRemote` / `openUrl` / `config` / `oauth.createVpsAwareHandlers` 都好供，**唯独 `prompter: WizardPrompter` 是多轮交互**——`run` 自行决定调几次 `prompter.text/select/note/progress`、问什么、什么顺序。CoClaw 现有两阶段 RPC（accepted + final 两帧，§ 2.3.2）**装不下多轮对话**。要走泛化路径，得先搭一条**通用的多轮 prompt-over-RPC 管道**（插件抛 prompt 规格 → UI 渲染 → 用户答 → 喂回 `run` 正在 await 的 prompter → 循环到 resolve）+ UI 侧通用 prompt 渲染器。这是独立的中型工程，不是顺手扩。
+
+#### 6.16.3 provider 登录流普查（决定"值不值得做"和"能不能自己复刻"）
+
+| provider id | 流程 | 远端可行性（UI 公网 / claw 内网） | client_id | 登录是否写 `models.providers.<id>` |
+|---|---|---|---|---|
+| `minimax-portal` | device-code | **零摩擦** | 写死，可照抄 | **是**（不在内置字典，不写则模型不可用） |
+| `github-copilot` | device-code | **零摩擦** | 写死，可照抄 | 否（内置，仅凭据 + defaultModel） |
+| `openai-codex`（设备码方法） | device-code | **零摩擦** | 写死，可照抄 | 否（内置，仅凭据 + 别名） |
+| `openai-codex`（oauth 方法） | 回环-PKCE | 需用户**贴回 redirect URL** | 写死 | 同上 |
+| `chutes` | 回环-PKCE | 需用户**贴回 redirect URL** | **取自 env/凭据，手里没有→不能自己复刻** | 是 |
+| `google-gemini-cli` | 回环-PKCE | 需用户**贴回 redirect URL** | **取自 env/本机 gemini-cli 安装→不能自己复刻** | 否 |
+
+两条铁律：① **只有 device-code 那一类对远端零摩擦**；回环-PKCE 类远端只能让用户把授权后浏览器跳转的那条本机地址**整条贴回来**（上游 `createVpsAwareOAuthHandlers` 就是这么兜的），体验明显差。② **Chutes / Google 的 client_id 来自用户本机环境/安装**，CoClaw 手里没有，**MiniMax 式自复刻这条路对它们走不通**，只能走 §6.16.2 的"驱动 `run(ctx)`"泛化路径（连带前述多轮 prompt 管道成本）。
+
+#### 6.16.4 两条扩展策略 + 倾向
+
+- **策略 B（逐个复刻 device-code，= 现有 MiniMax 路子）**：只盯 device-code 阵营（MiniMax 已做、GitHub Copilot、OpenAI Codex 设备码入口），每个 ~50 行，**只依赖厂商稳定 OAuth 端点 + 未废弃的写凭据/写配置 SDK**，远端零摩擦。覆盖不了 Chutes/Google（client_id 拿不到）和回环类，但那些远端体验本就差。**低风险、增量小，推荐优先。**
+- **策略 A（搭通用 prompt 管道 + 驱动 `run(ctx)` 通吃）**：覆盖含回环类的所有 provider，但要建多轮 prompt-over-RPC 协议 + UI prompt 渲染器 + 接受回环类贴 URL 体验 + 依赖偏内部/已废弃接缝。**中型独立工程，仅当确需通吃才上。**
+
+#### 6.16.6 device-code 子类：无需多轮管道（2026-05-27 追问核实）
+
+§6.16.2 说的"多轮 prompt-over-RPC 管道"成本**只属于回环/多轮交互类**。**device-code 子类（MiniMax / GitHub Copilot / OpenAI Codex 的 `device-code` 方法）的 `run(ctx)` 是纯输出 + 轮询、零用户输入**——核实 `extensions/openai/openai-codex-device-code.ts` 的 `loginOpenAICodexDeviceCode`（只有 `onVerification` 给 URL+码 / `onProgress`，内部轮询，无 `onPrompt`）+ 其 ctx 包装 `runOpenAICodexDeviceCode`（`openai-codex-provider.ts:403`，只调 `prompter.note`/`prompter.progress`/`runtime.log`，远端连 `openUrl` 都跳过），形态与 MiniMax 完全一致。
+
+故这一子类**用 CoClaw 现有两阶段 RPC（§2.3.2）就装得下**：`run(ctx)` 内 `note(URL+码)` 触发 → 发 phase-1 accepted；`run` resolve → 落盘 + 发 phase-2 final。需要的 prompter 是**输出型桩**（`note`/`progress` 转发或忽略，`text`/`select` 永不被调，可防御性抛错），ctx 其余字段都好造（`runtime={log,error,exit}` / `isRemote=true` / `openUrl` 远端不调 / `config` 取快照）。
+
+另：`openclaw models auth login` 是**纯本地 CLI**（硬要 TTY `src/commands/models/auth.ts:352,628` + clack 终端 prompter + 写盘 `updateConfig`），**不走 gateway RPC**（gateway 事后从盘热加载凭据）。所以"直接 spawn 该 CLI"不干净（TTY 绑定、无头驱动要伪 pty + 抓 stdout，脆）；但其调度模式（resolve provider → `method.run(ctx)`）可在 gateway 内由插件复刻。
+
+→ **device-code 子类的两条统一做法**（这才是用户问的"统一处理这类"的可行答案）：
+- **B1 驱动 `run(ctx)`**：`resolvePluginProviders` → 找 provider 的 `auth.find(kind==='device_code')` → 输出型 prompter 驱动 `run(ctx)` → 落盘 `ProviderAuthResult`。一条码路通吃、自动跟随上游。
+  - **本质是 in-process SDK 调用，不是 spawn CLI**：`import { resolvePluginProviders } from 'openclaw/plugin-sdk/provider-catalog-runtime'`（**已发布子路径**，与 `config-mutation` 并列在 package exports，满足 loader 字面量扫描）→ `resolvePluginProviders({ config, providerRefs:[id], activate:true, mode:'runtime' })` → 取 provider → `method.run(ctx)`，全程在 gateway 进程内。注入给插件的 runtime **没有**"列已加载 provider + 其 auth 方法"的轻量访问器，`resolvePluginProviders` 是唯一入口。`note()` 回调在 `run` 内**先于轮询**被 await（codex 实测 onVerification 在 poll 前），故能拿它触发 phase-1 accepted、`run` resolve 触发 phase-2 final，时序天然契合两阶段。
+  - **对比 spawn CLI（`openclaw models auth login`）：劣，不取**——CLI 硬要 TTY（须分配伪 pty）、要抓子进程 stdout 找 URL/码 + 判完成、且它自己写盘拿不到结构化 `ProviderAuthResult`。in-process 严格更优。
+  - **设计定则：只认"含码的单个 auth-url"，要单独输码的 provider 不支持**（2026-05-27 用户拍，永久边界，免日后再纠结 OAuth 码）。device-code 流标准是 `verification_uri`（裸）+ 独立 `user_code`，但部分服务端把码塞进 URL（`verification_uri_complete` 语义）。CoClaw **只从输出里正则抠出一个 URL 交给用户打开**，不解析、不回传 `user_code`。后果（实测）：**MiniMax 的 `verification_uri` 服务端已含码 → 支持**；**OpenAI Codex 设备码（`auth.openai.com/codex/device` 裸 URL + 独立码）/ GitHub Copilot 设备码（`github.com/login/device` + 独立码）→ 不含码 → 本定则下不支持**。即 B1 + 本定则**当前只覆盖"自带完整 URL"的 provider（恰是已支持的 MiniMax），对 codex/copilot 不增量**；价值是前向——任何"URL 自带码"的 device-code provider 零适配自动可用。**这把"码软肋"彻底消除**（只抠 URL，正则极稳）。
+  - **澄清 codex 两方法 + "点一次即完"记忆的归属（2026-05-27 fork 核实）**：codex 注册**两个** auth 方法（`openai-codex-provider.ts:483,497`）——`oauth`（kind `oauth`，**回环-PKCE**）与 `device-code`（kind `device_code`）。用户记得的"CLI 只给一个 URL、点开授权完、不输任何东西"是**前者（回环 `oauth` 方法）**，不是 device-code。该方法建**一个自包含 authorize URL**（`auth.openai.com/oauth/authorize?...redirect_uri=http://localhost:1455/auth/callback&scope=...`，`openai-codex-oauth.runtime.ts:13`）、**全程无 `user_code`**；本地靠 `localhost:1455` 回调监听自动接住跳转即完成，故用户什么都不输。"函数单独给码、CLI 拼进 URL"的猜测**不成立**——URL 从一开始就自包含（流程里的 "code" 是授权后回跳带回的 *authorization code*，非在 OpenAI 页面手输）。**"点一次即完"成立的前提是 browser 与 claw 同物理机**（核实 `isRemoteEnvironment()` `src/infra/remote-env.ts`：**显式把 WSL 判为非 remote** `... && !isWSLEnv()`）：用户在 WSL2 终端跑 login（无 SSH）→ 走 **local 模式**、在 WSL2 内起 `localhost:1455` 监听、不提示粘贴；Windows 浏览器授权后回跳 `http://localhost:1455/auth/callback` 被该监听接住（**WSL2 默认与 Windows 共享 localhost**）→ 只见一个 URL、点开即完。**它就是 localhost:1455 回环流，只是同主机透明跑通。** **但真·远端破功**：UI 在手机/公网、claw 在另一台 → 手机回跳 `localhost:1455` 打到手机自己、claw 收不到；且 claw 若 SSH-headless/非 WSL Linux，`isRemoteEnvironment()` 返回 true，OpenClaw 自身就切到 `createManualCodeInputHandler`（`provider-openai-codex-oauth.ts:86-92`）**必然**提示 "Paste the authorization code (or full redirect URL)" → 用户得把回跳 URL **贴回来**（**两腿**：给 authorize URL → 授权后贴回 redirect URL，超出 accepted+final 两阶段）。**结论**：codex 两方法在**真·远端**都给不出"单个自包含 URL 点一次即完"——device-code 裸 URL+独立码、oauth 自包含 URL 但需贴回——故 codex 本定则下不入。**用户 WSL2+Windows 的"点一次即完"记忆完全准确，只是同主机透明跑通、不迁移到真·远端。**
+  - **codex `localhost:1455` 是否"我们参数没给对"导致——已坐实：不是，且改参数也没用（2026-05-27 code 核实）**：真正驱动 OAuth 的是底层库 `@mariozechner/pi-ai` 的 `loginOpenAICodex`（`dist/utils/oauth/openai-codex.js`）。其中 `client_id`（`app_EMoamEEZ73f0CkXaXp7hrann`，即 OpenAI 官方 Codex CLI 的公开客户端）、`redirect_uri`（`http://localhost:1455/auth/callback`）、authorize/token 端点**全是该库写死的常量**，构造 authorize URL（`createAuthorizationFlow`）只动态填 `state`/`code_challenge`/`originator`。**OpenClaw 调用侧（`openai-codex-oauth.runtime.ts:324`）只传 `onAuth`/`onPrompt`/`originator`/`onManualCodeInput`/`onProgress` 这几个回调，根本没有 `redirect_uri`/`client_id` 入参**——"参数没给对"无从谈起（没这个参数）。更关键：换 redirect 也过不了关——OAuth 要求 authorize 与 token 交换两处 redirect_uri 一致、且**必须是 OpenAI 为该 client_id 服务端预注册的白名单值**（这是 OpenAI 对其官方 Codex 客户端的硬约束，非 OpenClaw 的选择）；填别的地址（如 CoClaw 域名）authorize 端点会在用户登录前就 `redirect_uri mismatch` 拒掉。想换地址只能自注册 OpenAI OAuth 应用，但自注册的拿不到 ChatGPT Plus/Pro 的 Codex 订阅授权（那是 OpenAI 官方客户端专属），等于换不动。
+  - **URL 那两个 flag 不是 redirect 开关**：`codex_cli_simplified_flow=true`/`id_token_add_organizations=true` 是 pi-ai 写死的同意页/token claim 控制；`originator=openclaw` 是 OpenClaw 唯一注入的、纯品牌/遥测标识。**都不改变回调走 localhost**，也没有可切到 out-of-band（贴码）redirect 模式的旋钮。
+  - **唯一的 env 旋钮 `PI_OAUTH_CALLBACK_HOST`（默认 `127.0.0.1`）只改本地监听绑定的网卡**，**不改发给 OpenAI 的 redirect_uri 字符串（仍 `localhost:1455`），也不改端口 1455**。对真·远端无用：浏览器在用户那台、回跳打到浏览器自己的 `localhost:1455`，claw 绑哪张网卡都接不到。
+  - **即便假设能换 redirect**：授权发生在用户远端浏览器，回跳要落到 CoClaw 能接住的地方才有用；若落到 CoClaw server 就成"server 中介 OAuth"，违反"server 不在数据通路"（见 mental-model / 通信架构），是另一套更重的设计。此点纯属推演——前面已证 redirect 改不动，moot。
+  - **收口**：codex 回环 `localhost` 是 OpenAI 对其官方 client 的强制白名单 + pi-ai 写死的结果，**与 CoClaw/OpenClaw 调用参数无关，"修参数"无法让它不走 localhost**。回到既有结论：codex 真·远端绕不开"贴回 redirect URL"（或本定则下不支持）。§6.16.6 前述"强假设（待证）"现升级为**已证实**。
+  - **残余风险（剩两处）**：① `resolvePluginProviders` 是**加载器**（带 `activate`/`cache`，可能重载 provider 模块），在已运行 gateway 内调用的重入/重复加载需实施期验证，非零成本；② 接缝头注"供 provider 契约测试"——但它**已在 package exports 公开发布、且未标 @deprecated**（区别于 `provider-auth-login` 的三个登录命令是显式 `@deprecated`；**B1 走的是非废弃的 catalog-runtime 接缝，不碰那三个废弃命令**）。按"plugin-sdk 公开导出即相对稳定契约、变了再跟"对待即可。**版本下限：该子路径自 OpenClaw `v2026.4.27` 引入**（`resolvePluginProviders` 本体更早 2026-03-22，但公开子路径是 4.27）；CoClaw 若用，gateway 须 ≥ v2026.4.27。输出型 prompter 若被意外调 `text/select` 应防御性抛错（安全显错，接某家时即暴露）。
+- **B2 一个通用 device-code 引擎 + 每 provider 小描述符**（`{clientId, deviceAuthEndpoint, tokenEndpoint, scope, grantType, configPatch}`）：结构化拿 URL+码（不解析字符串），只依赖稳定端点 + 未废弃的写凭据 SDK；client_id 这三家都写死可抄。代价：grant_type / 字段名各家有小差异（MiniMax `...:user_code` vs codex/copilot `...:device_code`；codex `user_code`/`usercode` 兼容），描述符要带 per-provider 适配。**比 B1 稳、无字符串解析与废弃接缝依赖，推荐。**
+
+#### 6.16.5 UI 放开撤销的口径（可放宽）
+
+原"CoClaw 能往返（既登录又登出）的才放"是过度保守——**登出对任何有凭据的 provider 都安全可用**（§ 6.16.1）。UI 放开 oauth 撤销**不必等登录扩展**，按"有凭据即可撤销"放即可（仅记得它不发远端吊销）。
+
+> 为什么 `minimax-portal` / `chutes` 必须写 `cfg.models.providers`、而 `openai-codex` / `github-copilot` / `google-gemini-cli` 不用写：前两者不在 OpenClaw 内置 provider 字典里（登录不写则 catalog 为空、模型不可用），后三者是 bundled provider、模型清单自带——根因与三处来源对照见 mental-model § 5.2 / 附录 D / F.4-F.5。
+
+#### 6.16.7 范围调整：定则放宽到"设备码家族"（2026-05-27 用户拍，覆盖 §6.16.6 旧定则）
+
+旧定则（§6.16.6"只认含码的单个 auth-url、要单独输码的不支持"）**作废**。新边界：**支持整个"设备码家族"**——凡"亮出信息（URL[+独立短码]）+ 后台轮询、用户输入只发生在 provider 官网、零回传 CoClaw"的流程都纳入，不论码是否嵌在 URL 里。**回环/贴回类仍不在内**（需把授权后回跳的 redirect URL 整条贴回 = 多轮交互，超出两阶段 RPC）。
+
+三层全景：
+
+| 层 | 流程 | 是否纳入 | provider |
+|---|---|---|---|
+| 1 | 码已在 verification URL 里 | ✅ 已做 | `minimax-portal` |
+| 2 | 设备码 + 独立短码（敲进 provider 官网） | ✅ **本轮接** | `openai-codex` 的 `device-code` 方法、`github-copilot` |
+| 3 | 回环-PKCE，远端需贴回 redirect URL | ❌ 重，搁置 | `openai-codex` 的 `oauth` 方法、`google-gemini-cli`、`chutes` |
+
+**关键认知（为何第 2 层不难）**：设备码流程里那串码是用户敲进 **provider 官网**的，**从不回传 CoClaw**。CoClaw 侧仍是"亮信息 + 后台等"，只是亮"URL + 码"两样、不是一样——**套得进现有两阶段 RPC（§2.3.2），无需多轮 prompt 管道**（那条成本只属第 3 层）。走 B2（自建设备码引擎 + per-provider 描述符）时直接拿结构化 `{user_code, verification_uri}`，**无字符串抠码**——旧定则要消除的"抠码软肋"在 B2 下本就不存在，故放宽定则不会把它带回来。
+
+**本轮范围（已拍）：`openai-codex`（device-code 方法）+ `github-copilot`**。两家 client_id 均写死可抄、端点稳定、**全程不碰 localhost**：
+- **codex device-code**（`extensions/openai/openai-codex-device-code.ts`）：client_id `app_EMoamEEZ73f0CkXaXp7hrann`；usercode 端点 `auth.openai.com/api/accounts/deviceauth/usercode`、轮询 `.../deviceauth/token`、换 token `auth.openai.com/oauth/token`；redirect_uri 是 **OpenAI 自家 `auth.openai.com/deviceauth/callback`（非 localhost）**。**流程两步**：轮询先拿 `{authorization_code, code_verifier}`，再 `/oauth/token` 换 access/refresh——比 copilot/minimax（轮询直出 token）多一步，B2 引擎须兼容两形态。verification URL = 裸 `auth.openai.com/codex/device`、user_code 独立。method id = `device-code`。
+- **github-copilot**（`extensions/github-copilot/login.ts`）：标准 RFC 8628，client_id `Iv1.b507a08c87ecfe98` 写死，轮询 `github.com/login/oauth/access_token`（`grant_type=urn:ietf:params:oauth:grant-type:device_code`）直出 token，最简单。verification URL = 裸 `github.com/login/device`、user_code 独立。
+
+**Gemini 搁置（两堵墙，验证于 `extensions/google/`）**：① 回环-PKCE（`oauth.shared.ts` `REDIRECT_URI=http://localhost:8085/oauth2callback` 写死），远端必须贴回 → 需第 3 层多轮管道；② **client_id/secret 无写死**——`resolveOAuthClientConfig`（`oauth.credentials.ts`）从 env（`OPENCLAW_GEMINI_OAUTH_CLIENT_ID`/`GEMINI_CLI_OAUTH_CLIENT_ID`）或**用户本机 gemini-cli 安装里抠** `*.apps.googleusercontent.com`，否则抛 "Gemini CLI not found"；CoClaw 服务器两者皆无。→ 非"顺手加"，是中型工程 + 未解凭据难题。
+
+**anthropic 出局**：用户告知 Anthropic 已封禁 openclaw 等第三方用 OAuth 登录；本版 OpenClaw 也未注册 anthropic 的 provider auth 方法（pi-ai 库 `dist/utils/oauth/anthropic.js` 虽有实现，但无登录入口）。确认不做。
+
+**实测结论（2026-05-27 用户实测，gate 已过）**：codex device-code **可用、障碍可接受**。真实 UX = 开 `auth.openai.com/codex/device` 页面 + 敲短码 + 同意；**首次需在 ChatGPT 里打开"codex 设备码启用"开关**（旧记忆"要翻设置"属实），但**该验证页内直接有进设置的链接，点过去开一次即可、一次性**。账号未被服务端挡（成功授权）。→ **codex + copilot 本轮均开工。**
 
 ---
 
