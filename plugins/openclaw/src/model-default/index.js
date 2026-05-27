@@ -80,6 +80,10 @@ export function registerModelDefaultHandlers(api, opts = {}) {
 					mutateConfigFile: configMutation.mutateConfigFile,
 					buildModelsProviderData: modelsRuntime.buildModelsProviderData,
 					isProviderAuthProfileConfigured: providerAuth.isProviderAuthProfileConfigured,
+					// list 凭据信号用（provider-auth barrel 已加载，无需新增子入口字面量）
+					isProviderApiKeyConfigured: providerAuth.isProviderApiKeyConfigured,
+					hasConfiguredSecretInput: providerAuth.hasConfiguredSecretInput,
+					ensureAuthProfileStore: providerAuth.ensureAuthProfileStore,
 				};
 				return buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir });
 			})();

@@ -36,6 +36,9 @@ function makeSdkModules() {
 		},
 		providerAuth: {
 			isProviderAuthProfileConfigured: () => true,
+			isProviderApiKeyConfigured: () => false,
+			hasConfiguredSecretInput: () => false,
+			ensureAuthProfileStore: () => ({ profiles: {} }),
 		},
 		__mutateCalls: mutateCalls,
 	};

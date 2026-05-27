@@ -7,8 +7,23 @@ import {
 	readAgentPrimary,
 	findAgentEntry,
 	listAllPrimaries,
+	providerSegmentOf,
+	computeProviderUsable,
+	computeHasAnyUsableCredential,
+	listAllPrimariesWithCredentials,
 	MAIN_AGENT_ID,
 } from './resolve.js';
+
+// 凭据信号测试用的 fake deps：默认全否、账本空
+function makeCredDeps(overrides = {}) {
+	return {
+		agentDir: '/fake/agents/main/agent',
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: () => false,
+		ensureAuthProfileStore: () => ({ profiles: {} }),
+		...overrides,
+	};
+}
 
 test('readPrimaryFromModel: string 形态返回原值', () => {
 	assert.equal(readPrimaryFromModel('openai-codex/gpt-5.5'), 'openai-codex/gpt-5.5');
@@ -163,4 +178,134 @@ test('listAllPrimaries: entry 缺 id / id 空字符串 / id 非 string 跳过', 
 
 test('MAIN_AGENT_ID 导出常量', () => {
 	assert.equal(MAIN_AGENT_ID, 'main');
+});
+
+// ============ providerSegmentOf ============
+
+test('providerSegmentOf: 正常 <provider>/<model> 取前段', () => {
+	assert.equal(providerSegmentOf('minimax/MiniMax-M2.7'), 'minimax');
+	assert.equal(providerSegmentOf('openai-codex/gpt-5.5'), 'openai-codex');
+});
+
+test('providerSegmentOf: model 段含多个 / 只取第一个之前', () => {
+	assert.equal(providerSegmentOf('a/b/c'), 'a');
+});
+
+test('providerSegmentOf: 无 / → null', () => {
+	assert.equal(providerSegmentOf('bare-model'), null);
+});
+
+test('providerSegmentOf: / 在开头（provider 段空）→ null', () => {
+	assert.equal(providerSegmentOf('/model'), null);
+});
+
+test('providerSegmentOf: 非字符串 / null → null', () => {
+	assert.equal(providerSegmentOf(null), null);
+	assert.equal(providerSegmentOf(undefined), null);
+	assert.equal(providerSegmentOf(123), null);
+});
+
+// ============ computeProviderUsable ============
+
+test('computeProviderUsable: primary=null → false', () => {
+	assert.equal(computeProviderUsable(null, {}, makeCredDeps()), false);
+});
+
+test('computeProviderUsable: isProviderApiKeyConfigured 命中 → true', () => {
+	const deps = makeCredDeps({
+		isProviderApiKeyConfigured: ({ provider, agentDir }) =>
+			provider === 'minimax' && agentDir === '/fake/agents/main/agent',
+	});
+	assert.equal(computeProviderUsable('minimax/x', {}, deps), true);
+});
+
+test('computeProviderUsable: env/账本无但内联 key 存在 → true', () => {
+	const cfg = { models: { providers: { minimax: { apiKey: 'sk-xxx' } } } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: (v) => v === 'sk-xxx' });
+	assert.equal(computeProviderUsable('minimax/x', cfg, deps), true);
+});
+
+test('computeProviderUsable: 该 provider 无 cfg 节点 → 内联判 false → false', () => {
+	const cfg = { models: { providers: { other: { apiKey: 'sk-xxx' } } } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: () => true });
+	assert.equal(computeProviderUsable('minimax/x', cfg, deps), false);
+});
+
+test('computeProviderUsable: 三源全无 → false', () => {
+	const cfg = { models: { providers: { minimax: { apiKey: 'sk-xxx' } } } };
+	assert.equal(computeProviderUsable('minimax/x', cfg, makeCredDeps()), false);
+});
+
+// ============ computeHasAnyUsableCredential ============
+
+test('computeHasAnyUsableCredential: 账本非空 → true', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({ profiles: { 'minimax:default': {} } }),
+	});
+	assert.equal(computeHasAnyUsableCredential({}, deps), true);
+});
+
+test('computeHasAnyUsableCredential: 账本空但有内联 key → true', () => {
+	const cfg = { models: { providers: { minimax: { apiKey: 'sk-xxx' } } } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: (v) => v === 'sk-xxx' });
+	assert.equal(computeHasAnyUsableCredential(cfg, deps), true);
+});
+
+test('computeHasAnyUsableCredential: 账本空 + 无内联 → false', () => {
+	const cfg = { models: { providers: { minimax: { apiKey: 'sk-xxx' } } } };
+	assert.equal(computeHasAnyUsableCredential(cfg, makeCredDeps()), false);
+});
+
+test('computeHasAnyUsableCredential: store 无 profiles 字段 + 无 providers 节点 → false', () => {
+	const deps = makeCredDeps({ ensureAuthProfileStore: () => ({}) });
+	assert.equal(computeHasAnyUsableCredential({}, deps), false);
+});
+
+test('computeHasAnyUsableCredential: store 为 null → 退到内联检查', () => {
+	const cfg = { models: { providers: { minimax: { apiKey: 'sk-xxx' } } } };
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => null,
+		hasConfiguredSecretInput: (v) => v === 'sk-xxx',
+	});
+	assert.equal(computeHasAnyUsableCredential(cfg, deps), true);
+});
+
+test('computeHasAnyUsableCredential: providers 含 null entry 不崩、跳过', () => {
+	const cfg = { models: { providers: { a: null, b: { apiKey: 'sk' } } } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: (v) => v === 'sk' });
+	assert.equal(computeHasAnyUsableCredential(cfg, deps), true);
+});
+
+test('computeHasAnyUsableCredential: providers 非对象 → false', () => {
+	const cfg = { models: { providers: 'oops' } };
+	assert.equal(computeHasAnyUsableCredential(cfg, makeCredDeps()), false);
+});
+
+// ============ listAllPrimariesWithCredentials ============
+
+test('listAllPrimariesWithCredentials: 装配出参（含 providerUsable + hasAny）', () => {
+	const cfg = {
+		agents: {
+			defaults: { model: 'minimax/MiniMax-M2.7' },
+			list: [{ id: 'researcher', model: { primary: 'anthropic/claude-opus-4-7' } }],
+		},
+		models: { providers: { minimax: { apiKey: 'sk-inline' } } },
+	};
+	const deps = makeCredDeps({ hasConfiguredSecretInput: (v) => v === 'sk-inline' });
+	assert.deepEqual(listAllPrimariesWithCredentials(cfg, deps), {
+		default: { primary: 'minimax/MiniMax-M2.7', providerUsable: true },
+		agents: {
+			main: { primary: null, providerUsable: false },
+			researcher: { primary: 'anthropic/claude-opus-4-7', providerUsable: false },
+		},
+		hasAnyUsableCredential: true,
+	});
+});
+
+test('listAllPrimariesWithCredentials: 空 cfg → 全 false + 补 main', () => {
+	assert.deepEqual(listAllPrimariesWithCredentials({}, makeCredDeps()), {
+		default: { primary: null, providerUsable: false },
+		agents: { main: { primary: null, providerUsable: false } },
+		hasAnyUsableCredential: false,
+	});
 });

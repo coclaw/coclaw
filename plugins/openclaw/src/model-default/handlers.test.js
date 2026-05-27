@@ -28,6 +28,10 @@ function makeSdk(overrides = {}) {
 			]),
 		}),
 		isProviderAuthProfileConfigured: () => true,
+		// list 凭据信号默认：env/账本无、内联无、账本空 → providerUsable / hasAny 均 false
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: () => false,
+		ensureAuthProfileStore: () => ({ profiles: {} }),
 		__cfg: {},
 		__mutateCalls: mutateCalls,
 		...overrides,
@@ -315,11 +319,12 @@ test('list: 完整 cfg → 出参对称 default + agents', async () => {
 	await handlers.list({ respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
 	assert.deepEqual(r.calls[0].payload, {
-		default: { primary: 'openai-codex/gpt-5.5' },
+		default: { primary: 'openai-codex/gpt-5.5', providerUsable: false },
 		agents: {
-			main: { primary: null },
-			researcher: { primary: 'anthropic/claude-opus-4-7' },
+			main: { primary: null, providerUsable: false },
+			researcher: { primary: 'anthropic/claude-opus-4-7', providerUsable: false },
 		},
+		hasAnyUsableCredential: false,
 	});
 });
 
@@ -329,7 +334,7 @@ test('list: cfg 没有 list 时补 main', async () => {
 	const { handlers } = makeHandlers({ sdk });
 	const r = makeRespond();
 	await handlers.list({ respond: r.respond });
-	assert.deepEqual(r.calls[0].payload.agents, { main: { primary: null } });
+	assert.deepEqual(r.calls[0].payload.agents, { main: { primary: null, providerUsable: false } });
 });
 
 test('list: 出参不带 status wrap（payload 顶层就是 default + agents）', async () => {
@@ -439,10 +444,10 @@ test('list+set: list 出参的 agents map 形状与 default 对称', async () =>
 	const r = makeRespond();
 	await handlers.list({ respond: r.respond });
 	const { default: def, agents } = r.calls[0].payload;
-	// 两边都是 { primary: ... } 形状
-	assert.deepEqual(Object.keys(def).sort(), ['primary']);
+	// 两边都是 { primary, providerUsable } 形状
+	assert.deepEqual(Object.keys(def).sort(), ['primary', 'providerUsable']);
 	for (const v of Object.values(agents)) {
-		assert.deepEqual(Object.keys(v).sort(), ['primary']);
+		assert.deepEqual(Object.keys(v).sort(), ['primary', 'providerUsable']);
 	}
 });
 
@@ -460,7 +465,7 @@ test('set→list: 先 set default scope 再 list，default.primary 反映刚写�
 	assert.equal(r2.calls[0].ok, true);
 	assert.equal(r2.calls[0].payload.default.primary, 'openai-codex/gpt-5.5');
 	// main agent 自动补一条 primary=null（list 永远包含 main）
-	assert.deepEqual(r2.calls[0].payload.agents.main, { primary: null });
+	assert.deepEqual(r2.calls[0].payload.agents.main, { primary: null, providerUsable: false });
 });
 
 test('clear path: global default + per-agent override 并存时，清 per-agent 不影响 global default', async () => {
@@ -485,7 +490,99 @@ test('clear path: global default + per-agent override 并存时，清 per-agent 
 	const r2 = makeRespond();
 	await handlers.list({ respond: r2.respond });
 	assert.equal(r2.calls[0].payload.default.primary, 'openai-codex/gpt-5.5');
-	assert.deepEqual(r2.calls[0].payload.agents.researcher, { primary: null });
+	assert.deepEqual(r2.calls[0].payload.agents.researcher, { primary: null, providerUsable: false });
 	// main 仍由 list 自动补
-	assert.deepEqual(r2.calls[0].payload.agents.main, { primary: null });
+	assert.deepEqual(r2.calls[0].payload.agents.main, { primary: null, providerUsable: false });
+});
+
+// ============ list: 凭据信号（providerUsable / hasAnyUsableCredential）============
+
+test('list: env/账本认得该 provider → providerUsable=true', async () => {
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: ({ provider }) => provider === 'openai-codex',
+	});
+	sdk.__cfg = { agents: { defaults: { model: 'openai-codex/gpt-5.5' } } };
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.default.providerUsable, true);
+});
+
+test('list: 仅内联 key（env/账本均无）→ providerUsable=true', async () => {
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: (v) => v === 'sk-inline',
+	});
+	sdk.__cfg = {
+		agents: { defaults: { model: 'minimax/MiniMax-M2.7' } },
+		models: { providers: { minimax: { apiKey: 'sk-inline' } } },
+	};
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.default.providerUsable, true);
+	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
+});
+
+test('list: primary 那家 provider 无任何凭据 → providerUsable=false', async () => {
+	const sdk = makeSdk();
+	sdk.__cfg = { agents: { defaults: { model: 'minimax/MiniMax-M2.7' } } };
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.default.providerUsable, false);
+});
+
+test('list: primary=null → providerUsable=false（不调凭据判定）', async () => {
+	let apiKeyCalls = 0;
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: () => { apiKeyCalls += 1; return true; },
+	});
+	sdk.__cfg = { agents: {} };
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.agents.main.providerUsable, false);
+	assert.equal(apiKeyCalls, 0);
+});
+
+test('list: 账本非空 → hasAnyUsableCredential=true（无内联也成立）', async () => {
+	const sdk = makeSdk({
+		ensureAuthProfileStore: () => ({ profiles: { 'openai-codex:default': { provider: 'openai-codex', type: 'api_key' } } }),
+	});
+	sdk.__cfg = { agents: { defaults: { model: 'openai-codex/gpt-5.5' } } };
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
+});
+
+test('list: 账本空 + 无内联 → hasAnyUsableCredential=false', async () => {
+	const { handlers } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.hasAnyUsableCredential, false);
+});
+
+test('list: providerUsable 传入正确 provider 段 + agentDir', async () => {
+	const calls = [];
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: (params) => { calls.push(params); return false; },
+	});
+	sdk.__cfg = { agents: { defaults: { model: 'anthropic/claude-opus-4-7' } } };
+	const { handlers } = makeHandlers({ sdk, agentDir: '/fake/agents/main/agent' });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.ok(calls.some((c) => c.provider === 'anthropic' && c.agentDir === '/fake/agents/main/agent'));
+});
+
+test('list: ensureAuthProfileStore 抛错 → IO_FAILED（与 providerAuth.list 同口径）', async () => {
+	const sdk = makeSdk({
+		ensureAuthProfileStore: () => { throw new Error('store read failed'); },
+	});
+	sdk.__cfg = { agents: { defaults: { model: 'minimax/x' } } };
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'IO_FAILED');
 });
