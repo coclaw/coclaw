@@ -144,6 +144,8 @@ OAuth 登录由**一个两阶段 RPC（`loginOauth`）+ 一个独立取消 RPC�
 
 #### 2.3.3 `coclaw.providerAuth.loginOauth`
 
+> 本节是 **MiniMax / B2** 形态（缺省 `provider` 或 `provider:'minimax-portal'`）。`loginOauth` 同时是路由器：其它 `provider` 走通用 **B1** 设备码驱动，入参/帧形态见 **§ 6.16.8**（两阶段机制、错误码语义两者共用本节 § 2.3.2 / § 2.3.6）。
+
 **入参**：
 
 ```ts
@@ -688,6 +690,47 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 
 **实测结论（2026-05-27 用户实测，gate 已过）**：codex device-code **可用、障碍可接受**。真实 UX = 开 `auth.openai.com/codex/device` 页面 + 敲短码 + 同意；**首次需在 ChatGPT 里打开"codex 设备码启用"开关**（旧记忆"要翻设置"属实），但**该验证页内直接有进设置的链接，点过去开一次即可、一次性**。账号未被服务端挡（成功授权）。→ **codex + copilot 本轮均开工。**
 
+#### 6.16.8 实施决定与落地（2026-05-27，插件后端）
+
+**选 B1（驱动上游 `run`），不手写 B2** —— 覆盖 §6.16.4/§6.16.6 里"推荐 B2"的研究期倾向。决定理由：用户核心诉求是**不自己手写复刻各家登录、跟随上游同步**（HTTP / 端点 / 轮询 / 两步换 token 全交 provider 插件）。B1 唯一命门"验证信息只能从 `prompter.note` 文本正则抠"已用充分容错化解：抠不到不报错，**把 note 全文作为 `rawText` 字段一并返回，交前端判断渲染**。
+
+**不针对 codex/copilot 硬编码**：入口 `coclaw.providerAuth.loginOauth` 加 `provider` 参数路由——`minimax-portal`（或缺省，向后兼容）走原 B2 自家流；**其它任何暴露了 `kind:'device_code'` auth 方法的 provider 自动走通用 B1 驱动**。后续 OpenClaw 新增 device-code provider 零适配自动可用。回环/贴回类（`kind:'oauth'`）天然不被选中（B1 只找 `device_code` 方法），codex 的 `oauth` 方法因此自动排除。
+
+**B1 变体的 I/O 形态**（两阶段机制 / 错误码语义共用 § 2.3.2 / § 2.3.6；与 § 2.3.3 MiniMax 形态的差异在字段）：
+
+```ts
+// 入参（provider 必填、非空串；空串/非串 → INVALID_ARGS 单帧）
+{ provider: string }
+
+// Phase-1（accepted）：结构化字段抠不到给 null，rawText 永远带全文交前端兜底
+{
+  status: 'accepted';
+  loginId: string;
+  provider: string;
+  verificationUri: string | null;   // 抠不到给 null
+  userCode: string | null;          // 抠不到给 null
+  rawText: string;                  // note 全文，前端兜底渲染
+  // 注意：无 expiresAt / interval（上游 run 内部自管轮询，不暴露给本通道）
+}
+
+// Phase-2（final，同 reqId）
+// 成功：respond(true, { status:'ok', provider, profileIds: string[] })
+// 失败：respond(false, { status:'error'|'cancelled' }, { code, message })
+//   code：run reject / 空 profiles → OAUTH_FAILED；写凭据返 null / configPatch 写盘抛错 → IO_FAILED；取消 → OAUTH_CANCELLED
+// provider 无 device_code 方法 / loader 异常 / config 读取异常 → 单帧（payload undefined）NOT_FOUND / IO_FAILED
+```
+
+**落地要点**：
+- 入口经 `provider-catalog-runtime` 子路径的 `resolvePluginProviders` 拿 provider 的 auth 方法；**一律 `activate:false`**（只读拿 `method.run`，不激活 provider → 零副作用，不动 gateway 活跃插件名册，已实测钉死）。
+- 用"输出型捕获 prompter"驱动 `run(ctx)`：`note` → 触发 phase-1 accepted；`progress` 空操作；`confirm` 答 true（copilot 已登录重登放行）；`text`/`select`/`createVpsAwareHandlers` 被调即抛（= 需交互、本通道不支持，经 run reject 暴露）。`isRemote:true`、`openUrl` 空操作。
+- 时序：`run` 内 `note(URL+码)` 先于轮询 → 抠 URL/码 + rawText → phase-1 accepted；`run` resolve → 校验 `profiles` 非空（空 = 失败，上游把中途失败吞成空）→ 写凭据 + 有 `configPatch` 就深合并进 cfg（hot-reload）→ phase-2 final。reject / 空 profiles → phase-2 error；note 之前就失败 → 单帧错误。
+- 取消：`run` 无 abort 钩子，停不掉上游后台轮询；`cancelOauth` 只 abort 信号，`run` 到期自己 settle 时识别 aborted → 回 cancelled 终态、不写凭据（终态必达 + 清理）。
+- **落盘只做"写凭据 + 应用 configPatch"**，不复制上游 CLI 的 `applyAuthProfileConfig` / `promoteAuthProfileInOrder` / `applyDefaultModel`（设默认模型走独立的 `coclaw.model.set`）；凭据写进 auth-profiles store 即被 `providerAuth.list` ∩ catalog 的模型选择器认出（凭据三源之一，agent 运行时自动解析）。
+
+**MiniMax 仍走 B2**：它不在 OpenClaw 内置 provider 字典，登录后还要补写 `models.providers` 静态模型清单（上游对 portal 不做 catalog discovery），与 codex/copilot"内置、模型自带"不同——并入 B1 会因 configPatch 写空 `models:[]` 静默回归（见 [`reference_minimax_portal_oauth_model_catalog`]）。
+
+**本轮范围 = 插件后端**。UI（白名单放开撤销 + 扫码展示流 + `rawText` 兜底渲染）另起一轮——当前 UI 尚无任何扫码登录展示流。
+
 ---
 
 ## § 7. 引用关系
@@ -726,3 +769,15 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 - [x] 后台轮询以 `expired_in` 为自身超时；终态 `finally` 清 registry
 - [x] 单元测试：注入 fetch mock 覆盖 code/token 各分支（pending / success / error / 超时 / abort）+ phase-1 payload + 轮询状态机 + 写凭据共享锁 + `mutateConfigFile` 调用形参 + 错误码；覆盖率维持门槛（lines/fn/stmt 100%、branches 95%）
 - [x] e2e：`scripts/oauth-e2e-verify.sh`（人机协同，§ 2.3.8）
+
+### 8.3 § 6.16.8 通用 device-code 登录（B1，插件后端已实施）
+
+- [x] `device-code-login.js`：纯 helper（`isVerificationNote` 含 URL 且非帮助/FAQ 文案、`extractVerification` URL/Code 行优先+回退抠不到给 null、`findDeviceCodeMethod` 选 `kind:'device_code'`、`makeDeviceCodeCtx` 输出型捕获 ctx）
+- [x] `handlers.js`：`loginOauth` 按 `provider` 路由（minimax-portal/缺省 → B2，其它 → B1）；**provider 给了但非空串 → INVALID_ARGS 边界挡掉**；`loginOauthDeviceCode` 驱动 `run(ctx)` 两阶段；`persistDeviceCodeSuccess` 写凭据 + 深合并 configPatch；空 profiles/reject/note 前失败/取消各自终态
+- [x] `index.js`（子模块）：惰性注入 `resolveProviders`（`resolvePluginProviders`，`activate:false`）+ 默认 `resolveConfig=getClawConfig`；catalog-runtime 独立惰性加载，不耦合进 setApiKey/list/remove 的 getHandlers
+- [x] `index.js`（入口）：加字面量 `import('openclaw/plugin-sdk/provider-catalog-runtime')` 供 loader 扫描
+- [x] `utils/deep-merge.js`：configPatch 深合并（plain object 递归、其余覆盖、原型污染键跳过）
+- [x] 抠取**充分容错**：URL/码抠不到不报错，phase-1 accepted 永远带 `rawText` 全文交前端
+- [x] 单元测试：B1 成功（accepted 结构化字段+rawText / 写凭据 / configPatch 深合并）/ 空 profiles / reject / note 前失败单帧 / 无 note 成功单帧 / 取消不写 / 无 device_code 方法 NOT_FOUND / resolveProviders 抛错 / 写凭据 null / mutateConfigFile 抛错 / config 来源 / note 过滤 + 抠不到给 null；覆盖率达门槛
+- [x] 真 gateway 实测：copilot device-code 拿到真实 `github.com/login/device` + 码、phase-1 accepted；deepseek（无 device_code）→ NOT_FOUND；`cancelOauth` 取消后不写凭据；`activate:false` 零副作用
+- [ ] UI：放开 oauth 撤销 + 扫码展示流 + `rawText` 兜底渲染（另起一轮）

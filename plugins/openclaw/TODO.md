@@ -1373,3 +1373,21 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 **根因初判**：登录成功先 `upsertAuthProfileWithLock` 写 OAuth 凭据，再 `mutateConfigFile` 写 provider 节点。若凭据写成而配置写失败（磁盘/锁/校验），凭据留在 auth store 但 config 里没有 `models.providers.minimax-portal` 节点。启动对账遇"无节点"判 `not-bound` 直接跳过、自愈不了——模型对用户不可用，直到重新扫码登录覆盖。`providerAuth.list` 仍能看到这条 oauth profile，外观像"绑了但选不到模型"。
 
 **为什么暂不立刻修**：两步写盘的顺序与本次方案 B 无关（方案 B 只把写入的 `models` 从 `[]` 换成静态表）；重新登录即可恢复，发生概率低（写配置失败本就罕见）。治本需让对账在"有凭据但无节点"时补建节点（即把 `not-bound` 细分出"凭据在、节点缺"分支并 create-on-reconcile），属功能增强而非缺陷修复，单独评估。
+
+## 通用设备码登录（B1）deep-review 留存项（4 条，2026-05-27）
+
+**发现日期**：2026-05-27（B1 插件后端 deep-review 时识别）
+**关联**：`plugins/openclaw/src/provider-auth/index.js` + `handlers.js` + `device-code-login.js` + `utils/deep-merge.js`
+
+本轮 deep-review 核实到、按"仅修本次引入的明确缺陷 + 不过度设计"原则暂未一并修的 4 条。codex/copilot 当前两家均不触发，均为**面向未来任意 device_code provider 的健壮性**或**预存模式一致性**：
+
+1. **SDK 子入口 import 失败被永久缓存（预存模式，非本次新增）**：`provider-catalog-runtime` 的惰性加载用 `??=` 缓存 import promise；若该 import 一次 reject（如插件升级窗口的瞬时 fs/loader 抖动），rejected promise 留缓存，之后所有通用设备码登录都拿到 IO_FAILED 直到 gateway 重启。这与既有 `_sdkPromise` / `_configMutationPromise` 同款——治本应**统一**给三个 loader 加"reject 时清空缓存允许下次重试"，而非只补新加的这个（避免不一致）。不崩 gateway，仅单个 RPC 退化，且静态 import 失败多为非瞬时（包在/不在），故低优先。
+
+2. **取消后上游后台轮询仍跑到自然到期（设计取舍，非缺陷）**：`run(ctx)` 无 abort 钩子，`cancelOauth` 只翻本地标志，上游轮询继续到设备码过期（约 15 分钟）才停。反复"取消→重试"会累积僵尸轮询。本通道刻意不强停（终态必达 + 清理）。若要收口，**在 UI 那轮**加客户端重试节流 / 每 provider 在途登录上限，比插件侧强停更合适。
+
+3. **`makeDeviceCodeCtx` 的 `runtime.exit` 是空操作（面向未来的隐患）**：codex/copilot 的 device_code run 都不调 `runtime.exit`，今天安全。但未来若有 provider 用 `runtime.exit` 表达致命错误，空操作会让 run 继续往下跑、可能 resolve 出垃圾。可考虑让 `runtime.exit` 抛错（与 ctx 里 text/select 被调即抛同philosophy），使其落进 `OAUTH_FAILED`——但有反向风险（某 provider 成功后良性 `exit(0)` 会被误判失败），故先观察、接入新 device_code provider 时再定。
+
+4. **note 解析 + configPatch 合并对"任意未来 provider"的健壮性（今天安全，未对齐上游）**：
+   - `extractVerification`：无 `Code:` 行时 `DEVICE_CODE_RE` 扫全文（含 URL），理论上可能从 URL 里抠错码；裸 URL 回退 `[^\s)]+` 可能带上尾随标点。codex/copilot 都有显式 `URL:`/`Code:` 行不触发。硬化方向：码回退前先剥掉文中 URL；URL 捕获后剪尾随 `.,;:`。
+   - `isVerificationNote`：靠 `faq|help|trouble|docs.openclaw` 英文词排除帮助 note。未来某 provider 的真验证 note 若 URL 路径含 `help` 等词，会被误判非验证 note → phase-1 不发、URL 不展示。今天两家 note 无此词。
+   - `deepMergeInto` vs 上游 `mergeConfigPatch`：上游额外（a）递归净化数组元素内的原型污染键；（b）合并后跑 `normalizeConfigModelRefsForWrite` 规范化模型别名。本实现都没做。今天不咬人——codex 的 configPatch 是不含数组/别名的 plain `agents.defaults.models` 对象，copilot 无 configPatch。接入会下发数组/别名 configPatch 的 provider 前补齐。

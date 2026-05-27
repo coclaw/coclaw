@@ -37,6 +37,14 @@ import { randomUUID } from 'node:crypto';
 import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL, VALID_REGIONS } from './minimax-oauth.js';
 import { getPortalModels } from './portal-model-catalog.js';
 import { remoteLog } from '../remote-log.js';
+import { getClawConfig } from '../claw-config.js';
+import { deepMergeInto } from '../utils/deep-merge.js';
+import {
+	isVerificationNote,
+	extractVerification,
+	findDeviceCodeMethod,
+	makeDeviceCodeCtx,
+} from './device-code-login.js';
 
 const VALID_CRED_TYPES = new Set(['api_key', 'oauth', 'token']);
 const PORTAL_PROFILE_ID = `${PORTAL_PROVIDER_ID}:default`;
@@ -68,11 +76,13 @@ function isNonEmptyString(v) {
  * @param {Function} opts.sdk.formatApiKeyPreview - 遮蔽显示 helper
  * @param {Function} [opts.sdk.mutateConfigFile] - async；OAuth 写 cfg（openclaw/plugin-sdk/config-mutation）
  * @param {Function} opts.resolveAgentDir - 返回 main agent 完整路径（含 /agent 子目录）
- * @param {object} [opts.oauth] - createMiniMaxOAuth 实例（requestDeviceCode / pollUntilSettled）；OAuth handler 才用
- * @param {object} [opts.registry] - oauth-registry（registerLogin / getLogin / removeLogin）
+ * @param {object} [opts.oauth] - createMiniMaxOAuth 实例（requestDeviceCode / pollUntilSettled）；MiniMax B2 才用
+ * @param {object} [opts.registry] - oauth-registry（registerLogin / getLogin / removeLogin）；B2/B1 共用
  * @param {Function} [opts.genLoginId] - () → loginId，默认 randomUUID
- * @param {Function} [opts.scheduleBackground] - (promise) → void，挂后台轮询；默认 fire-and-forget + .catch
+ * @param {Function} [opts.scheduleBackground] - (promise) → void，挂后台任务；默认 fire-and-forget + .catch
  * @param {Function} [opts.logRemote] - (text) → void，OAuth 终态诊断推送；默认模块级 remoteLog（测试注入 spy）
+ * @param {Function} [opts.resolveConfig] - () → OpenClaw runtime config 快照；通用 device-code 登录（B1）拿 config 用，默认 getClawConfig
+ * @param {Function} [opts.resolveProviders] - ({ config, providerRefs }) → ProviderPlugin[]；B1 经它拿 provider 的 auth 方法（生产由入口注入，内部 activate:false），默认抛错
  * @returns {{ setApiKey, list, remove, loginOauth, cancelOauth }}
  */
 export function buildProviderAuthHandlers({
@@ -83,6 +93,8 @@ export function buildProviderAuthHandlers({
 	genLoginId = randomUUID,
 	scheduleBackground = (p) => { p.catch(() => {}); },
 	logRemote = remoteLog,
+	resolveConfig = getClawConfig,
+	resolveProviders = () => { throw new Error('provider catalog runtime not injected'); },
 }) {
 	// TODO: 将来若要支持"设默认模型 / 多账号顺序"等需要写 cfg 的操作，会撞上
 	// gateway 重启窗口的 UX 问题——参 docs/model-config-api.md § 3 / § 5（占位章节）。
@@ -293,7 +305,10 @@ export function buildProviderAuthHandlers({
 		}
 	}
 
-	async function loginOauth({ params, respond }) {
+	// MiniMax 设备码登录（B2：自家复刻设备码流，码已嵌在 verification URL 里 + 写静态模型清单）。
+	// 不并入通用 B1：MiniMax 不在 OpenClaw 内置 provider 字典，登录后还要补写 models.providers 清单
+	// （上游对 portal 不做 catalog discovery），与 codex/copilot「内置、模型自带」不同——见 docs § 6.16。
+	async function loginOauthMiniMax({ params, respond }) {
 		try {
 			const region = params?.region ?? 'cn';
 			if (!VALID_REGIONS.has(region)) {
@@ -328,6 +343,157 @@ export function buildProviderAuthHandlers({
 		catch (err) {
 			respondIoFailed(respond, err);
 		}
+	}
+
+	// --- 通用设备码登录（B1：驱动上游 provider 的 device_code run，跟随上游同步） ---
+
+	// 设备码失败的终态响应：phase-1 已发过 accepted → 发 phase-2 错误帧（带 status）；
+	// phase-1 之前就失败 → 单帧错误（payload undefined，与 MiniMax phase-1 之前失败同形）
+	function respondDeviceFailure(respond, phase1Sent, code, message, status = 'error') {
+		if (phase1Sent) respond(false, { status }, { code, message });
+		else respond(false, undefined, { code, message });
+	}
+
+	// 设备码登录成功：逐个写凭据 + 有 configPatch 就深合并进 cfg（hot-reload，零打断），恰好 respond 一次
+	async function persistDeviceCodeSuccess({ provider, result, loginId, phase1Sent, respond }) {
+		try {
+			const profileIds = [];
+			for (const profile of result.profiles) {
+				// 同一 auth-profiles 文件，顺序写避免锁竞争（device-code 通常仅 1 个 profile）
+				 
+				const r = await sdk.upsertAuthProfileWithLock({
+					profileId: profile.profileId,
+					credential: profile.credential,
+					agentDir: resolveAgentDir(),
+				});
+				if (r === null) {
+					respondDeviceFailure(respond, phase1Sent, 'IO_FAILED', 'failed to write auth-profiles store');
+					logRemote(`providerAuth.deviceCode.io-failed provider=${provider} loginId=${loginId} stage=credential`);
+					return;
+				}
+				profileIds.push(profile.profileId);
+			}
+			const patch = result.configPatch;
+			if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
+				// configPatch 是 provider 自带的 onboarding 默认（如 codex 写 agents.defaults.models 别名）；
+				// 深合并保留其它 provider，afterWrite:auto 走 hot-reload 不重启（与 MiniMax 写 cfg 一致）
+				await sdk.mutateConfigFile({
+					afterWrite: { mode: 'auto' },
+					mutate(draft) { deepMergeInto(draft, patch); },
+				});
+			}
+			respond(true, { status: 'ok', provider, profileIds });
+			logRemote(`providerAuth.deviceCode.ok provider=${provider} loginId=${loginId} profiles=${profileIds.length}`);
+		}
+		catch (err) {
+			respondDeviceFailure(respond, phase1Sent, 'IO_FAILED', String(err?.message ?? err));
+			logRemote(`providerAuth.deviceCode.io-failed provider=${provider} loginId=${loginId} stage=config msg=${String(err?.message ?? err)}`);
+		}
+	}
+
+	async function loginOauthDeviceCode({ provider, respond }) {
+		try {
+			const config = resolveConfig() ?? {};
+			let providers;
+			try {
+				// resolveProviders 可能 async（生产侧惰性加载 catalog-runtime SDK 后再 resolve）
+				providers = await resolveProviders({ config, providerRefs: [provider] });
+			}
+			catch (err) {
+				// 加载器异常（SDK import 失败 / resolvePluginProviders 抛错）：phase-1 之前，单帧错误
+				respondIoFailed(respond, err);
+				return;
+			}
+			const method = findDeviceCodeMethod(providers, provider);
+			if (!method) {
+				respond(false, undefined, {
+					code: 'NOT_FOUND',
+					message: `provider "${provider}" has no device-code login method`,
+				});
+				return;
+			}
+
+			const loginId = genLoginId();
+			const abortController = new AbortController();
+			let phase1Sent = false;
+
+			// run 内 prompter.note 吐出「含 URL 的验证 note」→ 触发 phase-1 accepted（仅一次）。
+			// 结构化字段抠不到给 null，rawText 永远带上全文交前端兜底。登记发生在 respond accepted 之前，
+			// 让紧随其后的 cancelOauth 一定能按 loginId 找到该登录。
+			const ctx = makeDeviceCodeCtx({
+				config,
+				agentDir: resolveAgentDir(),
+				onNote: (text) => {
+					if (phase1Sent || !isVerificationNote(text)) return;
+					phase1Sent = true;
+					registry.registerLogin(loginId, { abortController });
+					const { verificationUri, userCode } = extractVerification(text);
+					respond(true, {
+						status: 'accepted',
+						loginId,
+						provider,
+						verificationUri,
+						userCode,
+						rawText: text,
+					});
+				},
+			});
+
+			// 起 run（不 await 整体）；run 仅跑一次，resolve/reject 都到这里恰好终态一次。
+			// run 无 abort 钩子：取消停不掉上游后台轮询，cancelOauth 只 abort 信号 → run 到期自己 settle
+			// 时这里识别 aborted、回 cancelled 终态、不写凭据（终态必达 + 清理，不做复查骚操作）。
+			async function runAndSettle() {
+				let result;
+				let runErr;
+				try {
+					result = await Promise.resolve().then(() => method.run(ctx));
+				}
+				catch (err) {
+					runErr = err;
+				}
+				if (phase1Sent) registry.removeLogin(loginId);
+
+				if (runErr) {
+					respondDeviceFailure(respond, phase1Sent, 'OAUTH_FAILED', String(runErr?.message ?? runErr));
+					logRemote(`providerAuth.deviceCode.error provider=${provider} loginId=${loginId} stage=run msg=${String(runErr?.message ?? runErr)}`);
+					return;
+				}
+				if (abortController.signal.aborted) {
+					respondDeviceFailure(respond, phase1Sent, 'OAUTH_CANCELLED', `device-code login for ${provider} was cancelled`, 'cancelled');
+					logRemote(`providerAuth.deviceCode.cancelled provider=${provider} loginId=${loginId}`);
+					return;
+				}
+				// 上游会把中途失败吞成空 profiles（如 copilot access_denied / expired）→ 空即失败
+				const profiles = Array.isArray(result?.profiles) ? result.profiles : [];
+				if (profiles.length === 0) {
+					respondDeviceFailure(respond, phase1Sent, 'OAUTH_FAILED', `device-code login for ${provider} returned no credentials`);
+					logRemote(`providerAuth.deviceCode.error provider=${provider} loginId=${loginId} stage=empty-profiles`);
+					return;
+				}
+				await persistDeviceCodeSuccess({ provider, result, loginId, phase1Sent, respond });
+			}
+
+			scheduleBackground(runAndSettle());
+		}
+		catch (err) {
+			respondIoFailed(respond, err);
+		}
+	}
+
+	// 登录入口路由：minimax-portal（或缺省，向后兼容）→ B2 自家流；其它任何带 device_code 方法的
+	// provider → 通用 B1 驱动。不针对 codex/copilot 硬编码，后续 OpenClaw 新增 device_code provider 自动适用。
+	async function loginOauth({ params, respond }) {
+		const provider = params?.provider;
+		// provider 给了就必须是非空串（缺省保留给 MiniMax B2 向后兼容）：空串 / 非串在边界挡掉，
+		// 不让其漏进 B1 当 NOT_FOUND，也不把非串塞给上游 resolvePluginProviders（providerRefs 期望串）
+		if (provider !== undefined && !isNonEmptyString(provider)) {
+			respondInvalid(respond, 'provider must be a non-empty string when provided');
+			return;
+		}
+		if (provider === undefined || provider === PORTAL_PROVIDER_ID) {
+			return loginOauthMiniMax({ params, respond });
+		}
+		return loginOauthDeviceCode({ provider, respond });
 	}
 
 	async function cancelOauth({ params, respond }) {

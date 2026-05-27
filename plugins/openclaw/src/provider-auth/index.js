@@ -24,6 +24,7 @@ import { mainAgentDir } from '../claw-paths.js';
 // 不要在 hook 回调里访问本模块的 export。详见 docs/module-boundaries.md。
 let _sdkPromise;
 let _configMutationPromise;
+let _catalogRuntimePromise;
 
 // 默认 loader 仅作 fallback：生产路径必须由入口（plugins/openclaw/index.js）注入，
 // 因为 OpenClaw plugin loader 只扫入口源码识别 `openclaw/plugin-sdk/*` 字面量并触发 jiti 重写；
@@ -39,12 +40,18 @@ function defaultLoadConfigMutation() {
 	return _configMutationPromise;
 }
 
+function defaultLoadProviderCatalogRuntime() {
+	_catalogRuntimePromise ??= import('openclaw/plugin-sdk/provider-catalog-runtime');
+	return _catalogRuntimePromise;
+}
+
 /**
  * 测试辅助：清掉懒加载 SDK 缓存。
  */
 export function __resetSdkCache() {
 	_sdkPromise = undefined;
 	_configMutationPromise = undefined;
+	_catalogRuntimePromise = undefined;
 }
 
 /**
@@ -58,13 +65,30 @@ export function __resetSdkCache() {
  * @param {Function} [opts.resolveAgentDir] - 覆盖 agentDir 解析（默认 mainAgentDir）
  * @param {Function} [opts.loadSdk] - 必传（生产由入口注入字面量 dynamic import）；缺省回退仅为测试兜底
  * @param {Function} [opts.loadConfigMutation] - 必传（同上，OAuth 写 cfg 用）
+ * @param {Function} [opts.loadProviderCatalogRuntime] - 必传（同上，通用 device-code 登录 B1 拿 resolvePluginProviders 用）
  * @param {object} [opts.registry] - 覆盖 oauth-registry（默认模块级单例）
  */
 export function registerProviderAuthHandlers(api, opts = {}) {
 	const resolveAgentDir = opts.resolveAgentDir ?? mainAgentDir;
 	const loadSdk = opts.loadSdk ?? defaultLoadSdk;
 	const loadConfigMutation = opts.loadConfigMutation ?? defaultLoadConfigMutation;
+	const loadProviderCatalogRuntime = opts.loadProviderCatalogRuntime ?? defaultLoadProviderCatalogRuntime;
 	const registry = opts.registry ?? { registerLogin, getLogin, removeLogin };
+
+	// catalog-runtime 仅通用 device-code 登录（B1）才需要，独立惰性加载——不耦合进 getHandlers
+	// 的 Promise.all，避免 setApiKey / list / remove / minimax-oauth 因这个 SDK 子入口缺失而连带失败。
+	let catalogRuntimePromise;
+	const resolveProviders = async ({ config, providerRefs }) => {
+		catalogRuntimePromise ??= loadProviderCatalogRuntime();
+		const catalogRuntime = await catalogRuntimePromise;
+		// 铁律：activate:false —— 只读拿 method.run，不激活 provider，零副作用（不动 gateway 活跃插件名册）。
+		return catalogRuntime.resolvePluginProviders({
+			config,
+			providerRefs,
+			activate: false,
+			mode: 'runtime',
+		});
+	};
 
 	let handlersPromise;
 	async function getHandlers() {
@@ -83,7 +107,7 @@ export function registerProviderAuthHandlers(api, opts = {}) {
 					generatePkce: providerAuthSdk.generatePkceVerifierChallenge,
 					toForm: providerAuthSdk.toFormUrlEncoded,
 				});
-				return buildProviderAuthHandlers({ sdk, resolveAgentDir, oauth, registry });
+				return buildProviderAuthHandlers({ sdk, resolveAgentDir, oauth, registry, resolveProviders });
 			})();
 		}
 		return handlersPromise;

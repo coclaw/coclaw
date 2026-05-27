@@ -233,10 +233,10 @@ async function probeMethod(provider, method) {
 		runtimeLog: sink.runtimeLog,
 		verificationNote: urlNote
 			? {
-					title: urlNote.title,
-					message: urlNote.message,
-					urlInNote: (urlNote.message.match(URL_RE) || [null])[0],
-				}
+				title: urlNote.title,
+				message: urlNote.message,
+				urlInNote: (urlNote.message.match(URL_RE) || [null])[0],
+			}
 			: null,
 		allNotes: sink.notes,
 	};
@@ -294,7 +294,7 @@ const results = [];
 for (const t of targets) {
 	console.error(`[probe] 驱动 ${t.provider.id}:${t.method.id} …`);
 	// 串行跑，避免多家并发网络/日志互相干扰
-	// eslint-disable-next-line no-await-in-loop
+	 
 	const r = await probeMethod(t.provider, t.method);
 	console.error(`        → ${r.outcome.status} (${r.elapsedMs}ms)`);
 	results.push(r);

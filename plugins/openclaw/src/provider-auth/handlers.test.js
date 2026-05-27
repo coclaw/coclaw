@@ -1192,3 +1192,427 @@ test('loginOauth: outer catch — genLoginId throws → IO_FAILED', async () => 
 	assert.equal(calls[0].err.code, 'IO_FAILED');
 	assert.equal(calls[0].err.message, 'uuid fail');
 });
+
+// === 通用设备码登录（B1：驱动上游 provider 的 device_code run） ===
+
+// codex/copilot 实际验证 note 模板（URL 行 + Code 行）
+const DEVICE_NOTE = [
+	'Open this URL in your LOCAL browser and enter the code below.',
+	'URL: https://auth.openai.com/codex/device',
+	'Code: ABCD-1234',
+	'Code expires in 15 minutes. Never share it.',
+].join('\n');
+
+const PROVIDER_ID = 'openai-codex';
+const DEVICE_CRED = { type: 'oauth', provider: PROVIDER_ID, access: 'ACC', refresh: 'REF', expires: 9999 };
+const DEVICE_PROFILE = { profileId: 'openai-codex:foo@bar.com', credential: DEVICE_CRED };
+
+// fake device_code 方法：按脚本 emit notes 后 resolve(result) / reject(error)；可注入 gate 延迟 resolve
+function makeDeviceMethod({ notes = [DEVICE_NOTE], result, error, gate, onCtx } = {}) {
+	return {
+		id: 'device',
+		kind: 'device_code',
+		run: async (ctx) => {
+			if (onCtx) onCtx(ctx);
+			for (const n of notes) {
+				 
+				await ctx.prompter.note(n);
+			}
+			if (gate) await gate;
+			if (error) throw error;
+			return result ?? { profiles: [DEVICE_PROFILE] };
+		},
+	};
+}
+
+function buildDeviceCodeHandlers({
+	providers,
+	resolveProviders,
+	resolveConfig = () => ({ existing: 1 }),
+	sdkOverrides = {},
+	mutateConfigFile,
+	registry,
+} = {}) {
+	const bg = [];
+	const mutateCalls = [];
+	const upsertCalls = [];
+	const logs = [];
+	const defaultMutate = async ({ afterWrite, mutate }) => {
+		const draft = {};
+		mutate(draft);
+		mutateCalls.push({ afterWrite, draft });
+	};
+	const sdk = createStubSdk({
+		upsertAuthProfileWithLock: async (params) => { upsertCalls.push(params); return { version: 1, profiles: {} }; },
+		mutateConfigFile: mutateConfigFile ?? defaultMutate,
+		...sdkOverrides,
+	});
+	const reg = registry ?? createStubRegistry();
+	const handlers = buildProviderAuthHandlers({
+		sdk,
+		resolveAgentDir: () => AGENT_DIR,
+		registry: reg,
+		genLoginId: () => 'DEV-LOGIN-1',
+		scheduleBackground: (p) => { bg.push(p); },
+		logRemote: (t) => { logs.push(t); },
+		resolveConfig,
+		resolveProviders: resolveProviders ?? (() => providers),
+	});
+	return { handlers, bg, mutateCalls, upsertCalls, registry: reg, logs, sdk };
+}
+
+// 等所有已调度后台 promise 跑完（phase-1 + phase-2 都已 respond）
+const flushBg = (bg) => Promise.all(bg);
+
+test('loginOauth 路由: minimax-portal → B2（不碰 resolveProviders）', async () => {
+	// resolveProviders 默认抛错；若路由错走 B1 会炸。这里用 B2 stub（oauth）验证走 minimax
+	const { handlers, bg } = buildOAuthHandlers();
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PORTAL_PROVIDER_ID, region: 'cn' }, respond });
+	assert.equal(calls[0].data.status, 'accepted');
+	assert.equal(calls[0].data.userCode, 'USER-CODE'); // minimax stub 的码 → 确属 B2
+	await flushBg(bg);
+});
+
+test('loginOauth 校验: provider 给了但是空串/空白/非串 → INVALID_ARGS 单帧（不漏进 B1）', async () => {
+	// resolveProviders 默认抛错；若漏进 B1 会得 IO_FAILED 而非 INVALID_ARGS
+	for (const bad of ['', '   ', 42, {}, null]) {
+		const { handlers, bg } = buildDeviceCodeHandlers({ resolveProviders: () => { throw new Error('should not reach B1'); } });
+		const { respond, calls } = makeRespond();
+
+		await handlers.loginOauth({ params: { provider: bad }, respond });
+		await flushBg(bg);
+		assert.equal(calls.length, 1, `provider=${JSON.stringify(bad)} 应单帧`);
+		assert.equal(calls[0].ok, false);
+		assert.equal(calls[0].data, undefined);
+		assert.equal(calls[0].err.code, 'INVALID_ARGS', `provider=${JSON.stringify(bad)} 应 INVALID_ARGS`);
+	}
+});
+
+test('loginOauth 校验: provider 缺省（省略或显式 undefined）仍走 B2，不被校验挡住', async () => {
+	// 向后兼容：不传 provider = MiniMax；校验只针对"给了但非法"。省略字段与显式 undefined 等价（params?.provider 都得 undefined）
+	for (const params of [{ region: 'cn' }, { provider: undefined, region: 'cn' }]) {
+		const { handlers, bg } = buildOAuthHandlers();
+		const { respond, calls } = makeRespond();
+
+		await handlers.loginOauth({ params, respond });
+		assert.equal(calls[0].data.status, 'accepted', `params=${JSON.stringify(params)} 应走 B2 accepted`);
+		assert.equal(calls[0].data.userCode, 'USER-CODE'); // B2 stub 的码
+		await flushBg(bg);
+	}
+});
+
+test('B1 成功: 验证 note → accepted（结构化字段+rawText），run resolve → 写凭据+configPatch+ok', async () => {
+	const configPatch = { agents: { defaults: { models: { 'openai-codex/gpt': {} } } } };
+	const { handlers, bg, upsertCalls, mutateCalls, registry } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ result: { profiles: [DEVICE_PROFILE], configPatch } })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	// phase-1 accepted
+	assert.deepEqual(calls[0], {
+		ok: true,
+		data: {
+			status: 'accepted',
+			loginId: 'DEV-LOGIN-1',
+			provider: PROVIDER_ID,
+			verificationUri: 'https://auth.openai.com/codex/device',
+			userCode: 'ABCD-1234',
+			rawText: DEVICE_NOTE,
+		},
+		err: undefined,
+	});
+	// phase-2 ok
+	assert.deepEqual(calls.at(-1), {
+		ok: true,
+		data: { status: 'ok', provider: PROVIDER_ID, profileIds: ['openai-codex:foo@bar.com'] },
+		err: undefined,
+	});
+	assert.equal(calls.length, 2); // 恰好 accepted + 终态两帧，不多发不漏发
+	// 写凭据
+	assert.equal(upsertCalls.length, 1);
+	assert.equal(upsertCalls[0].profileId, 'openai-codex:foo@bar.com');
+	assert.equal(upsertCalls[0].agentDir, AGENT_DIR);
+	assert.deepEqual(upsertCalls[0].credential, DEVICE_CRED);
+	// configPatch 深合并进 cfg（hot-reload）
+	assert.equal(mutateCalls.length, 1);
+	assert.deepEqual(mutateCalls[0].afterWrite, { mode: 'auto' });
+	assert.deepEqual(mutateCalls[0].draft, configPatch);
+	// 登记→移除
+	assert.deepEqual(registry.events, [['register', 'DEV-LOGIN-1'], ['remove', 'DEV-LOGIN-1']]);
+});
+
+test('B1 成功无 configPatch: 不调 mutateConfigFile，仍 ok', async () => {
+	const { handlers, bg, mutateCalls, upsertCalls } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ result: { profiles: [DEVICE_PROFILE] } })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.at(-1).data.status, 'ok');
+	assert.equal(calls.length, 2);
+	assert.equal(upsertCalls.length, 1);
+	assert.equal(mutateCalls.length, 0);
+});
+
+test('B1 成功 configPatch 是数组: 视为无 patch，不调 mutateConfigFile', async () => {
+	const { handlers, bg, mutateCalls } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ result: { profiles: [DEVICE_PROFILE], configPatch: [] } })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.at(-1).data.status, 'ok');
+	assert.equal(mutateCalls.length, 0);
+});
+
+test('B1 空 profiles（上游吞失败）: accepted → phase-2 OAUTH_FAILED，不写凭据', async () => {
+	const { handlers, bg, upsertCalls, registry } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ result: { profiles: [] } })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls[0].data.status, 'accepted');
+	assert.equal(calls.at(-1).ok, false);
+	assert.deepEqual(calls.at(-1).data, { status: 'error' });
+	assert.equal(calls.at(-1).err.code, 'OAUTH_FAILED');
+	assert.equal(calls.length, 2);
+	assert.equal(upsertCalls.length, 0);
+	// 终态必清 registry（accepted 已登记 → 终态移除）
+	assert.deepEqual(registry.events, [['register', 'DEV-LOGIN-1'], ['remove', 'DEV-LOGIN-1']]);
+});
+
+test('B1 run 在 note 之后 reject: accepted → phase-2 OAUTH_FAILED 带 message', async () => {
+	const { handlers, bg, registry } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ error: new Error('network down') })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls[0].data.status, 'accepted');
+	assert.equal(calls.at(-1).ok, false);
+	assert.deepEqual(calls.at(-1).data, { status: 'error' });
+	assert.equal(calls.at(-1).err.code, 'OAUTH_FAILED');
+	assert.equal(calls.at(-1).err.message, 'network down');
+	assert.equal(calls.length, 2);
+	assert.deepEqual(registry.events, [['register', 'DEV-LOGIN-1'], ['remove', 'DEV-LOGIN-1']]);
+});
+
+test('B1 run 在任何 note 之前 reject: 单帧错误（无 accepted）', async () => {
+	const { handlers, bg, registry } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ notes: [], error: new Error('device endpoint 404') })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.length, 1); // 单帧
+	assert.equal(calls[0].ok, false);
+	assert.equal(calls[0].data, undefined); // payload undefined = phase-1 之前的单帧错误
+	assert.equal(calls[0].err.code, 'OAUTH_FAILED');
+	assert.equal(calls[0].err.message, 'device endpoint 404');
+	// 从未登记（onNote 没触发）
+	assert.deepEqual(registry.events, []);
+});
+
+test('B1 成功但全程无 note（phase-1 未发）: 单帧 ok，仍写凭据', async () => {
+	const { handlers, bg, upsertCalls } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ notes: [], result: { profiles: [DEVICE_PROFILE] } })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].ok, true);
+	assert.equal(calls[0].data.status, 'ok');
+	assert.equal(upsertCalls.length, 1);
+});
+
+test('B1 取消: accepted 后 cancel，run 到期 resolve → phase-2 cancelled，不写凭据', async () => {
+	let release;
+	const gate = new Promise((r) => { release = r; });
+	const { handlers, bg, upsertCalls, registry } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ gate, result: { profiles: [DEVICE_PROFILE] } })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	// 让 note 吐出 → accepted + 登记
+	await new Promise((r) => setImmediate(r));
+	assert.equal(calls[0].data.status, 'accepted');
+	assert.ok(registry.store.get('DEV-LOGIN-1'));
+	// 取消
+	const cancel = makeRespond();
+	await handlers.cancelOauth({ params: { loginId: 'DEV-LOGIN-1' }, respond: cancel.respond });
+	assert.deepEqual(cancel.calls[0], { ok: true, data: {}, err: undefined });
+	// 放行 run resolve
+	release();
+	await flushBg(bg);
+	assert.equal(calls.at(-1).ok, false);
+	assert.deepEqual(calls.at(-1).data, { status: 'cancelled' });
+	assert.equal(calls.at(-1).err.code, 'OAUTH_CANCELLED');
+	assert.equal(upsertCalls.length, 0); // 取消不写凭据
+	// 终态必清 registry，且 cancelOauth 自身不调 removeLogin（只 abort）→ 只有一对 register/remove
+	assert.deepEqual(registry.events, [['register', 'DEV-LOGIN-1'], ['remove', 'DEV-LOGIN-1']]);
+	assert.equal(registry.store.has('DEV-LOGIN-1'), false);
+});
+
+test('B1 provider 无 device_code 方法（只有 oauth）: NOT_FOUND 单帧', async () => {
+	const { handlers, bg } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [{ id: 'oauth', kind: 'oauth', run: async () => ({ profiles: [] }) }] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].ok, false);
+	assert.equal(calls[0].data, undefined); // 单帧错误 payload 必为 undefined（phase-1 未发）
+	assert.equal(calls[0].err.code, 'NOT_FOUND');
+});
+
+test('B1 resolveProviders 抛错: 单帧 IO_FAILED（phase-1 之前）', async () => {
+	const { handlers, bg } = buildDeviceCodeHandlers({
+		resolveProviders: () => { throw new Error('loader boom'); },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].data, undefined); // 单帧错误 payload 必为 undefined（phase-1 之前）
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.equal(calls[0].err.message, 'loader boom');
+});
+
+test('B1 resolveProviders 默认未注入: 调用即抛 → 单帧 IO_FAILED', async () => {
+	// 不经 buildDeviceCodeHandlers（它总注入 resolveProviders）；直接构建，走默认抛错 thunk
+	const handlers = buildProviderAuthHandlers({
+		sdk: createStubSdk(),
+		resolveAgentDir: () => AGENT_DIR,
+		registry: createStubRegistry(),
+		genLoginId: () => 'X',
+		scheduleBackground: () => {},
+		logRemote: () => {},
+		resolveConfig: () => ({}),
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.equal(calls[0].err.message, 'provider catalog runtime not injected');
+});
+
+test('B1 写凭据返回 null: accepted → phase-2 IO_FAILED', async () => {
+	const { handlers, bg, registry } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod()] }],
+		sdkOverrides: { upsertAuthProfileWithLock: async () => null },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls[0].data.status, 'accepted');
+	assert.equal(calls.at(-1).ok, false);
+	assert.deepEqual(calls.at(-1).data, { status: 'error' }); // phase-2 error 帧必带 status payload
+	assert.equal(calls.at(-1).err.code, 'IO_FAILED');
+	assert.equal(calls.at(-1).err.message, 'failed to write auth-profiles store');
+	assert.equal(calls.length, 2);
+	assert.deepEqual(registry.events, [['register', 'DEV-LOGIN-1'], ['remove', 'DEV-LOGIN-1']]);
+});
+
+test('B1 mutateConfigFile 抛错: accepted → phase-2 IO_FAILED', async () => {
+	const configPatch = { agents: { defaults: { models: { 'm': {} } } } };
+	const { handlers, bg } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ result: { profiles: [DEVICE_PROFILE], configPatch } })] }],
+		mutateConfigFile: async () => { throw new Error('cfg locked'); },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.at(-1).ok, false);
+	assert.deepEqual(calls.at(-1).data, { status: 'error' }); // phase-2 error 帧必带 status payload
+	assert.equal(calls.at(-1).err.code, 'IO_FAILED');
+	assert.equal(calls.at(-1).err.message, 'cfg locked');
+	assert.equal(calls.length, 2);
+});
+
+test('B1 config 来源: resolveConfig 结果传给 resolveProviders + ctx；providerRefs 单元素', async () => {
+	let seenResolveArgs;
+	let seenCtxConfig;
+	const handlersBundle = buildDeviceCodeHandlers({
+		resolveConfig: () => ({ marker: 7 }),
+		resolveProviders: (args) => {
+			seenResolveArgs = args;
+			return [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ onCtx: (ctx) => { seenCtxConfig = ctx.config; } })] }];
+		},
+	});
+	const { respond } = makeRespond();
+	await handlersBundle.handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(handlersBundle.bg);
+	assert.deepEqual(seenResolveArgs, { config: { marker: 7 }, providerRefs: [PROVIDER_ID] });
+	assert.deepEqual(seenCtxConfig, { marker: 7 });
+});
+
+test('B1 resolveConfig 返回 null → config 兜底 {}', async () => {
+	let seenResolveArgs;
+	const handlersBundle = buildDeviceCodeHandlers({
+		resolveConfig: () => null,
+		resolveProviders: (args) => {
+			seenResolveArgs = args;
+			return [{ id: PROVIDER_ID, auth: [makeDeviceMethod()] }];
+		},
+	});
+	const { respond, calls } = makeRespond();
+	await handlersBundle.handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(handlersBundle.bg);
+	assert.deepEqual(seenResolveArgs.config, {});
+	assert.equal(calls.at(-1).data.status, 'ok');
+});
+
+test('B1 outer catch: resolveConfig 抛错 → 单帧 IO_FAILED', async () => {
+	const { handlers, bg } = buildDeviceCodeHandlers({
+		resolveConfig: () => { throw new Error('config read boom'); },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.equal(calls[0].err.message, 'config read boom');
+});
+
+test('B1 note 过滤: 帮助/前导 note 不触发 phase-1，只有真验证 note 触发一次', async () => {
+	const helpNote = 'Trouble with device code login? See https://docs.openclaw.ai/start/faq';
+	const preamble = 'This will open a GitHub device login to authorize Copilot.';
+	const secondUrlNote = 'URL: https://auth.openai.com/codex/device\nCode: ZZZZ-0000';
+	const { handlers, bg } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({
+			notes: [helpNote, preamble, DEVICE_NOTE, secondUrlNote],
+			result: { profiles: [DEVICE_PROFILE] },
+		})] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	// 只有一帧 accepted，且来自 DEVICE_NOTE（首个真验证 note），不是 secondUrlNote
+	const accepted = calls.filter((c) => c.data?.status === 'accepted');
+	assert.equal(accepted.length, 1);
+	assert.equal(accepted[0].data.userCode, 'ABCD-1234');
+	assert.equal(calls.at(-1).data.status, 'ok');
+});
+
+test('B1 验证 note 抠不到结构化字段: accepted 带 null + rawText 全文', async () => {
+	const note = 'Authorize at https://x.example/dev to continue.';
+	const { handlers, bg } = buildDeviceCodeHandlers({
+		providers: [{ id: PROVIDER_ID, auth: [makeDeviceMethod({ notes: [note], result: { profiles: [DEVICE_PROFILE] } })] }],
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.loginOauth({ params: { provider: PROVIDER_ID }, respond });
+	await flushBg(bg);
+	assert.deepEqual(calls[0].data, {
+		status: 'accepted',
+		loginId: 'DEV-LOGIN-1',
+		provider: PROVIDER_ID,
+		verificationUri: 'https://x.example/dev',
+		userCode: null,
+		rawText: note,
+	});
+});

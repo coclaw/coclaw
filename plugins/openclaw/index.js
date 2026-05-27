@@ -809,6 +809,9 @@ const plugin = {
 		registerProviderAuthHandlers(api, {
 			loadSdk: () => import('openclaw/plugin-sdk/provider-auth'),
 			loadConfigMutation: () => import('openclaw/plugin-sdk/config-mutation'),
+			// provider-catalog-runtime 供通用 device-code 扫码登录（B1）拿 resolvePluginProviders，
+			// 驱动 provider 自带的 device_code 登录方法（codex/copilot 及以后任意 device_code provider）
+			loadProviderCatalogRuntime: () => import('openclaw/plugin-sdk/provider-catalog-runtime'),
 		});
 
 		// 模型默认配置 RPC（coclaw.model.set / list）。三个 SDK 子入口的字面量

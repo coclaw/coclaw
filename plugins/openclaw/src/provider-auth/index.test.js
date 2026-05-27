@@ -248,6 +248,63 @@ test('default loader: registerProviderAuthHandlers without opts wires five metho
 	__resetSdkCache();
 });
 
+// === B1 通用设备码登录的 index 接线（resolveProviders 惰性加载 catalog-runtime） ===
+
+test('B1 via index: 注入 catalog-runtime → resolvePluginProviders(activate:false, mode:runtime) 驱动登录', async () => {
+	__resetSdkCache();
+	const { api, methods } = createMockApi();
+	let resolveArgs;
+	const deviceMethod = {
+		id: 'device',
+		kind: 'device_code',
+		run: async (ctx) => {
+			await ctx.prompter.note('URL: https://auth.openai.com/codex/device\nCode: ABCD-1234');
+			return {
+				profiles: [{ profileId: 'openai-codex:me', credential: { type: 'oauth', provider: 'openai-codex', access: 'A' } }],
+			};
+		},
+	};
+	registerProviderAuthHandlers(api, {
+		loadSdk: async () => fakeSdk(),
+		loadConfigMutation: async () => fakeConfigMutation(),
+		loadProviderCatalogRuntime: async () => ({
+			resolvePluginProviders: (args) => { resolveArgs = args; return [{ id: 'openai-codex', auth: [deviceMethod] }]; },
+		}),
+		resolveAgentDir: () => '/tmp/agent',
+	});
+	const loginOauth = methods.get('coclaw.providerAuth.loginOauth');
+	const { respond, calls } = respondCollector();
+	await loginOauth({ params: { provider: 'openai-codex' }, respond });
+	// resolveProviders 闭包已执行（loginOauthDeviceCode 在 scheduleBackground 之前 await 它）；
+	// config 走默认 getClawConfig（测试无 runtime → null → 兜底 {}）
+	assert.deepEqual(resolveArgs, { config: {}, providerRefs: ['openai-codex'], activate: false, mode: 'runtime' });
+	// 让默认 fire-and-forget 后台跑完 phase-1/2
+	for (let i = 0; i < 5; i += 1) {
+		await new Promise((r) => setImmediate(r));
+	}
+	assert.equal(calls[0].data.status, 'accepted');
+	assert.equal(calls.at(-1).data.status, 'ok');
+	__resetSdkCache();
+});
+
+test('B1 via index 默认 loader: 触发 catalog-runtime 真包 import（测试环境无包 → 单帧 ok:false）', async () => {
+	__resetSdkCache();
+	const { api, methods } = createMockApi();
+	registerProviderAuthHandlers(api, {
+		loadSdk: async () => fakeSdk(),
+		loadConfigMutation: async () => fakeConfigMutation(),
+		resolveAgentDir: () => '/tmp/agent',
+		// 不注入 loadProviderCatalogRuntime → 走 defaultLoadProviderCatalogRuntime（import 真包）
+	});
+	const loginOauth = methods.get('coclaw.providerAuth.loginOauth');
+	const { respond, calls } = respondCollector();
+	await loginOauth({ params: { provider: 'openai-codex' }, respond });
+	// 无 openclaw 包 → import reject → 单帧 IO_FAILED（phase-1 之前）；若环境恰可解析也仍是单帧 ok:false
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].ok, false);
+	__resetSdkCache();
+});
+
 test('__resetSdkCache: after reset, default loader is invoked again on next register call', async () => {
 	__resetSdkCache();
 	let loads = 0;
