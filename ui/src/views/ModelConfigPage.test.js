@@ -149,23 +149,27 @@ function makeWrapper({ route, online = true, dcReady = true } = {}) {
 function asProfiles(arr) { return { profiles: arr }; }
 /**
  * 构造 coclaw.model.list 出参（§7.4 新契约）。
- * 默认模拟新插件：带顶层 hasAnyUsableCredential（feature-detect 旗标）、default.providerUsable。
+ * 默认模拟新插件：带顶层 hasAnyUsableCredential、default.providerUsable。
  * @param {string|null} primary
  * @param {{ providerUsable?: boolean, hasAny?: boolean, legacy?: boolean }} [opts]
  *   - providerUsable: 主模型那家是否有可用凭据（不传时按 primary 是否存在推断）
  *   - hasAny: 顶层 hasAnyUsableCredential 值（不传时按 primary 是否存在推断）
- *   - legacy: true → 模拟旧插件，出参不含 hasAnyUsableCredential（credSignalKnown=false）
+ *   - legacy: true → 模拟旧插件：出参既无顶层 hasAnyUsableCredential，default 也不含 providerUsable
  */
 function asModelList(primary, opts = {}) {
+	if (opts.legacy) {
+		// 真实旧插件形态：只有 default.primary + agents，无凭据信号字段
+		return {
+			default: { primary },
+			agents: { main: { primary: null } },
+		};
+	}
 	const providerUsable = opts.providerUsable !== undefined ? opts.providerUsable : !!primary;
-	const out = {
+	return {
 		default: { primary, providerUsable },
 		agents: { main: { primary: null, providerUsable: false } },
+		hasAnyUsableCredential: opts.hasAny !== undefined ? opts.hasAny : !!primary,
 	};
-	if (!opts.legacy) {
-		out.hasAnyUsableCredential = opts.hasAny !== undefined ? opts.hasAny : !!primary;
-	}
-	return out;
 }
 function asCatalog(arr) { return { models: arr }; }
 
@@ -358,20 +362,21 @@ describe('ModelConfigPage — initial load races', () => {
 		w.unmount();
 	});
 
-	test('旧插件（出参无 hasAnyUsableCredential）：不报 invalid，保守视为 effective（feature-detect 压制）', async () => {
+	test('旧插件（出参无 hasAnyUsableCredential / providerUsable）：不再压制 → 报 invalid（feature-detect-suppress 已移除）', async () => {
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.list') return asProfiles([]);
-			// 旧插件：legacy=true → 出参不带 hasAnyUsableCredential，且即便 providerUsable=false 也不报失效
-			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4', { legacy: true, providerUsable: false });
+			// 旧插件：legacy=true → 出参不带凭据信号字段；不再特判压制，providerUsable 缺省按无凭据
+			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4', { legacy: true });
 			if (method === 'models.list') return asCatalog([{ id: 'gpt-4', provider: 'openai' }]);
 			return {};
 		});
 		const w = makeWrapper();
 		await flushPromises();
-		expect(w.vm.credSignalKnown).toBe(false);
-		expect(w.vm.primaryState).toBe('effective');
-		expect(w.find('[data-testid="primary-warning"]').exists()).toBe(false);
-		expect(w.find('[data-testid="primary-current"]').exists()).toBe(true);
+		// 成功拿到出参即视信号新鲜（旧插件也算）；缺 providerUsable → 当无凭据 → 报失效
+		expect(w.vm.credSignalFresh).toBe(true);
+		expect(w.vm.primaryState).toBe('invalid');
+		expect(w.find('[data-testid="primary-warning"]').exists()).toBe(true);
+		expect(w.text()).toContain('modelConfig.primary.invalidWarning');
 		w.unmount();
 	});
 
@@ -1098,8 +1103,8 @@ describe('ModelConfigPage — remove flow', () => {
 		});
 		await w.vm.refreshAfterWrite();
 		await flushPromises();
-		// 关键：不得用旧 providerUsable=false 误报失效；凭据信号未知 → 保守视为 effective
-		expect(w.vm.credSignalKnown).toBe(false);
+		// 关键：不得用写入前的旧 providerUsable=false 误报失效；信号标记为陈旧 → 保守视为 effective
+		expect(w.vm.credSignalFresh).toBe(false);
 		// 收紧断言到 'effective'（而非仅 not 'invalid'）：堵住"退化成 unknown 也算过"的假绿
 		expect(w.vm.primaryState).toBe('effective');
 		expect(w.find('[data-testid="primary-warning"]').exists()).toBe(false);

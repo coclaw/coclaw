@@ -126,7 +126,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - **provider 凭据被撤**（最常见，如撤销了 primary 所在 provider 的 key）：凭据由 CoChat 侧自管，撤没撤完全可知，判定**可靠**。
 - **model 从 catalog 消失**（上游下架 / 改名）：以 `models.list view:"all"` 全量目录比对——刻意用全量而非登录态过滤版，避免把合法 model 误判失效。
 
-**保守闸门**：仅当 `providerAuth.list` 与全量 catalog 都成功拿到时才敢判"失效"；任一未拿到则保守视为有效（同 § 7.2「未知态不显示橙条」），杜绝"明明配好了怎么说失效"的误报。
+**保守闸门**：凭据半改吃 `model.list` 的 `providerUsable` 信号（§7.4，不再数 `providerAuth.list`）。仅当 `model.list` 成功（凭据信号新鲜）与全量 catalog 都拿到时才敢判"失效"；任一未拿到（含写后刷新失败导致信号陈旧）则保守视为有效（同 § 7.2「未知态不显示橙条」），杜绝"明明配好了怎么说失效"的误报。
 
 **残余风险**：判定本质是启发式——若全量 catalog 本身不全 / 不新鲜，理论上可能误报某个其实合法的 model 失效。靠"用全量目录 + 数据不全不判"两道兜底，一期 model 范围内够用。
 
@@ -164,7 +164,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
   → 上方"默认主模型区"自动检测:还没设主模型 → 提示「请继续选主模型」
   → 点「选择主模型」打开模型选择器
   → 选完即保存
-  → 返回 ManageClaws → 该 claw 橙条消失,AgentCard 显示新的 modelLabel
+  → 返回 ManageClaws → 该 claw 橙条消失（/claws 不再拉全量目录，AgentCard 不再显示模型名徽章，见 §7.2）
 ```
 
 ### 5.2 添加 provider 流程（细化）
@@ -289,7 +289,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - 三种状态互斥，按优先级 1 > 2 > 3 选最严重的一种展示
 - 仅在该 claw 在线时显示（离线时数据本来就拿不到，不展示）
 - 「去配置」即跳模型设置子页
-- 「可用凭据」= 自管账本 **或** OpenClaw 配置里的内联 key；判定细节、刻意不覆盖的情形、旧插件兼容见 §7.4
+- 「可用凭据」= 自管账本 **或** OpenClaw 配置里的内联 key；判定细节、刻意不覆盖的情形、旧插件处理见 §7.4
 
 ### chat 按钮的处理
 
@@ -321,26 +321,28 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 │  UI                                                         │
 │                                                             │
 │  dashboard.store（外层用：每 claw 标识级数据）              │
-│  ─ hasAnyProviderAuth: boolean                              │
+│  ─ hasUsableCredential: boolean   ← model.list 凭据信号     │
 │  ─ primaryModel: string | null                              │
-│  ─ primaryEffective: boolean   ← 校验过 provider 还在 + ... │
+│  ─ primaryProviderUsable: boolean ← 只看凭据、不查目录       │
+│  （仪表盘只调 model.list 取凭据信号，不拉 catalog/providerAuth）│
 │                                                             │
 │  模型设置子页（组件 state，按需即拉）                       │
 │  ─ profiles: providerAuth.list 全量                         │
-│  ─ providerCatalog: models.list view:"all" 派生             │
+│  ─ catalog: models.list view:"all" 派生（子页独有）         │
 │  ─ default: model.list.default                              │
 └────────────────────────────────────────────────────────────┘
 ```
 
 ### 7.2 dashboard.store 扩展
 
-现有 `loadDashboard` 并行调 status / models.list / usageCost / tts / channels / sessions raw，新增并行两条：
+`loadDashboard` 并行调 status / usageCost / tts / channels / sessions raw / tools.catalog，凭据相关只多调一条：
 
-- `coclaw.providerAuth.list`：派生凭据列表（子页凭据区展示用）
-- `coclaw.model.list`：派生 `primaryModel` 字符串 + **凭据/有效性判定信号**（见 §7.4；信号缺失即旧插件，按 feature-detect 压制橙条）
-- `models.list view:"all"`：派生 catalog，仅子页"模型下架"校验用；**仪表盘不再依赖它判失效**（见 §7.4）
+- `coclaw.model.list`：派生 `primaryModel` 字符串 + **凭据/有效性判定信号**（见 §7.4；旧插件给不出信号 → 当 false，不再压制）
 
-**失败处理沿用现有 allSettled 模式**：单条 RPC 失败不影响其它字段；失败时按"未知态"取默认值。外层在这种"未知态"下**不显示橙条**——避免数据拿不到时误报 warning。橙条显隐**不再绑 catalog 是否拉到**（见 §7.4）。
+**仪表盘不再拉 `models.list view:"all"`（§7.4）**：橙条判定只看 model.list 凭据信号、不查目录；全量目录的唯一消费点是 agent 卡片模型名徽章，而它现因 `status.model` 常空本就不显示，故省掉每次刷新拉近千模型这一下重操作。全量目录**仅设置子页自拉**（§7.3）。
+凭据列表（子页凭据区）也不在仪表盘拉——子页进入时自取 `coclaw.providerAuth.list`。
+
+**失败处理沿用现有 allSettled 模式**：单条 RPC 失败不影响其它字段；失败时按"未知态"取默认值。外层在这种"未知态"下**不显示橙条**——避免数据拿不到时误报 warning。橙条显隐**与 catalog 解耦**（仪表盘本就不拉 catalog；§7.4）。
 
 写操作完成后，子页主动调 `dashboardStore.loadDashboard(clawId, { force: true })` 重拉一次，让外层一致性自动恢复。
 
@@ -355,7 +357,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 > 修订背景：原判定只数「自管账本」一处来源，漏了用户直接写在 OpenClaw 配置里的内联 key，导致手动配置的老用户被误报「未配 API key、无法对话」（线上实锤）。
 > 定调：**只修这个误报，不追求完美镜像 OpenClaw 那套多来源/IAM/本地/别名的判定**。目标用户是通过 CoClaw 界面配置的新用户——对他们「自管账本」信号本就准确；误报只发生在 CoClaw 之外手动配置的过渡期用户。下阶段 CoClaw 提供盒子/云主机后环境更可控，这类历史包袱进一步消退。
 
-**判定信号改由 plugin 计算**，搭在本就会调的 `coclaw.model.list` 出参回传（新增字段，旧插件不带 → 见下方 feature-detect）：
+**判定信号改由 plugin 计算**，搭在本就会调的 `coclaw.model.list` 出参回传（新增字段，旧插件不带 → 见下方「旧插件不再特判」）：
 
 - 「这台 claw 有没有可用凭据」（驱动 noKey）：自管账本非空 **或** 配置内联 key 存在。
 - 「主模型那家有没有可用凭据」（驱动 invalid）：对主模型 provider 走 OpenClaw 现成的凭据判定（覆盖环境变量 + 自管账本，且 **provider 旧名归一化由其内部完成、CoClaw 不写任何别名逻辑**）**或** 该 provider 的配置内联 key 存在。
@@ -366,9 +368,11 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - 「无 key 也算有认证」的情形——走 IAM 的云厂商（如 Bedrock）、本地无 key 模型（LM Studio / Ollama）。根因：能一函数包圆这些的上游入口未对插件开放，详见 `docs/openclaw-research/model-config-mental-model.md` 典型陷阱清单；
 - provider 用别名拼写、与目录/配置登记拼写不一致时的零星误判。
 
-**旧插件兼容（feature-detect-suppress）**：响应里没有该判定信号字段 → 视为旧插件、凭据信号未知 → **不渲染 noKey / invalid 橙条**（noPrimary 仅靠 primary 是否为空判定，可保留）。宁可少提示，绝不对正常 claw 误报。新前端 + 旧插件 → 旧的假橙条立即消失；插件升级后准确橙条回来。
+**旧插件不再特判（feature-detect-suppress 已移除）**：响应里没有凭据信号字段（旧插件）→ 前端当 false → **该弹 noKey / invalid 就弹**。取舍理由：目标是通过 CoClaw 界面配置的小白用户，主动引导提示本身是产品价值；且 claw 很快会自动升级插件，「新前端 + 旧插件」窗口极窄——这段窗口内旧插件用户短暂再现误报可接受，远好过对小白沉默。
 
-**仪表盘不查目录**：主模型「灵不灵」只看凭据，不再为此拉全量目录判「模型是否还在 catalog」。「模型下架」这种情形**仅在设置子页暴露**（子页持全量目录，见 §7.3）；仪表盘从轻。橙条显隐与 catalog 解耦——否则目录拉取失败会连带把本该显示的提示压掉。
+> 历史：早期版本曾按「出参无凭据信号 → 视为旧插件 → 压制 noKey/invalid」做 feature-detect-suppress（宁可少提示不可误报）。后因「宁可放过不误报」与小白引导价值冲突而废弃——见 commit 历史。子页「写完设置后那次后台刷新失败」的反误报保护是**另一回事**（不拿写入前的旧凭据信号误报失效），保留至今。
+
+**仪表盘不查目录**：主模型「灵不灵」只看凭据，不为此拉全量目录判「模型是否还在 catalog」。「模型下架」这种情形**仅在设置子页暴露**（子页持全量目录，见 §7.3）；仪表盘从轻、且**根本不拉 catalog**（§7.2）。橙条显隐与 catalog 解耦。
 
 ---
 
@@ -485,9 +489,9 @@ export const PROVIDER_META = {
 
 | 场景 | 理由 |
 |---|---|
-| 首次接入主路径 | 绑 claw → 橙条引导 → 进子页 → 配第一个 key → 选主模型 → 返回 → 橙条消失 → AgentCard 显示 modelLabel。整链路必须端到端验证，否则核心价值无保障 |
+| 首次接入主路径 | 绑 claw → 橙条引导 → 进子页 → 配第一个 key → 选主模型 → 返回 → 橙条消失。整链路必须端到端验证，否则核心价值无保障（/claws 不再拉全量目录后，AgentCard 模型名徽章已移除，不再断言 modelLabel，见 §7.2） |
 | 撤销 primary 对应的 provider | 强提示分支影响主流程，验证文案分支条件 + 撤销后橙条自动切到"失效"态 |
-| 主模型切换 | 用户高频操作；验证选完即保存 + 状态实时反映到外层 AgentCard / 主模型区 |
+| 主模型切换 | 用户高频操作；验证选完即保存 + 状态实时反映到子页主模型区 |
 | 桌面端返回行为 | back() + fallback 两条路径都要验证（从 chat 进 vs deep link 冷启） |
 
 ### 必单测（不需 E2E）

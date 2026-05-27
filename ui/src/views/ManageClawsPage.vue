@@ -403,7 +403,6 @@ export default {
 				hasAny: dashboard.hasUsableCredential,
 				primary: dashboard.primaryModel,
 				effective: dashboard.primaryProviderUsable,
-				credSignalKnown: dashboard.credSignalKnown,
 			});
 		},
 		/** 引导态 → 本地化橙条文案 */

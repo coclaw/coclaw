@@ -16,7 +16,6 @@ import { generateModelTags } from '../utils/model-tags.js';
  *   hasUsableCredential: boolean,
  *   primaryModel: string|null,
  *   primaryProviderUsable: boolean,
- *   credSignalKnown: boolean,
  *   modelConfigFetched: boolean,
  * }} DashboardData
  *
@@ -212,7 +211,6 @@ export const useDashboardStore = defineStore('dashboard', {
 					hasUsableCredential: false,
 					primaryModel: null,
 					primaryProviderUsable: false,
-					credSignalKnown: false,
 					modelConfigFetched: false,
 				};
 			}
@@ -239,9 +237,13 @@ export const useDashboardStore = defineStore('dashboard', {
 					// 并行调用所有 RPC（allSettled 部分失败不影响整体）
 					// modelConfigResult 单条失败按默认值降级（见 design § 7.2 / § 7.4），
 					// 不上报为整体 error
+					//
+					// 不再拉 models.list view:'all'（§7.4）：仪表盘判主模型"灵不灵"只看插件给的
+					// 凭据信号、不查目录；全量目录的唯一消费点是 agent 卡片模型名徽章，而它现因
+					// status.model 常为空本就不显示，故省掉每次刷新拉近千模型这一下重操作。
+					// 卡片模型显示后续内聚进插件（见 ui/TODO.md）
 					const [
 						statusResult,
-						modelsResult,
 						usageCostResult,
 						ttsResult,
 						channelsResult,
@@ -250,10 +252,6 @@ export const useDashboardStore = defineStore('dashboard', {
 						...toolResults
 					] = await Promise.allSettled([
 						conn.request('status', {}, { timeout: 180_000 }),
-						// view:'all' 仅给 agent 卡片 findCurrentModel 贴标签用（§7.4）：
-						// 仪表盘判主模型"灵不灵"只看插件给的凭据信号、不再查目录，故 catalog
-						// 拉取失败不影响橙条显隐（橙条与 catalog 解耦）
-						conn.request('models.list', { view: 'all' }, { timeout: 180_000 }),
 						conn.request('usage.cost', { mode: 'month' }, { timeout: 180_000 }),
 						conn.request('tts.status', {}, { timeout: 180_000 }),
 						conn.request('channels.status', { probe: false }, { timeout: 180_000 }),
@@ -266,7 +264,6 @@ export const useDashboardStore = defineStore('dashboard', {
 
 					// 解包结果（失败的返回 null / 空数组）
 					const status = statusResult.status === 'fulfilled' ? statusResult.value : null;
-					const models = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
 					const usageCost = usageCostResult.status === 'fulfilled' ? usageCostResult.value : null;
 					const tts = ttsResult.status === 'fulfilled' ? ttsResult.value : null;
 					const channels = channelsResult.status === 'fulfilled' ? channelsResult.value : null;
@@ -277,15 +274,15 @@ export const useDashboardStore = defineStore('dashboard', {
 					// 凭据/有效性判定改吃插件 coclaw.model.list 出参的凭据信号（§7.4）：
 					//  - hasUsableCredential ← hasAnyUsableCredential（账本 + 内联，插件算好）
 					//  - primaryProviderUsable ← default.providerUsable（只看凭据，不查目录）
-					//  - credSignalKnown ← 出参有无顶层 hasAnyUsableCredential（旧插件给不出 → 压制 noKey/invalid）
-					// 橙条显隐与 catalog 解耦：catalog（models.list）失败不再压掉本该显示的提示
+					// 不再特判旧插件：旧插件给不出这俩字段 → 当 false → 该弹 noKey/invalid 就弹
+					// （升级窗口极窄，宁可主动提示也不沉默）。
+					// 橙条显隐与 catalog 解耦：catalog 失败不再压掉本该显示的提示
 					const modelConfigOk = modelConfigResult.status === 'fulfilled';
 					if (!modelConfigOk) {
 						// 凭据 RPC 失败 → "未知态"：保持默认值且不置 fetched，外层据此不渲染橙条引导
 						entry.hasUsableCredential = false;
 						entry.primaryModel = null;
 						entry.primaryProviderUsable = false;
-						entry.credSignalKnown = false;
 						entry.modelConfigFetched = false;
 					}
 					else {
@@ -293,14 +290,9 @@ export const useDashboardStore = defineStore('dashboard', {
 						const primaryModel = (typeof mc?.default?.primary === 'string' && mc.default.primary)
 							? mc.default.primary
 							: null;
-						// 单一旗标：顶层 hasAnyUsableCredential 是 boolean 才视为新插件、凭据信号可用
-						const credSignalKnown = typeof mc?.hasAnyUsableCredential === 'boolean';
 						entry.primaryModel = primaryModel;
-						entry.credSignalKnown = credSignalKnown;
-						entry.hasUsableCredential = credSignalKnown ? mc.hasAnyUsableCredential : false;
-						entry.primaryProviderUsable = (mc?.default && typeof mc.default.providerUsable === 'boolean')
-							? mc.default.providerUsable
-							: false;
+						entry.hasUsableCredential = mc?.hasAnyUsableCredential === true;
+						entry.primaryProviderUsable = mc?.default?.providerUsable === true;
 						entry.modelConfigFetched = true;
 					}
 
@@ -321,7 +313,9 @@ export const useDashboardStore = defineStore('dashboard', {
 					};
 
 					// 构建 agent 卡片数据
-					const modelCatalog = Array.isArray(models?.models) ? models.models : [];
+					// 仪表盘不再拉全量目录（§7.4）→ catalog 恒空 → 卡片模型名徽章不显示
+					// （现状本就因 status.model 常空而不显示，零可见变化）。后续内聚进插件见 ui/TODO.md
+					const modelCatalog = [];
 					const ttsEnabled = tts?.enabled === true;
 
 					entry.agents = agentList.map((agent, index) => {

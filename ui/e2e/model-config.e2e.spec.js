@@ -4,8 +4,6 @@ import {
 	MOCK_CATALOG,
 	GROQ_PRIMARY,
 	GROQ_PRIMARY_ALT,
-	GROQ_PRIMARY_LABEL,
-	GROQ_PRIMARY_ALT_LABEL,
 	mockProfile,
 	setupModelConfigMock,
 	ensureMockReady,
@@ -26,12 +24,10 @@ import {
  * dashboard 的 loadDashboard 拖在飞行、触发 force-dedup 返回陈旧快照。合成 status 的 model/provider
  * 取自当前 mock primary。
  *
- * 保真度边界（明确告知）：AgentCard 的 modelLabel 由"合成 status（取自 mock primary）"驱动，因此它
- * 验证的是"UI 把已配主模型渲染进卡片"这条 UI 管线，**不**验证"plugin 真的把 model.set 持久化、
- * status 真的反映新模型"——后者属 plugin 侧，由 plugin 单测覆盖（E2E 不打真实 plugin 是为了不破坏
- * 测试 claw 不可恢复的真实 key）。本套件里"非自指"的外层断言是橙条引导 + dashboard store 派生字段
- * （§7.4 后仪表盘凭据/有效性判定只吃 coclaw.model.list 出参的凭据信号，已不再依赖 providerAuth.list
- * 与 catalog；catalog/view:all 仅供 agent 卡片贴标签，与 status 一样不参与橙条判定）。
+ * 非自指外层断言：本套件验证的"外层一致性"= 橙条引导 + dashboard store 派生字段（§7.4 后仪表盘
+ * 凭据/有效性判定只吃 coclaw.model.list 出参的凭据信号，不再依赖 providerAuth.list 与 catalog）。
+ * 注：/claws 已不再拉全量目录（§7.4）→ AgentCard 模型名徽章不再渲染，故本套件不再断言 modelLabel；
+ * `status` 仍合成（供 instance.model/provider，且规避真实 status RPC 受 manifest-cache 卡 ~10s）。
  *
  * 标签：均属"导航/设置/交互"，按 e2e-test skill 标签表归 @ui。
  */
@@ -70,7 +66,7 @@ async function spaGo(page, path) {
 // ================================================================
 // S1：首次接入主路径
 // ================================================================
-test('模型配置 S1：首次接入——橙条引导→配 key→选主模型→橙条消失+AgentCard 显示模型 @ui', async ({ page }) => {
+test('模型配置 S1：首次接入——橙条引导→配 key→选主模型→橙条消失 @ui', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
 	// 起始：零 provider、无主模型 → ManageClaws 应显示"未配 API key"橙条
@@ -126,11 +122,9 @@ test('模型配置 S1：首次接入——橙条引导→配 key→选主模型�
 	// 返回 ManageClaws（SPA，连接存活）：外层 UI 一致性追上
 	await spaGo(page, '/claws');
 	await waitDashReady(page, clawId);
-	// 橙条消失（橙条由 providerAuth.list + model.list + catalog 驱动，与 status 无关 → 非自指断言）
+	// 橙条消失（橙条只吃 model.list 凭据信号，与 catalog/status 解耦 → 非自指断言）
 	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
-	// AgentCard 显示新 modelLabel
-	await expect(page.locator(`[data-testid="claw-${clawId}"]`).getByText(GROQ_PRIMARY_LABEL).first())
-		.toBeVisible({ timeout: 30_000 });
+	// 注：/claws 不再拉全量目录（§7.4），AgentCard 模型名徽章已不显示——故此处不再断言 modelLabel
 });
 
 // ================================================================
@@ -197,7 +191,7 @@ test('模型配置 S2：撤销主模型载体 provider——强提示分支→�
 // ================================================================
 // S3：切换主模型（选完即存、无二次确认、外层即时反映）
 // ================================================================
-test('模型配置 S3：切换主模型——无二次确认→toast→子页与外层 AgentCard 即时更新 @ui', async ({ page }) => {
+test('模型配置 S3：切换主模型——无二次确认→toast→子页即时更新 @ui', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
 	await setupModelConfigMock(page, {
@@ -237,13 +231,11 @@ test('模型配置 S3：切换主模型——无二次确认→toast→子页与
 	// 锁住写回调的强刷新路径（不依赖随后 /claws 挂载的 loadData 救活断言）
 	await waitDashboardSettled(page, clawId, { primaryModel: GROQ_PRIMARY_ALT, primaryEffective: true });
 
-	// 外层（SPA 返回，连接存活）：主模型仍有效 → 橙条保持不出现（非自指：由 model.list+catalog 驱动）
+	// 外层（SPA 返回，连接存活）：主模型仍有效 → 橙条保持不出现（非自指：只吃 model.list 凭据信号）
 	await spaGo(page, '/claws');
 	await waitDashReady(page, clawId);
 	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
-	// AgentCard 反映新模型（注：modelLabel 由合成 status 驱动，见文件头"保真度边界"）
-	await expect(page.locator(`[data-testid="claw-${clawId}"]`).getByText(GROQ_PRIMARY_ALT_LABEL).first())
-		.toBeVisible({ timeout: 30_000 });
+	// 注：/claws 不再拉全量目录（§7.4），AgentCard 模型名徽章已不显示——故此处不再断言 modelLabel
 });
 
 // ================================================================
@@ -328,14 +320,14 @@ test('模型配置 S4b：桌面返回——冷启 deep link（全新页签·无�
 });
 
 // ================================================================
-// S5：旧插件兼容（feature-detect 压制）——线上误报根治的核心安全属性
+// S5：旧插件不再特判压制（feature-detect-suppress 已移除，§7.4）
 // ================================================================
-test('模型配置 S5：旧插件（出参无凭据信号）→ 不误报 noKey/invalid 橙条（§7.4 feature-detect）@ui', async ({ page }) => {
+test('模型配置 S5：旧插件（出参无凭据信号）→ 据"无凭据"显示 noKey 橙条（不再压制）@ui', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
-	// 旧插件场景：legacy=true → coclaw.model.list 出参不带凭据信号。
-	// 起始零 provider + 已设主模型：旧 UI 会据"账本为空"误报 noKey（线上实锤 bug）；
-	// 新 UI 据 feature-detect 判定凭据信号未知 → 不渲染 noKey/invalid（primary 已设故也不报 noPrimary）。
+	// 旧插件场景：legacy=true → coclaw.model.list 出参不带凭据信号字段。
+	// feature-detect-suppress 已移除：旧插件给不出信号 → store 落 hasUsableCredential=false →
+	// 该弹 noKey 就弹（升级窗口极窄，对小白主动引导是产品价值，宁可短暂提示也不沉默）。
 	await setupModelConfigMock(page, { profiles: [], primary: GROQ_PRIMARY, catalog: MOCK_CATALOG, legacy: true });
 	await login(page);
 	await ensureMockReady(page);
@@ -343,9 +335,11 @@ test('模型配置 S5：旧插件（出参无凭据信号）→ 不误报 noKey/
 	await gotoClawsCold(page);
 	const clawId = await getOnlineClawId(page);
 	await waitDashReady(page, clawId);
-	// dashboard 拉取完成（loading=false）后再断言"无橙条"，避免抢在加载中误判
-	await waitDashboardSettled(page, clawId, { primaryModel: GROQ_PRIMARY });
+	// dashboard 拉取完成（loading=false）后再断言橙条，避免抢在加载中误判
+	await waitDashboardSettled(page, clawId, { hasAny: false, primaryModel: GROQ_PRIMARY });
 
-	// 关键安全属性：旧插件下不出现任何引导橙条（既不误报 noKey 也不误报 invalid）
-	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
+	// 不再压制：旧插件 + 无凭据 → 显示 noKey 引导橙条
+	const bar = page.getByTestId(`guidance-${clawId}`);
+	await expect(bar).toBeVisible({ timeout: 30_000 });
+	await expect(bar).toContainText(await tr(page, 'modelConfig.guidance.noKeyWarning'));
 });

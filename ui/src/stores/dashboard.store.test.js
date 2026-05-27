@@ -361,7 +361,8 @@ describe('dashboard store', () => {
 		expect(agent.totalTokens).toBe(800);
 		expect(agent.activeSessions).toBe(2);
 		expect(agent.lastActivity).toBe(new Date('2026-03-21T08:00:00Z').toISOString());
-		expect(agent.modelTags.length).toBeGreaterThan(0);
+		// 仪表盘不再拉全量目录（§7.4）→ catalog 空 → 卡片模型名徽章不再生成
+		expect(agent.modelTags).toEqual([]);
 		expect(agent.capabilities.length).toBeGreaterThan(0);
 		// web_search 匹配能力
 		expect(agent.capabilities.some(c => c.id === 'web_search')).toBe(true);
@@ -601,11 +602,11 @@ describe('dashboard store', () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
 
-		// dashboard 直接发起的 7 种方法（sessions.list 已下放给 sessionsStore，单独验证；
-		// coclaw.providerAuth.list 不再由仪表盘发起——凭据信号改吃 coclaw.model.list 出参，§7.4）
+		// dashboard 直接发起的 6 种方法（sessions.list 已下放给 sessionsStore，单独验证；
+		// coclaw.providerAuth.list 不再由仪表盘发起——凭据信号改吃 coclaw.model.list 出参，§7.4；
+		// models.list view:'all' 也不再由仪表盘发起——不查全量目录，§7.4）
 		const expectedMethods = [
 			'status',
-			'models.list',
 			'usage.cost',
 			'tts.status',
 			'channels.status',
@@ -623,21 +624,20 @@ describe('dashboard store', () => {
 			}
 		}
 
-		// dashboard 直接发的总 call 数精确等于 7（6 + tools.catalog 各 agent 一次，本例 1 个 agent）
+		// dashboard 直接发的总 call 数精确等于 6（5 + tools.catalog 各 agent 一次，本例 1 个 agent）
 		const dashCalls = dashConn.request.mock.calls.filter(([m]) => expectedMethods.includes(m));
-		expect(dashCalls).toHaveLength(7);
+		expect(dashCalls).toHaveLength(6);
 
 		// 仪表盘不再发 coclaw.providerAuth.list（凭据信号来自 coclaw.model.list）
 		expect(dashConn.request.mock.calls.filter(([m]) => m === 'coclaw.providerAuth.list')).toHaveLength(0);
+		// 仪表盘不再发 models.list（不查全量目录，§7.4）
+		expect(dashConn.request.mock.calls.filter(([m]) => m === 'models.list')).toHaveLength(0);
 
 		// 关键参数也同时校验（确保不是空 params 而 options 偷跑）
 		const usageCostCall = dashConn.request.mock.calls.find(([m]) => m === 'usage.cost');
 		expect(usageCostCall[1]).toEqual({ mode: 'month' });
 		const channelsCall = dashConn.request.mock.calls.find(([m]) => m === 'channels.status');
 		expect(channelsCall[1]).toEqual({ probe: false });
-		// models.list 必须用 view:'all'——agent 卡片 findCurrentModel 贴标签依据（§7.4）
-		const modelsListCall = dashConn.request.mock.calls.find(([m]) => m === 'models.list');
-		expect(modelsListCall[1]).toEqual({ view: 'all' });
 
 		// sessions.list 由 sessionsStore.getRawSessionsForClaw 间接发起，
 		// timeout 是 sessions.store 自己的 60_000（不是 dashboard 的 180_000）
@@ -687,10 +687,10 @@ describe('dashboard store', () => {
 		}
 		expect(seenAgentIds).toEqual(new Set(['main', 'ops', 'research']));
 
-		// 基础 6 个 RPC 也仍然各带 timeout（sessions.list 已下放给 sessionsStore；
-		// coclaw.providerAuth.list 不再由仪表盘发起，§7.4）
+		// 基础 5 个 RPC 也仍然各带 timeout（sessions.list 已下放给 sessionsStore；
+		// coclaw.providerAuth.list 与 models.list 不再由仪表盘发起，§7.4）
 		for (const method of [
-			'status', 'models.list', 'usage.cost', 'tts.status', 'channels.status',
+			'status', 'usage.cost', 'tts.status', 'channels.status',
 			'coclaw.model.list',
 		]) {
 			const call = dashConn.request.mock.calls.find(([m]) => m === method);
@@ -1174,9 +1174,9 @@ describe('dashboard store', () => {
 
 	// =====================================================================
 	// model-config 派生字段（§7.4）：凭据信号改吃 coclaw.model.list 出参
-	//   hasUsableCredential ← hasAnyUsableCredential
-	//   primaryProviderUsable ← default.providerUsable（只看凭据、不查目录）
-	//   credSignalKnown ← 顶层 hasAnyUsableCredential 是否为 boolean（旧插件 feature-detect）
+	//   hasUsableCredential ← hasAnyUsableCredential===true（旧插件给不出 → false → 该弹 noKey 就弹）
+	//   primaryProviderUsable ← default.providerUsable===true（只看凭据、不查目录）
+	//   不再特判旧插件压制（feature-detect-suppress 已移除）
 	// =====================================================================
 	describe('model-config 派生字段', () => {
 		test('model.list 成功 + 新插件凭据信号齐：字段全 truthy', async () => {
@@ -1214,10 +1214,9 @@ describe('dashboard store', () => {
 			expect(entry.hasUsableCredential).toBe(true);
 			expect(entry.primaryModel).toBe('groq/llama-3.3-70b-versatile');
 			expect(entry.primaryProviderUsable).toBe(true);
-			expect(entry.credSignalKnown).toBe(true);
 		});
 
-		test('无可用凭据（hasAnyUsableCredential=false）→ hasUsableCredential=false / credSignalKnown=true', async () => {
+		test('无可用凭据（hasAnyUsableCredential=false）→ hasUsableCredential=false', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1245,7 +1244,6 @@ describe('dashboard store', () => {
 			expect(entry.hasUsableCredential).toBe(false);
 			expect(entry.primaryModel).toBeNull();
 			expect(entry.primaryProviderUsable).toBe(false);
-			expect(entry.credSignalKnown).toBe(true);
 		});
 
 		test('仪表盘不查目录：providerUsable=true 但 model 不在 catalog → primaryProviderUsable 仍 true（下架检测只在子页）', async () => {
@@ -1357,12 +1355,11 @@ describe('dashboard store', () => {
 			expect(entry.hasUsableCredential).toBe(true);
 			expect(entry.primaryModel).toBe('groq/m1');
 			expect(entry.primaryProviderUsable).toBe(true);
-			expect(entry.credSignalKnown).toBe(true);
 			expect(entry.modelConfigFetched).toBe(true);
 			expect(entry.error).toBeNull();
 		});
 
-		test('model.list 失败 → 字段整组默认（credSignalKnown=false / modelConfigFetched=false）', async () => {
+		test('model.list 失败 → 字段整组默认（modelConfigFetched=false）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1390,12 +1387,11 @@ describe('dashboard store', () => {
 			expect(entry.hasUsableCredential).toBe(false);
 			expect(entry.primaryModel).toBeNull();
 			expect(entry.primaryProviderUsable).toBe(false);
-			expect(entry.credSignalKnown).toBe(false);
 			expect(entry.modelConfigFetched).toBe(false);
 			expect(entry.error).toBeNull();
 		});
 
-		test('旧插件：model.list 成功但无 hasAnyUsableCredential 字段 → credSignalKnown=false（feature-detect），primary 仍解出', async () => {
+		test('旧插件：model.list 成功但无 hasAnyUsableCredential 字段 → 不再压制（hasUsable/providerUsable 当 false，该弹 noKey/invalid 就弹），primary 仍解出', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1421,8 +1417,8 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			// 凭据信号未知：credSignalKnown=false（外层据此压制 noKey/invalid），hasUsable/providerUsable 保守 false
-			expect(entry.credSignalKnown).toBe(false);
+			// 旧插件给不出凭据信号 → 当 false（不再压制）：hasUsable=false 驱动 noKey、
+			// providerUsable=false 驱动 invalid（primary 已设时）
 			expect(entry.hasUsableCredential).toBe(false);
 			expect(entry.primaryProviderUsable).toBe(false);
 			// primary 仍解出，供 noPrimary 判定 + 显示

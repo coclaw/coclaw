@@ -206,9 +206,11 @@ export default {
 			loadOk: { profiles: false, primary: false, catalog: false },
 			profiles: [],
 			primary: null,
-			// 主模型那家有无可用凭据（插件 default.providerUsable）；credSignalKnown=旧插件 feature-detect
+			// 主模型那家有无可用凭据（插件 default.providerUsable）
 			primaryProviderUsable: false,
-			credSignalKnown: false,
+			// 当前 primaryProviderUsable 是否来自一次成功的 model.list（即可信、可据此判失效）；
+			// 写后那次后台刷新拉不到新信号时翻 false，避免拿写入前的旧值误报"主模型失效"（§7.4）
+			credSignalFresh: false,
 			catalog: [],
 			removeOpen: false,
 			removeTarget: '',
@@ -259,18 +261,19 @@ export default {
 		 * 主模型显示状态（§7.4）：
 		 *   - 'unknown'  → 凭据 RPC（model.list）未成功，无法判断；不渲染主模型区警告/值
 		 *   - 'notSet'   → model.list 成功且 primary 为空：渲染未配置警告
-		 *   - 'effective'→ primary 非空且不满足 invalid（含旧插件、目录未拿到等保守路径，仅渲染当前 primary）
+		 *   - 'effective'→ primary 非空且不满足 invalid（写后刷新信号陈旧、目录未拿到等保守路径，仅渲染当前 primary）
 		 *   - 'invalid'  → primary 非空，凭据信号可用，但主模型那家无凭据 或 目录裸比对缺该模型
 		 *
 		 * 关键原则：
-		 *   - 旧插件（credSignalKnown=false）凭据信号未知 → 不报失效（宁可少提示）。
+		 *   - 不再特判旧插件：旧插件给不出 providerUsable → 当 false → 该报失效就报（不沉默）。
+		 *   - 写后刷新拉不到新信号（credSignalFresh=false）→ 不拿旧 providerUsable 判失效（§7.4 反误报）。
 		 *   - 凭据确定无效（providerUsable=false）即可判失效，不依赖目录。
 		 *   - 目录未拿到 → 保守不报"模型下架"，避免"我配好的怎么变失效了"误判。
 		 */
 		primaryState() {
 			if (!this.loadOk.primary) return 'unknown';
 			if (!this.primary) return 'notSet';
-			if (!this.credSignalKnown) return 'effective';
+			if (!this.credSignalFresh) return 'effective';
 			if (!this.primaryProviderUsable) return 'invalid';
 			if (!this.loadOk.catalog) return 'effective';
 			return this.primaryEffective ? 'effective' : 'invalid';
@@ -293,7 +296,7 @@ export default {
 				this.profiles = [];
 				this.primary = null;
 				this.primaryProviderUsable = false;
-				this.credSignalKnown = false;
+				this.credSignalFresh = false;
 				this.catalog = [];
 				this.loadOk = { profiles: false, primary: false, catalog: false };
 				this.loadAttempted = false;
@@ -331,11 +334,9 @@ export default {
 		__applyModelList(val) {
 			const pri = val?.default?.primary;
 			this.primary = (typeof pri === 'string' && pri) ? pri : null;
-			// 单一旗标：顶层 hasAnyUsableCredential 是 boolean 才视为新插件、凭据信号可用
-			this.credSignalKnown = typeof val?.hasAnyUsableCredential === 'boolean';
-			this.primaryProviderUsable = (val?.default && typeof val.default.providerUsable === 'boolean')
-				? val.default.providerUsable
-				: false;
+			this.primaryProviderUsable = val?.default?.providerUsable === true;
+			// 成功拿到出参即视信号新鲜（旧插件也算，其 providerUsable 缺省 false → 该报失效就报）
+			this.credSignalFresh = true;
 		},
 
 		async loadAll() {
@@ -404,9 +405,9 @@ export default {
 					this.loadOk.primary = true;
 				}
 				else {
-					// 写后刷新没拿到新凭据信号 → 标记信号未知，避免用旧 providerUsable 误报"主模型失效"
+					// 写后刷新没拿到新凭据信号 → 标记信号陈旧，避免用写入前的旧 providerUsable 误报"主模型失效"
 					// （§7.4 宁可少提示不可误报）。primary 显示值保留，下一次 loadAll / 重连恢复会刷新
-					this.credSignalKnown = false;
+					this.credSignalFresh = false;
 				}
 				if (profilesRes.status === 'rejected' || modelRes.status === 'rejected') {
 					console.warn('[ModelConfigPage] refreshAfterWrite partial failure',

@@ -19,7 +19,7 @@ import { evalStore } from './helpers.js';
 
 /**
  * 固定的 models.list view:"all" catalog（仅含 E2E 用到的 provider/model）。
- * 每条带 name，AgentCard 的 modelLabel = generateModelTags(model)[0].label = model.name。
+ * 供子页 picker / add-dialog / "模型下架"校验用（/claws 已不再拉全量目录，§7.4）。
  */
 export const MOCK_CATALOG = [
 	{ id: 'llama-3.3-70b-versatile', provider: 'groq', name: 'Llama 3.3 70B' },
@@ -55,7 +55,7 @@ export function mockProfile(provider) {
  * @param {import('@playwright/test').Page} page
  * @param {{ profiles?: object[], primary?: string|null, catalog?: object[], legacy?: boolean }} initialState
  *   - legacy: true → 模拟旧插件，coclaw.model.list 出参不带凭据信号字段
- *     （default.providerUsable / 顶层 hasAnyUsableCredential），用于验证 feature-detect 压制橙条
+ *     （default.providerUsable / 顶层 hasAnyUsableCredential），用于验证"不再特判旧插件、该弹就弹"
  */
 export function setupModelConfigMock(page, initialState) {
 	const initial = {
@@ -118,7 +118,7 @@ export function setupModelConfigMock(page, initialState) {
 					return Promise.resolve({});
 				}
 				if (method === 'coclaw.model.list') {
-					// 旧插件：出参不带凭据信号字段（feature-detect → 压制 noKey/invalid 橙条）
+					// 旧插件：出参不带凭据信号字段 → 前端当 false（不再特判压制，该弹 noKey/invalid 就弹）
 					if (st.legacy) {
 						return Promise.resolve({
 							default: { primary: st.primary ?? null },
@@ -155,8 +155,7 @@ export function setupModelConfigMock(page, initialState) {
 					return Promise.resolve({ models: st.catalog.slice() });
 				}
 				if (method === 'status') {
-					// 合成 status，model/provider = 当前 primary 拆分——模拟改主模型后 agent 实际生效的
-					// 模型，让外层 AgentCard 的 modelLabel 可断言。
+					// 合成 status，model/provider = 当前 primary 拆分，供 dashboard 的 instance.model/provider。
 					// 不透传真实 status：真实 status RPC 受 OpenClaw manifest-cache mismatch 影响每次卡 ~10s，
 					// 会把 dashboard 的 loadDashboard 拖在 in-flight，触发飞行去重返回陈旧快照（橙条不刷新）。
 					let provider = null;
