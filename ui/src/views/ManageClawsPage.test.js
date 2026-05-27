@@ -1087,8 +1087,9 @@ describe('rename', () => {
 // ---- T4：模型设置入口（齿轮）+ 首次引导橙条 + chat 不禁用不变量 ----
 
 /**
- * 构造一份带 model-config 派生字段的 dashboard。
- * @param {object} mc - { fetched, hasAny, primary, effective }
+ * 构造一份带 model-config 派生字段的 dashboard（§7.4 新字段）。
+ * @param {object} mc - { fetched, hasAny, primary, effective, credSignalKnown? }
+ *   credSignalKnown 不传默认 true（新插件）；旧插件场景显式传 false。
  */
 function dashWithModelConfig(mc, extra = {}) {
 	return {
@@ -1096,9 +1097,10 @@ function dashWithModelConfig(mc, extra = {}) {
 		agents: [],
 		loading: false,
 		modelConfigFetched: mc.fetched,
-		hasAnyProviderAuth: mc.hasAny,
+		hasUsableCredential: mc.hasAny,
 		primaryModel: mc.primary,
-		primaryEffective: mc.effective,
+		primaryProviderUsable: mc.effective,
+		credSignalKnown: mc.credSignalKnown !== undefined ? mc.credSignalKnown : true,
 		...extra,
 	};
 }
@@ -1218,6 +1220,36 @@ describe('首次引导橙条（优先级 + fetch gating）', () => {
 
 		await wrapper.find('[data-testid="guidance-go-1"]').trigger('click');
 		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');
+	});
+
+	// 旧插件 feature-detect：凭据信号未知（credSignalKnown=false）→ 压制 noKey/invalid，仅留 noPrimary
+	test('旧插件（credSignalKnown=false）+ 无凭据信号但 primary 已设 → 不显示橙条（压制 noKey/invalid）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: false, primary: 'groq/llama', effective: false, credSignalKnown: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(false);
+	});
+
+	test('旧插件（credSignalKnown=false）+ primary 为空 → 仍显示 noPrimary 橙条', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: false, primary: null, effective: false, credSignalKnown: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const bar = wrapper.find('[data-testid="guidance-1"]');
+		expect(bar.exists()).toBe(true);
+		expect(bar.text()).toContain('GuidanceNoPrimary');
+	});
+
+	test('旧插件（credSignalKnown=false）+ primary 已设 + effective=false → 不显示 invalid 橙条（压制）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: false, credSignalKnown: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(false);
 	});
 });
 

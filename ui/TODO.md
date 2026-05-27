@@ -652,6 +652,12 @@ X4 触及面比 X1 广，需要重新评估：
 - 修复方向：`refreshAfterWrite` 失败时给一个轻提示（如"列表可能未刷新，稍后重进"）或失败自动重试一次；二选一需带 trade-off 评估。
 - 用户已明确**本期不处理**，仅登记。
 
+### 附：refreshAfterWrite 缺 seq 守卫（预存，2026-05-27 deep-review 发现）
+
+- `ModelConfigPage.vue` 的 `refreshAfterWrite` 只用 `__unmounted` / `clawId` 守卫，没有 `loadAll` 那套 `__loadSeq` 计数守卫。两次针对同一 claw 的写操作（如快速连点加 provider）触发的并发 refresh 落地顺序若颠倒，靠后的旧响应会覆盖较新的 `__applyModelList` 结果。
+- 严重度：低。写操作是用户逐个对话框发起，实际并发概率很低；且下一次 `loadAll` / 重连恢复会自愈。
+- 与上面"写后刷新失败静默"同属 `refreshAfterWrite` 健壮性范畴；修复时可一并评估（统一加 seq 守卫 + 失败提示/重试）。本次凭据信号改造未引入该问题（原 `refreshAfterWrite` 直接写 `this.primary` 时已存在同类竞态）。
+
 
 ## NuxtUiDemoPage 的 "Back to Auth Prototype" 按钮文案已失效
 

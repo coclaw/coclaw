@@ -13,9 +13,10 @@ import { generateModelTags } from '../utils/model-tags.js';
  *   error: string|null,
  *   instance: DashboardInstance|null,
  *   agents: DashboardAgent[],
- *   hasAnyProviderAuth: boolean,
+ *   hasUsableCredential: boolean,
  *   primaryModel: string|null,
- *   primaryEffective: boolean,
+ *   primaryProviderUsable: boolean,
+ *   credSignalKnown: boolean,
  *   modelConfigFetched: boolean,
  * }} DashboardData
  *
@@ -122,25 +123,26 @@ function computeSessionStats(sessions) {
 }
 
 /**
- * 判定主模型当前是否有效：
+ * 判定主模型当前是否有效（设置子页用，§7.4）：
  *   - primary 必须是 `<provider>/<model>` 形态（含 `/`，端点不为空）
- *   - provider 必须在已绑 providers 列表里
- *   - model 必须在 catalog 该 provider 下的模型列表里
+ *   - providerUsable：该 provider 是否有可用凭据（插件 verdict，别名归一化在插件侧完成）
+ *   - model 必须在 catalog 该 provider 下（裸比对，保留"模型下架"检测）
  *
+ * 仪表盘不用本函数：仪表盘只看 `default.providerUsable`、不查目录（§7.4）。
  * catalog 输入形态：`models.list view:"all"` 返回的 `models` 数组（每条带 `id` + `provider`）。
  *
  * @param {string|null|undefined} primary - 主模型字符串
- * @param {string[]} providers - 已绑定的 provider id 列表
+ * @param {boolean} providerUsable - 插件给出的"主模型 provider 有无可用凭据"
  * @param {{ id: string, provider?: string }[]} catalog - models.list view:"all" 派生的目录
  * @returns {boolean}
  */
-export function computePrimaryEffective(primary, providers, catalog) {
+export function computePrimaryEffective(primary, providerUsable, catalog) {
 	if (!primary || typeof primary !== 'string') return false;
 	const idx = primary.indexOf('/');
 	if (idx <= 0 || idx === primary.length - 1) return false;
 	const provider = primary.slice(0, idx);
 	const model = primary.slice(idx + 1);
-	if (!Array.isArray(providers) || !providers.includes(provider)) return false;
+	if (!providerUsable) return false;
 	if (!Array.isArray(catalog)) return false;
 	return catalog.some(m => m && m.provider === provider && m.id === model);
 }
@@ -207,9 +209,10 @@ export const useDashboardStore = defineStore('dashboard', {
 					error: null,
 					instance: null,
 					agents: [],
-					hasAnyProviderAuth: false,
+					hasUsableCredential: false,
 					primaryModel: null,
-					primaryEffective: false,
+					primaryProviderUsable: false,
+					credSignalKnown: false,
 					modelConfigFetched: false,
 				};
 			}
@@ -234,7 +237,7 @@ export const useDashboardStore = defineStore('dashboard', {
 					const sessionsStore = useSessionsStore();
 
 					// 并行调用所有 RPC（allSettled 部分失败不影响整体）
-					// providerAuthResult / modelConfigResult 单条失败按默认值降级（见 design § 7.2），
+					// modelConfigResult 单条失败按默认值降级（见 design § 7.2 / § 7.4），
 					// 不上报为整体 error
 					const [
 						statusResult,
@@ -243,20 +246,18 @@ export const useDashboardStore = defineStore('dashboard', {
 						ttsResult,
 						channelsResult,
 						sessionRawResult,
-						providerAuthResult,
 						modelConfigResult,
 						...toolResults
 					] = await Promise.allSettled([
 						conn.request('status', {}, { timeout: 180_000 }),
-						// view:'all' 是 model-config 子页"主模型有效性"校验依据（设计 § 7.2）：
-						// 默认 view 仅含已认证 provider，会让"换 provider 后旧 primary 暂时不在 catalog"
-						// 误判为失效。统一拉全量也让后续 picker 不必重拉
+						// view:'all' 仅给 agent 卡片 findCurrentModel 贴标签用（§7.4）：
+						// 仪表盘判主模型"灵不灵"只看插件给的凭据信号、不再查目录，故 catalog
+						// 拉取失败不影响橙条显隐（橙条与 catalog 解耦）
 						conn.request('models.list', { view: 'all' }, { timeout: 180_000 }),
 						conn.request('usage.cost', { mode: 'month' }, { timeout: 180_000 }),
 						conn.request('tts.status', {}, { timeout: 180_000 }),
 						conn.request('channels.status', { probe: false }, { timeout: 180_000 }),
 						sessionsStore.getRawSessionsForClaw(id, { force }),
-						conn.request('coclaw.providerAuth.list', {}, { timeout: 180_000 }),
 						conn.request('coclaw.model.list', {}, { timeout: 180_000 }),
 						...agentList.map(agent =>
 							conn.request('tools.catalog', { agentId: agent.id }, { timeout: 180_000 })
@@ -273,34 +274,34 @@ export const useDashboardStore = defineStore('dashboard', {
 					const sessionRawList = sessionRawResult.status === 'fulfilled' && Array.isArray(sessionRawResult.value)
 						? sessionRawResult.value
 						: [];
-					// model-config 三件套：任一 RPC 失败整组走默认值 false/null/false（"未知态"），
-					// 外层据此可避免在数据不全时误报橙条引导（设计 § 7.2 / T1 spec）
-					const providerAuthOk = providerAuthResult.status === 'fulfilled';
+					// 凭据/有效性判定改吃插件 coclaw.model.list 出参的凭据信号（§7.4）：
+					//  - hasUsableCredential ← hasAnyUsableCredential（账本 + 内联，插件算好）
+					//  - primaryProviderUsable ← default.providerUsable（只看凭据，不查目录）
+					//  - credSignalKnown ← 出参有无顶层 hasAnyUsableCredential（旧插件给不出 → 压制 noKey/invalid）
+					// 橙条显隐与 catalog 解耦：catalog（models.list）失败不再压掉本该显示的提示
 					const modelConfigOk = modelConfigResult.status === 'fulfilled';
-					// primaryEffective 依赖 models.list 全量 catalog：catalog 拉不到时无法判定有效性，
-					// 此时不能视为"已成功获取"，否则空 catalog 会把合法 primary 误判失效，外层误报橙条
-					const modelsOk = modelsResult.status === 'fulfilled';
-					if (!providerAuthOk || !modelConfigOk) {
-						// 任一 RPC 失败 → "未知态"：保持默认值且不置 fetched，外层据此不渲染橙条引导
-						entry.hasAnyProviderAuth = false;
+					if (!modelConfigOk) {
+						// 凭据 RPC 失败 → "未知态"：保持默认值且不置 fetched，外层据此不渲染橙条引导
+						entry.hasUsableCredential = false;
 						entry.primaryModel = null;
-						entry.primaryEffective = false;
+						entry.primaryProviderUsable = false;
+						entry.credSignalKnown = false;
 						entry.modelConfigFetched = false;
 					}
 					else {
-						const profiles = Array.isArray(providerAuthResult.value?.profiles) ? providerAuthResult.value.profiles : [];
-						const boundProviders = profiles
-							.map(p => (p && typeof p.provider === 'string') ? p.provider : null)
-							.filter(v => !!v);
-						const primaryModel = (typeof modelConfigResult.value?.default?.primary === 'string' && modelConfigResult.value.default.primary)
-							? modelConfigResult.value.default.primary
+						const mc = modelConfigResult.value;
+						const primaryModel = (typeof mc?.default?.primary === 'string' && mc.default.primary)
+							? mc.default.primary
 							: null;
-						const modelCatalogAll = Array.isArray(models?.models) ? models.models : [];
-						entry.hasAnyProviderAuth = profiles.length > 0;
+						// 单一旗标：顶层 hasAnyUsableCredential 是 boolean 才视为新插件、凭据信号可用
+						const credSignalKnown = typeof mc?.hasAnyUsableCredential === 'boolean';
 						entry.primaryModel = primaryModel;
-						entry.primaryEffective = computePrimaryEffective(primaryModel, boundProviders, modelCatalogAll);
-						// 仅当 catalog 也拿到才算"数据齐"：否则 primaryEffective 不可信，外层据此不渲染橙条
-						entry.modelConfigFetched = modelsOk;
+						entry.credSignalKnown = credSignalKnown;
+						entry.hasUsableCredential = credSignalKnown ? mc.hasAnyUsableCredential : false;
+						entry.primaryProviderUsable = (mc?.default && typeof mc.default.providerUsable === 'boolean')
+							? mc.default.providerUsable
+							: false;
+						entry.modelConfigFetched = true;
 					}
 
 					// 构建实例总览

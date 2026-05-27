@@ -53,13 +53,16 @@ export function mockProfile(provider) {
  * addInitScript 对该 page 后续所有页面加载生效。
  *
  * @param {import('@playwright/test').Page} page
- * @param {{ profiles?: object[], primary?: string|null, catalog?: object[] }} initialState
+ * @param {{ profiles?: object[], primary?: string|null, catalog?: object[], legacy?: boolean }} initialState
+ *   - legacy: true → 模拟旧插件，coclaw.model.list 出参不带凭据信号字段
+ *     （default.providerUsable / 顶层 hasAnyUsableCredential），用于验证 feature-detect 压制橙条
  */
 export function setupModelConfigMock(page, initialState) {
 	const initial = {
 		profiles: Array.isArray(initialState?.profiles) ? initialState.profiles : [],
 		primary: initialState?.primary ?? null,
 		catalog: Array.isArray(initialState?.catalog) ? initialState.catalog : MOCK_CATALOG,
+		legacy: initialState?.legacy === true,
 	};
 	return page.addInitScript((init) => {
 		const KEY = '__mcMockState';
@@ -115,9 +118,27 @@ export function setupModelConfigMock(page, initialState) {
 					return Promise.resolve({});
 				}
 				if (method === 'coclaw.model.list') {
+					// 旧插件：出参不带凭据信号字段（feature-detect → 压制 noKey/invalid 橙条）
+					if (st.legacy) {
+						return Promise.resolve({
+							default: { primary: st.primary ?? null },
+							agents: { main: { primary: null } },
+						});
+					}
+					// 镜像插件简化契约（§7.4）：凭据信号回传在 model.list 出参里。
+					// E2E mock 只管自管账本（profiles），不模拟内联 key —— 故按"账本是否含该 provider"判定。
+					const providerOf = (p) => {
+						if (typeof p !== 'string') return null;
+						const i = p.indexOf('/');
+						return (i > 0 && i < p.length - 1) ? p.slice(0, i) : null;
+					};
+					const provs = st.profiles.map((p) => p && p.provider).filter(Boolean);
+					const primaryProvider = providerOf(st.primary);
+					const providerUsable = !!primaryProvider && provs.indexOf(primaryProvider) !== -1;
 					return Promise.resolve({
-						default: { primary: st.primary ?? null },
-						agents: { main: { primary: null } },
+						default: { primary: st.primary ?? null, providerUsable },
+						agents: { main: { primary: null, providerUsable: false } },
+						hasAnyUsableCredential: provs.length > 0,
 					});
 				}
 				if (method === 'coclaw.model.set') {
@@ -221,13 +242,14 @@ export async function waitDashboardSettled(page, clawId, expect_ = {}, timeout =
 		expect(d, 'dashboard entry should exist').toBeTruthy();
 		expect(d.loading, 'dashboard should not be loading').toBeFalsy();
 		if (expect_.hasAny !== undefined) {
-			expect(d.hasAnyProviderAuth).toBe(expect_.hasAny);
+			expect(d.hasUsableCredential).toBe(expect_.hasAny);
 		}
 		if (expect_.primaryModel !== undefined) {
 			expect(d.primaryModel).toBe(expect_.primaryModel);
 		}
 		if (expect_.primaryEffective !== undefined) {
-			expect(d.primaryEffective).toBe(expect_.primaryEffective);
+			// 仪表盘的"主模型那家有无凭据"信号（§7.4：只看凭据、不查目录）
+			expect(d.primaryProviderUsable).toBe(expect_.primaryEffective);
 		}
 	}).toPass({ timeout });
 }

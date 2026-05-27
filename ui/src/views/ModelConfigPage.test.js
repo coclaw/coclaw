@@ -88,14 +88,14 @@ vi.mock('../stores/dashboard.store.js', () => ({
 		getDashboard: mockGetDashboard,
 		loadDashboard: mockLoadDashboard,
 	}),
-	// 真实导出：供页面 import 的 computePrimaryEffective 不被破坏
-	computePrimaryEffective: (primary, providers, catalog) => {
+	// 真实导出：供页面 import 的 computePrimaryEffective 不被破坏（新签名 §7.4）
+	computePrimaryEffective: (primary, providerUsable, catalog) => {
 		if (!primary || typeof primary !== 'string') return false;
 		const idx = primary.indexOf('/');
 		if (idx <= 0 || idx === primary.length - 1) return false;
 		const provider = primary.slice(0, idx);
 		const model = primary.slice(idx + 1);
-		if (!Array.isArray(providers) || !providers.includes(provider)) return false;
+		if (!providerUsable) return false;
 		if (!Array.isArray(catalog)) return false;
 		return catalog.some(m => m && m.provider === provider && m.id === model);
 	},
@@ -147,7 +147,26 @@ function makeWrapper({ route, online = true, dcReady = true } = {}) {
 }
 
 function asProfiles(arr) { return { profiles: arr }; }
-function asModelList(primary) { return { default: { primary } }; }
+/**
+ * 构造 coclaw.model.list 出参（§7.4 新契约）。
+ * 默认模拟新插件：带顶层 hasAnyUsableCredential（feature-detect 旗标）、default.providerUsable。
+ * @param {string|null} primary
+ * @param {{ providerUsable?: boolean, hasAny?: boolean, legacy?: boolean }} [opts]
+ *   - providerUsable: 主模型那家是否有可用凭据（不传时按 primary 是否存在推断）
+ *   - hasAny: 顶层 hasAnyUsableCredential 值（不传时按 primary 是否存在推断）
+ *   - legacy: true → 模拟旧插件，出参不含 hasAnyUsableCredential（credSignalKnown=false）
+ */
+function asModelList(primary, opts = {}) {
+	const providerUsable = opts.providerUsable !== undefined ? opts.providerUsable : !!primary;
+	const out = {
+		default: { primary, providerUsable },
+		agents: { main: { primary: null, providerUsable: false } },
+	};
+	if (!opts.legacy) {
+		out.hasAnyUsableCredential = opts.hasAny !== undefined ? opts.hasAny : !!primary;
+	}
+	return out;
+}
 function asCatalog(arr) { return { models: arr }; }
 
 beforeEach(() => {
@@ -307,10 +326,11 @@ describe('ModelConfigPage — initial load races', () => {
 		w.unmount();
 	});
 
-	test('primary set but provider not bound: invalid warning', async () => {
+	test('primary set but provider has no usable credential (providerUsable=false): invalid warning', async () => {
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.list') return asProfiles([]);
-			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4');
+			// 插件判定主模型那家无凭据 → providerUsable=false，子页据此报失效（不依赖目录）
+			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4', { providerUsable: false, hasAny: false });
 			if (method === 'models.list') return asCatalog([{ id: 'gpt-4', provider: 'openai' }]);
 			return {};
 		});
@@ -318,6 +338,40 @@ describe('ModelConfigPage — initial load races', () => {
 		await flushPromises();
 		expect(w.vm.primaryState).toBe('invalid');
 		expect(w.text()).toContain('modelConfig.primary.invalidWarning');
+		w.unmount();
+	});
+
+	test('primary set, providerUsable=true but model not in catalog (模型下架): invalid warning', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'gsk_…X', profileId: 'groq:default' },
+			]);
+			// 主模型那家有凭据，但目录里没这个 model（上游下架）→ 子页保留下架检测，报失效
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-deprecated', { providerUsable: true });
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primaryState).toBe('invalid');
+		expect(w.text()).toContain('modelConfig.primary.invalidWarning');
+		w.unmount();
+	});
+
+	test('旧插件（出参无 hasAnyUsableCredential）：不报 invalid，保守视为 effective（feature-detect 压制）', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([]);
+			// 旧插件：legacy=true → 出参不带 hasAnyUsableCredential，且即便 providerUsable=false 也不报失效
+			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4', { legacy: true, providerUsable: false });
+			if (method === 'models.list') return asCatalog([{ id: 'gpt-4', provider: 'openai' }]);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.credSignalKnown).toBe(false);
+		expect(w.vm.primaryState).toBe('effective');
+		expect(w.find('[data-testid="primary-warning"]').exists()).toBe(false);
+		expect(w.find('[data-testid="primary-current"]').exists()).toBe(true);
 		w.unmount();
 	});
 
@@ -1018,6 +1072,37 @@ describe('ModelConfigPage — remove flow', () => {
 		// 撤销成功不弹 success notify；error notify 也不触发
 		expect(mockNotify.success).not.toHaveBeenCalled();
 		expect(mockNotify.error).not.toHaveBeenCalled();
+		w.unmount();
+	});
+
+	test('refreshAfterWrite: model.list 拒绝时不残留旧 providerUsable 误报 invalid（§7.4 宁可少提示）', async () => {
+		// 初始：主模型那家无凭据（providerUsable=false）→ 显示失效
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([]);
+			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4', { providerUsable: false, hasAny: false });
+			if (method === 'models.list') return asCatalog([{ id: 'gpt-4', provider: 'openai' }]);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primaryState).toBe('invalid');
+
+		// 模拟"配好 key 的写操作成功 + 写后 refresh 的 model.list 失败"：
+		// providerAuth.list 成功刷新（profiles 已变），但 model.list 拒绝（新凭据信号没拿到）
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'openai', type: 'api_key', keyPreview: 'sk-o…Y', profileId: 'openai:default' },
+			]);
+			if (method === 'coclaw.model.list') throw new Error('model boom');
+			return {};
+		});
+		await w.vm.refreshAfterWrite();
+		await flushPromises();
+		// 关键：不得用旧 providerUsable=false 误报失效；凭据信号未知 → 保守视为 effective
+		expect(w.vm.credSignalKnown).toBe(false);
+		// 收紧断言到 'effective'（而非仅 not 'invalid'）：堵住"退化成 unknown 也算过"的假绿
+		expect(w.vm.primaryState).toBe('effective');
+		expect(w.find('[data-testid="primary-warning"]').exists()).toBe(false);
 		w.unmount();
 	});
 

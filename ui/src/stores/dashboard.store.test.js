@@ -601,14 +601,14 @@ describe('dashboard store', () => {
 		const store = useDashboardStore();
 		await store.loadDashboard('bot-1');
 
-		// dashboard 直接发起的 8 种方法（sessions.list 已下放给 sessionsStore，单独验证）
+		// dashboard 直接发起的 7 种方法（sessions.list 已下放给 sessionsStore，单独验证；
+		// coclaw.providerAuth.list 不再由仪表盘发起——凭据信号改吃 coclaw.model.list 出参，§7.4）
 		const expectedMethods = [
 			'status',
 			'models.list',
 			'usage.cost',
 			'tts.status',
 			'channels.status',
-			'coclaw.providerAuth.list',
 			'coclaw.model.list',
 			'tools.catalog',
 		];
@@ -623,16 +623,19 @@ describe('dashboard store', () => {
 			}
 		}
 
-		// dashboard 直接发的总 call 数精确等于 8（7 + tools.catalog × 1 agent）
+		// dashboard 直接发的总 call 数精确等于 7（6 + tools.catalog 各 agent 一次，本例 1 个 agent）
 		const dashCalls = dashConn.request.mock.calls.filter(([m]) => expectedMethods.includes(m));
-		expect(dashCalls).toHaveLength(8);
+		expect(dashCalls).toHaveLength(7);
+
+		// 仪表盘不再发 coclaw.providerAuth.list（凭据信号来自 coclaw.model.list）
+		expect(dashConn.request.mock.calls.filter(([m]) => m === 'coclaw.providerAuth.list')).toHaveLength(0);
 
 		// 关键参数也同时校验（确保不是空 params 而 options 偷跑）
 		const usageCostCall = dashConn.request.mock.calls.find(([m]) => m === 'usage.cost');
 		expect(usageCostCall[1]).toEqual({ mode: 'month' });
 		const channelsCall = dashConn.request.mock.calls.find(([m]) => m === 'channels.status');
 		expect(channelsCall[1]).toEqual({ probe: false });
-		// models.list 必须用 view:'all'——model-config 失效校验依据（设计 § 7.2）
+		// models.list 必须用 view:'all'——agent 卡片 findCurrentModel 贴标签依据（§7.4）
 		const modelsListCall = dashConn.request.mock.calls.find(([m]) => m === 'models.list');
 		expect(modelsListCall[1]).toEqual({ view: 'all' });
 
@@ -684,10 +687,11 @@ describe('dashboard store', () => {
 		}
 		expect(seenAgentIds).toEqual(new Set(['main', 'ops', 'research']));
 
-		// 基础 7 个 RPC 也仍然各带 timeout（sessions.list 已下放给 sessionsStore）
+		// 基础 6 个 RPC 也仍然各带 timeout（sessions.list 已下放给 sessionsStore；
+		// coclaw.providerAuth.list 不再由仪表盘发起，§7.4）
 		for (const method of [
 			'status', 'models.list', 'usage.cost', 'tts.status', 'channels.status',
-			'coclaw.providerAuth.list', 'coclaw.model.list',
+			'coclaw.model.list',
 		]) {
 			const call = dashConn.request.mock.calls.find(([m]) => m === method);
 			expect(call).toBeDefined();
@@ -1133,7 +1137,7 @@ describe('dashboard store', () => {
 						return Promise.resolve({ profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] });
 					}
 					if (method === 'coclaw.model.list') {
-						return Promise.resolve({ default: { primary }, agents: {} });
+						return Promise.resolve({ default: { primary, providerUsable: !!primary }, agents: {}, hasAnyUsableCredential: true });
 					}
 					if (method === 'sessions.list') return Promise.resolve({ sessions: [] });
 					if (method === 'tools.catalog') return Promise.resolve({ groups: [] });
@@ -1161,7 +1165,7 @@ describe('dashboard store', () => {
 			const entry = store.byClaw['bot-1'];
 			// 终态必须是选主后的最新数据，而非 1st 飞行的陈旧 null 快照
 			expect(entry.primaryModel).toBe('groq/llama-3.3-70b-versatile');
-			expect(entry.primaryEffective).toBe(true);
+			expect(entry.primaryProviderUsable).toBe(true);
 			// 2nd force 确实启动了独立重载：coclaw.model.list 被调两次（不是复用一次）
 			expect(dashConn.request.mock.calls.filter(([m]) => m === 'coclaw.model.list')).toHaveLength(2);
 			expect(_loadingByClaw.has('bot-1')).toBe(false);
@@ -1169,10 +1173,13 @@ describe('dashboard store', () => {
 	});
 
 	// =====================================================================
-	// model-config 派生字段：hasAnyProviderAuth / primaryModel / primaryEffective
+	// model-config 派生字段（§7.4）：凭据信号改吃 coclaw.model.list 出参
+	//   hasUsableCredential ← hasAnyUsableCredential
+	//   primaryProviderUsable ← default.providerUsable（只看凭据、不查目录）
+	//   credSignalKnown ← 顶层 hasAnyUsableCredential 是否为 boolean（旧插件 feature-detect）
 	// =====================================================================
 	describe('model-config 派生字段', () => {
-		test('两条 RPC 都成功 + primary 在 catalog 内：三字段全 truthy', async () => {
+		test('model.list 成功 + 新插件凭据信号齐：字段全 truthy', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1192,13 +1199,11 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': {
-					profiles: [
-						{ profileId: 'groq:default', provider: 'groq', type: 'api_key', keyPreview: 'gsk_…ABCD' },
-						{ profileId: 'anthropic:default', provider: 'anthropic', type: 'api_key', keyPreview: 'sk-an…XYZW' },
-					],
+				'coclaw.model.list': {
+					default: { primary: 'groq/llama-3.3-70b-versatile', providerUsable: true },
+					agents: {},
+					hasAnyUsableCredential: true,
 				},
-				'coclaw.model.list': { default: { primary: 'groq/llama-3.3-70b-versatile' }, agents: {} },
 			});
 			setConn('bot-1', dashConn);
 
@@ -1206,12 +1211,13 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			expect(entry.hasAnyProviderAuth).toBe(true);
+			expect(entry.hasUsableCredential).toBe(true);
 			expect(entry.primaryModel).toBe('groq/llama-3.3-70b-versatile');
-			expect(entry.primaryEffective).toBe(true);
+			expect(entry.primaryProviderUsable).toBe(true);
+			expect(entry.credSignalKnown).toBe(true);
 		});
 
-		test('凭据为空 → hasAnyProviderAuth=false / primaryEffective=false', async () => {
+		test('无可用凭据（hasAnyUsableCredential=false）→ hasUsableCredential=false / credSignalKnown=true', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1228,8 +1234,7 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': { profiles: [] },
-				'coclaw.model.list': { default: { primary: null }, agents: {} },
+				'coclaw.model.list': { default: { primary: null, providerUsable: false }, agents: {}, hasAnyUsableCredential: false },
 			});
 			setConn('bot-1', dashConn);
 
@@ -1237,12 +1242,13 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			expect(entry.hasAnyProviderAuth).toBe(false);
+			expect(entry.hasUsableCredential).toBe(false);
 			expect(entry.primaryModel).toBeNull();
-			expect(entry.primaryEffective).toBe(false);
+			expect(entry.primaryProviderUsable).toBe(false);
+			expect(entry.credSignalKnown).toBe(true);
 		});
 
-		test('primary 引用合法 provider 但 model 不在 catalog → primaryEffective=false（primaryModel 保留）', async () => {
+		test('仪表盘不查目录：providerUsable=true 但 model 不在 catalog → primaryProviderUsable 仍 true（下架检测只在子页）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1253,6 +1259,7 @@ describe('dashboard store', () => {
 
 			const dashConn = mockConn({
 				'status': {},
+				// catalog 里没有 llama-deprecated，但仪表盘不查目录，只看插件凭据信号
 				'models.list': { models: [
 					{ id: 'llama-3.1-8b-instant', provider: 'groq' },
 				] },
@@ -1261,11 +1268,11 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': {
-					profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }],
+				'coclaw.model.list': {
+					default: { primary: 'groq/llama-deprecated', providerUsable: true },
+					agents: {},
+					hasAnyUsableCredential: true,
 				},
-				// primary 指向 groq，但 model id 在 catalog 里不存在
-				'coclaw.model.list': { default: { primary: 'groq/llama-deprecated' }, agents: {} },
 			});
 			setConn('bot-1', dashConn);
 
@@ -1273,12 +1280,13 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			expect(entry.hasAnyProviderAuth).toBe(true);
+			expect(entry.hasUsableCredential).toBe(true);
 			expect(entry.primaryModel).toBe('groq/llama-deprecated');
-			expect(entry.primaryEffective).toBe(false);
+			// 关键：模型下架不影响仪表盘判定（与目录解耦，下架检测留给子页）
+			expect(entry.primaryProviderUsable).toBe(true);
 		});
 
-		test('primary 解析为 provider 不在凭据内 → primaryEffective=false（但 primaryModel 保留）', async () => {
+		test('主模型那家无凭据（providerUsable=false）→ primaryProviderUsable=false（primaryModel 保留）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1297,10 +1305,12 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': {
-					profiles: [{ profileId: 'anthropic:default', provider: 'anthropic', type: 'api_key' }],
+				// 有别家凭据（hasAny=true），但主模型 groq 那家没凭据（providerUsable=false）
+				'coclaw.model.list': {
+					default: { primary: 'groq/llama-3.3-70b-versatile', providerUsable: false },
+					agents: {},
+					hasAnyUsableCredential: true,
 				},
-				'coclaw.model.list': { default: { primary: 'groq/llama-3.3-70b-versatile' }, agents: {} },
 			});
 			setConn('bot-1', dashConn);
 
@@ -1308,12 +1318,12 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			expect(entry.hasAnyProviderAuth).toBe(true);
+			expect(entry.hasUsableCredential).toBe(true);
 			expect(entry.primaryModel).toBe('groq/llama-3.3-70b-versatile');
-			expect(entry.primaryEffective).toBe(false);
+			expect(entry.primaryProviderUsable).toBe(false);
 		});
 
-		test('providerAuth.list 失败 → 三字段整组默认 false/null/false（未知态，不让外层引导误报）', async () => {
+		test('providerAuth.list 失败也不影响：仪表盘只看 model.list（不再依赖自管账本）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1330,10 +1340,13 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
+				// 即便 providerAuth.list 失败，仪表盘也不读它——凭据信号全部来自 model.list
 				'coclaw.providerAuth.list': new Error('rpc timeout'),
-				// model.list 即便成功，primaryModel 也不放进 entry（不让"凭据未知 + 已设主模型"的
-				// 错觉触发 T4 橙条逻辑——参考设计 § 7.2 的"未知态"语义）
-				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+				'coclaw.model.list': {
+					default: { primary: 'groq/m1', providerUsable: true },
+					agents: {},
+					hasAnyUsableCredential: true,
+				},
 			});
 			setConn('bot-1', dashConn);
 
@@ -1341,14 +1354,15 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			expect(entry.hasAnyProviderAuth).toBe(false);
-			expect(entry.primaryModel).toBeNull();
-			expect(entry.primaryEffective).toBe(false);
-			// 整体 error 不写：单条 RPC 失败不报警
+			expect(entry.hasUsableCredential).toBe(true);
+			expect(entry.primaryModel).toBe('groq/m1');
+			expect(entry.primaryProviderUsable).toBe(true);
+			expect(entry.credSignalKnown).toBe(true);
+			expect(entry.modelConfigFetched).toBe(true);
 			expect(entry.error).toBeNull();
 		});
 
-		test('model.list 失败 → 三字段整组默认 false/null/false', async () => {
+		test('model.list 失败 → 字段整组默认（credSignalKnown=false / modelConfigFetched=false）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1365,11 +1379,6 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				// providerAuth 成功也不让 hasAnyProviderAuth=true：因为 primaryModel 未知，
-				// 整组保持"数据未到齐"状态
-				'coclaw.providerAuth.list': {
-					profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }],
-				},
 				'coclaw.model.list': new Error('rpc timeout'),
 			});
 			setConn('bot-1', dashConn);
@@ -1378,13 +1387,15 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			expect(entry.hasAnyProviderAuth).toBe(false);
+			expect(entry.hasUsableCredential).toBe(false);
 			expect(entry.primaryModel).toBeNull();
-			expect(entry.primaryEffective).toBe(false);
+			expect(entry.primaryProviderUsable).toBe(false);
+			expect(entry.credSignalKnown).toBe(false);
+			expect(entry.modelConfigFetched).toBe(false);
 			expect(entry.error).toBeNull();
 		});
 
-		test('两条 RPC 都失败 → 默认值 false/null/false', async () => {
+		test('旧插件：model.list 成功但无 hasAnyUsableCredential 字段 → credSignalKnown=false（feature-detect），primary 仍解出', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1401,8 +1412,8 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': new Error('boom'),
-				'coclaw.model.list': new Error('boom'),
+				// 旧插件出参：只有 default/agents，没有顶层 hasAnyUsableCredential
+				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
 			});
 			setConn('bot-1', dashConn);
 
@@ -1410,12 +1421,17 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			const entry = store.byClaw['bot-1'];
-			expect(entry.hasAnyProviderAuth).toBe(false);
-			expect(entry.primaryModel).toBeNull();
-			expect(entry.primaryEffective).toBe(false);
+			// 凭据信号未知：credSignalKnown=false（外层据此压制 noKey/invalid），hasUsable/providerUsable 保守 false
+			expect(entry.credSignalKnown).toBe(false);
+			expect(entry.hasUsableCredential).toBe(false);
+			expect(entry.primaryProviderUsable).toBe(false);
+			// primary 仍解出，供 noPrimary 判定 + 显示
+			expect(entry.primaryModel).toBe('groq/m1');
+			// model.list 本身成功 → modelConfigFetched=true（橙条 gating 不被 catalog/providerAuth 牵连）
+			expect(entry.modelConfigFetched).toBe(true);
 		});
 
-		test('两条 RPC 都成功 → modelConfigFetched=true（外层据此才渲染引导态）', async () => {
+		test('model.list 成功 → modelConfigFetched=true（外层据此才渲染引导态）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1432,8 +1448,7 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
-				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+				'coclaw.model.list': { default: { primary: 'groq/m1', providerUsable: true }, agents: {}, hasAnyUsableCredential: true },
 			});
 			setConn('bot-1', dashConn);
 
@@ -1441,34 +1456,6 @@ describe('dashboard store', () => {
 			await store.loadDashboard('bot-1');
 
 			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(true);
-		});
-
-		test('providerAuth.list 失败 → modelConfigFetched=false（未知态，外层不渲染橙条）', async () => {
-			const clawsStore = useClawsStore();
-			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
-
-			const agentConn = mockAgentConn([{ id: 'main' }]);
-			setConn('bot-1', agentConn);
-			const agentsStore = useAgentsStore();
-			await agentsStore.loadAgents('bot-1');
-
-			const dashConn = mockConn({
-				'status': {},
-				'models.list': { models: [{ id: 'm1', provider: 'groq' }] },
-				'usage.cost': null,
-				'sessions.list': { sessions: [] },
-				'tts.status': {},
-				'channels.status': {},
-				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': new Error('rpc timeout'),
-				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
-			});
-			setConn('bot-1', dashConn);
-
-			const store = useDashboardStore();
-			await store.loadDashboard('bot-1');
-
-			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(false);
 		});
 
 		test('model.list 失败 → modelConfigFetched=false', async () => {
@@ -1488,7 +1475,6 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
 				'coclaw.model.list': new Error('rpc timeout'),
 			});
 			setConn('bot-1', dashConn);
@@ -1499,7 +1485,7 @@ describe('dashboard store', () => {
 			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(false);
 		});
 
-		test('models.list catalog 失败（providerAuth/model.list 成功）→ modelConfigFetched=false（空 catalog 不可信）', async () => {
+		test('catalog（models.list）失败但 model.list 成功 → modelConfigFetched=true（橙条与目录解耦，关键回归 pin）', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
 
@@ -1516,16 +1502,18 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
-				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+				'coclaw.model.list': { default: { primary: 'groq/m1', providerUsable: true }, agents: {}, hasAnyUsableCredential: true },
 			});
 			setConn('bot-1', dashConn);
 
 			const store = useDashboardStore();
 			await store.loadDashboard('bot-1');
 
-			// catalog 拉不到 → 不能视为已成功，否则空 catalog 会让合法 primary 误判失效、外层误报橙条
-			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(false);
+			// 关键：catalog 拉不到不再压掉橙条（§7.4 凭据判定与目录解耦）；
+			// 主模型"灵不灵"只看插件凭据信号，不查目录
+			expect(store.byClaw['bot-1'].modelConfigFetched).toBe(true);
+			expect(store.byClaw['bot-1'].hasUsableCredential).toBe(true);
+			expect(store.byClaw['bot-1'].primaryProviderUsable).toBe(true);
 		});
 
 		test('硬失败（loadAgents 抛错触发 catch）→ modelConfigFetched 重置为 false（不残留上次成功态）', async () => {
@@ -1545,8 +1533,7 @@ describe('dashboard store', () => {
 				'tts.status': {},
 				'channels.status': {},
 				'tools.catalog': { groups: [] },
-				'coclaw.providerAuth.list': { profiles: [{ profileId: 'groq:default', provider: 'groq', type: 'api_key' }] },
-				'coclaw.model.list': { default: { primary: 'groq/m1' }, agents: {} },
+				'coclaw.model.list': { default: { primary: 'groq/m1', providerUsable: true }, agents: {}, hasAnyUsableCredential: true },
 			});
 			setConn('bot-1', dashConn);
 
@@ -1576,60 +1563,62 @@ describe('computePrimaryEffective', () => {
 		{ id: 'claude-sonnet-4-6', provider: 'anthropic' },
 	];
 
-	test('合法 + provider 在内 + model 在 catalog → true', () => {
-		expect(computePrimaryEffective('groq/m1', ['groq'], catalog)).toBe(true);
+	// 新签名（§7.4）：computePrimaryEffective(primary, providerUsable, catalog)
+	// 子页用：凭据半 = 插件 providerUsable boolean；目录半 = catalog 裸比对（保留"模型下架"）
+	test('providerUsable=true + model 在 catalog → true', () => {
+		expect(computePrimaryEffective('groq/m1', true, catalog)).toBe(true);
 	});
 
-	test('provider 不在凭据列表 → false', () => {
-		expect(computePrimaryEffective('groq/m1', ['anthropic'], catalog)).toBe(false);
+	test('providerUsable=false（主模型那家无凭据）→ false', () => {
+		expect(computePrimaryEffective('groq/m1', false, catalog)).toBe(false);
 	});
 
-	test('model 不在 catalog 该 provider 下 → false', () => {
-		expect(computePrimaryEffective('groq/unknown', ['groq'], catalog)).toBe(false);
+	test('providerUsable=true 但 model 不在 catalog 该 provider 下 → false（模型下架）', () => {
+		expect(computePrimaryEffective('groq/unknown', true, catalog)).toBe(false);
 	});
 
 	test('catalog 里同 model id 但 provider 不同 → false', () => {
-		expect(computePrimaryEffective('groq/claude-sonnet-4-6', ['groq', 'anthropic'], catalog)).toBe(false);
+		expect(computePrimaryEffective('groq/claude-sonnet-4-6', true, catalog)).toBe(false);
 	});
 
 	test('primary 为 null → false', () => {
-		expect(computePrimaryEffective(null, ['groq'], catalog)).toBe(false);
+		expect(computePrimaryEffective(null, true, catalog)).toBe(false);
 	});
 
 	test('primary 为 undefined → false', () => {
-		expect(computePrimaryEffective(undefined, ['groq'], catalog)).toBe(false);
+		expect(computePrimaryEffective(undefined, true, catalog)).toBe(false);
 	});
 
 	test('primary 不含 "/" → false', () => {
-		expect(computePrimaryEffective('claude-sonnet-4-6', ['anthropic'], catalog)).toBe(false);
+		expect(computePrimaryEffective('claude-sonnet-4-6', true, catalog)).toBe(false);
 	});
 
 	test('primary 以 "/" 开头（provider 端为空）→ false', () => {
-		expect(computePrimaryEffective('/m1', ['groq'], catalog)).toBe(false);
+		expect(computePrimaryEffective('/m1', true, catalog)).toBe(false);
 	});
 
 	test('primary 以 "/" 结尾（model 端为空）→ false', () => {
-		expect(computePrimaryEffective('groq/', ['groq'], catalog)).toBe(false);
+		expect(computePrimaryEffective('groq/', true, catalog)).toBe(false);
 	});
 
 	test('primary 含多个 "/"：按首个 / 拆，剩余作 model id', () => {
 		const cat = [{ id: 'foo/bar', provider: 'groq' }];
-		expect(computePrimaryEffective('groq/foo/bar', ['groq'], cat)).toBe(true);
+		expect(computePrimaryEffective('groq/foo/bar', true, cat)).toBe(true);
 	});
 
-	test('providers 非数组 → false', () => {
-		expect(computePrimaryEffective('groq/m1', null, catalog)).toBe(false);
+	test('providerUsable 为假值（undefined）→ false', () => {
+		expect(computePrimaryEffective('groq/m1', undefined, catalog)).toBe(false);
 	});
 
 	test('catalog 非数组 → false', () => {
-		expect(computePrimaryEffective('groq/m1', ['groq'], null)).toBe(false);
+		expect(computePrimaryEffective('groq/m1', true, null)).toBe(false);
 	});
 
 	test('primary 非字符串（数字等）→ false', () => {
-		expect(computePrimaryEffective(123, ['groq'], catalog)).toBe(false);
+		expect(computePrimaryEffective(123, true, catalog)).toBe(false);
 	});
 
 	test('空字符串 primary → false', () => {
-		expect(computePrimaryEffective('', ['groq'], catalog)).toBe(false);
+		expect(computePrimaryEffective('', true, catalog)).toBe(false);
 	});
 });

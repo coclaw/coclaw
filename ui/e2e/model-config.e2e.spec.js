@@ -30,7 +30,8 @@ import {
  * 验证的是"UI 把已配主模型渲染进卡片"这条 UI 管线，**不**验证"plugin 真的把 model.set 持久化、
  * status 真的反映新模型"——后者属 plugin 侧，由 plugin 单测覆盖（E2E 不打真实 plugin 是为了不破坏
  * 测试 claw 不可恢复的真实 key）。本套件里"非自指"的外层断言是橙条引导 + dashboard store 派生字段
- * （由 providerAuth.list + model.list + catalog 驱动，与 status 无关）。
+ * （§7.4 后仪表盘凭据/有效性判定只吃 coclaw.model.list 出参的凭据信号，已不再依赖 providerAuth.list
+ * 与 catalog；catalog/view:all 仅供 agent 卡片贴标签，与 status 一样不参与橙条判定）。
  *
  * 标签：均属"导航/设置/交互"，按 e2e-test skill 标签表归 @ui。
  */
@@ -324,4 +325,27 @@ test('模型配置 S4b：桌面返回——冷启 deep link（全新页签·无�
 	finally {
 		await deep.close();
 	}
+});
+
+// ================================================================
+// S5：旧插件兼容（feature-detect 压制）——线上误报根治的核心安全属性
+// ================================================================
+test('模型配置 S5：旧插件（出参无凭据信号）→ 不误报 noKey/invalid 橙条（§7.4 feature-detect）@ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// 旧插件场景：legacy=true → coclaw.model.list 出参不带凭据信号。
+	// 起始零 provider + 已设主模型：旧 UI 会据"账本为空"误报 noKey（线上实锤 bug）；
+	// 新 UI 据 feature-detect 判定凭据信号未知 → 不渲染 noKey/invalid（primary 已设故也不报 noPrimary）。
+	await setupModelConfigMock(page, { profiles: [], primary: GROQ_PRIMARY, catalog: MOCK_CATALOG, legacy: true });
+	await login(page);
+	await ensureMockReady(page);
+
+	await gotoClawsCold(page);
+	const clawId = await getOnlineClawId(page);
+	await waitDashReady(page, clawId);
+	// dashboard 拉取完成（loading=false）后再断言"无橙条"，避免抢在加载中误判
+	await waitDashboardSettled(page, clawId, { primaryModel: GROQ_PRIMARY });
+
+	// 关键安全属性：旧插件下不出现任何引导橙条（既不误报 noKey 也不误报 invalid）
+	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
 });

@@ -393,15 +393,17 @@ export default {
 		goToModels(clawId) {
 			this.$router.push(`/claws/${String(clawId)}/models`);
 		},
-		/** 计算某台 claw 的引导态：离线 / RPC 未成功返回时返回 null（设计 § 6 + § 7.2 gating） */
+		/** 计算某台 claw 的引导态：离线 / 凭据 RPC 未成功返回时返回 null（设计 § 6 + § 7.4 gating） */
 		__guidanceStateFor(claw, dashboard) {
 			if (!claw?.online) return null;
-			// modelConfigFetched=false 表示 RPC 未成功返回，默认值 false/null/false 不可信，不提示
+			// modelConfigFetched=false 表示凭据 RPC（coclaw.model.list）未成功返回，默认值不可信，不提示。
+			// 橙条显隐只绑这一条，不再绑 catalog 是否拉到（§7.4 与目录解耦）
 			if (!dashboard || !dashboard.modelConfigFetched) return null;
 			return pickGuidanceState({
-				hasAny: dashboard.hasAnyProviderAuth,
+				hasAny: dashboard.hasUsableCredential,
 				primary: dashboard.primaryModel,
-				effective: dashboard.primaryEffective,
+				effective: dashboard.primaryProviderUsable,
+				credSignalKnown: dashboard.credSignalKnown,
 			});
 		},
 		/** 引导态 → 本地化橙条文案 */
