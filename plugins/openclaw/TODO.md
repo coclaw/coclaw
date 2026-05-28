@@ -1391,3 +1391,25 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
    - `extractVerification`：无 `Code:` 行时 `DEVICE_CODE_RE` 扫全文（含 URL），理论上可能从 URL 里抠错码；裸 URL 回退 `[^\s)]+` 可能带上尾随标点。codex/copilot 都有显式 `URL:`/`Code:` 行不触发。硬化方向：码回退前先剥掉文中 URL；URL 捕获后剪尾随 `.,;:`。
    - `isVerificationNote`：靠 `faq|help|trouble|docs.openclaw` 英文词排除帮助 note。未来某 provider 的真验证 note 若 URL 路径含 `help` 等词，会被误判非验证 note → phase-1 不发、URL 不展示。今天两家 note 无此词。
    - `deepMergeInto` vs 上游 `mergeConfigPatch`：上游额外（a）递归净化数组元素内的原型污染键；（b）合并后跑 `normalizeConfigModelRefsForWrite` 规范化模型别名。本实现都没做。今天不咬人——codex 的 configPatch 是不含数组/别名的 plain `agents.defaults.models` 对象，copilot 无 configPatch。接入会下发数组/别名 configPatch 的 provider 前补齐。
+
+## 返回 session 正文时区分"文件没了"与"其他情况"
+
+**发现日期**：2026-05-28
+**关联**：`plugins/openclaw/src/session-manager/manager.js` `getById`（及同款 `get`）；UI 侧 commit `9a41b718`（空归档段占位）
+
+**现状**：`getById` 把多种"取不到正文"的情形塌缩成同一个返回形状，调用方分不清：
+- transcript 文件不存在（`resolveTranscriptFile` → null）→ `{ messages: [] }`
+- 文件在、但没有 `type==='message'` 且有 role 的可显示行 → 也是 `{ messages: [] }`
+- 单行 JSON 损坏 → `bad json line skipped` 打 warn 后**跳过**，悄悄少消息 / 退化成空
+- （真正的读盘 IO 错误目前会抛出，由 RPC 层暴露——这一类已可区分）
+
+**后果**：UI 拿到空数组只能统一按"正文已不可用"显示中性占位（已实现），无法对不同成因分别处置——例如"文件确实没了"才提示"已不可恢复"、"读取/解析出错"提示"稍后重试"、"文件在但本就无可显示内容"或许不该当成丢失。最核心的盲区是**分不清 session 文件是真没了，还是别的原因取不到**。
+
+**修复方向**：让返回 session 正文的 RPC 带一个明确的状态信号，至少把"文件没了"单独标出来。可选形状：
+- `{ messages: [], status: 'missing' | 'empty' | 'partial' }`，或简单点 `{ messages: [], missing: true }`
+- `missing`：`resolveTranscriptFile` 返回 null（裸名 / `.reset.` / `.deleted.` 变体全无）
+- `empty`：文件在、解析正常但无可显示消息
+- `partial`：有行被 `bad json` 跳过（可带跳过计数），提示正文可能不完整
+- 读盘 IO 错误维持抛出（不要吞成空），让调用方能区分"取不到"与"出错"
+
+**范围**：跨 UI + plugin（plugin 加信号 + UI 消费做精确文案），需双 changeset。属健壮性增强，**低优先、非阻塞**——当前 UI 中性"已不可用"文案已覆盖主场景（真没正文）。实施时 UI 侧把占位文案按 status 细分（见 ui 工作区对应改造）。
