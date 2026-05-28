@@ -13,10 +13,10 @@ vi.mock('../components/MobilePageHeader.vue', () => ({
 vi.mock('../components/model-config/RemoveProviderConfirmDialog.vue', () => ({
 	default: {
 		name: 'RemoveProviderConfirmDialog',
-		props: ['open', 'provider', 'source', 'currentPrimary', 'isPrimaryCarrier', 'busy'],
+		props: ['open', 'provider', 'currentPrimary', 'isPrimaryCarrier', 'busy'],
 		emits: ['update:open', 'confirm', 'cancel'],
 		template: `
-			<div v-if="open" class="remove-dialog" :data-carrier="String(isPrimaryCarrier)" :data-source="source">
+			<div v-if="open" class="remove-dialog" :data-carrier="String(isPrimaryCarrier)">
 				<span class="rd-provider">{{ provider }}</span>
 				<span class="rd-primary">{{ currentPrimary }}</span>
 				<button class="rd-confirm" @click="$emit('confirm')">confirm</button>
@@ -1665,7 +1665,7 @@ describe('ModelConfigPage — three-source credentials (§2.4)', () => {
 		w.unmount();
 	});
 
-	test('removing an inline credential passes source=inline to the dialog and the remove RPC', async () => {
+	test('removing an inline credential passes source=inline to the remove RPC', async () => {
 		primedThreeSource();
 		const w = makeWrapper();
 		await flushPromises();
@@ -1674,8 +1674,6 @@ describe('ModelConfigPage — three-source credentials (§2.4)', () => {
 		await inlineRow.vm.$emit('remove', { provider: 'minimax', source: 'inline' });
 		await w.vm.$nextTick();
 		const dialog = w.find('.remove-dialog');
-		// 确认弹窗拿到 source=inline（驱动"会改 OpenClaw 配置文件"提示）
-		expect(dialog.attributes('data-source')).toBe('inline');
 		// minimax 是主模型载体 → 强提示分支（provider 段匹配，对内联也适用）
 		expect(dialog.attributes('data-carrier')).toBe('true');
 		await w.find('.rd-confirm').trigger('click');
@@ -1703,7 +1701,6 @@ describe('ModelConfigPage — three-source credentials (§2.4)', () => {
 		const profileRow = rows.find(r => r.props('profile').source === 'profile');
 		await profileRow.vm.$emit('remove', { provider: 'groq', source: 'profile' });
 		await w.vm.$nextTick();
-		expect(w.find('.remove-dialog').attributes('data-source')).toBe('profile');
 		await w.find('.rd-confirm').trigger('click');
 		await flushPromises();
 		const removeCall = mockRequest.mock.calls.find(c => c[0] === 'coclaw.providerAuth.remove');

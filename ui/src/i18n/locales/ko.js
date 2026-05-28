@@ -506,7 +506,6 @@ export const koMessages = {
 			loadFailed: '로드 실패. 다시 시도해 주세요.',
 			removeFailed: '{provider} 제거에 실패했습니다.',
 			source: {
-				profile: 'CoClaw',
 				inline: '설정 파일',
 				env: '환경 변수',
 			},
@@ -517,7 +516,6 @@ export const koMessages = {
 				descAffectPrimary: '현재 주 모델 {primary}은(는) {provider}에서 동작합니다. 제거하면 주 모델이 무효가 되고 에이전트가 대화할 수 없게 됩니다 — 새 주 모델을 선택해야 합니다.',
 				confirmButton: '제거',
 				confirmButtonStrong: '그래도 제거',
-				descInlineNote: 'OpenClaw 설정 파일에서 이 키가 삭제됩니다.',
 			},
 			add: {
 				stepSelectTitle: '공급자 선택',

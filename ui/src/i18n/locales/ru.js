@@ -506,7 +506,6 @@ export const ruMessages = {
 			loadFailed: 'Не удалось загрузить. Попробуйте ещё раз.',
 			removeFailed: 'Не удалось удалить {provider}.',
 			source: {
-				profile: 'CoClaw',
 				inline: 'Файл конфигурации',
 				env: 'Окружение',
 			},
@@ -517,7 +516,6 @@ export const ruMessages = {
 				descAffectPrimary: 'Текущая основная модель {primary} работает на {provider}. После удаления основная станет недействительной, и агент не сможет общаться — потребуется выбрать новую основную.',
 				confirmButton: 'Удалить',
 				confirmButtonStrong: 'Всё равно удалить',
-				descInlineNote: 'Это удалит ключ из вашего файла конфигурации OpenClaw.',
 			},
 			add: {
 				stepSelectTitle: 'Выбор поставщика',

@@ -7,7 +7,7 @@
 		@update:open="onOpenChange"
 	>
 		<template #body>
-			<p class="text-sm text-muted whitespace-pre-line">{{ description }}</p>
+			<p class="text-sm text-muted">{{ description }}</p>
 		</template>
 		<template #footer>
 			<div class="flex w-full justify-end gap-2">
@@ -59,14 +59,6 @@ export default {
 			type: Boolean,
 			default: false,
 		},
-		/**
-		 * 凭据来源（profile / inline / env）；inline 时正文追加"会改动 OpenClaw 配置文件"提示。
-		 * 缺省 'profile'（账本撤销不涉及配置文件）。
-		 */
-		source: {
-			type: String,
-			default: 'profile',
-		},
 		/** RPC 在飞，禁用按钮防双击 */
 		busy: {
 			type: Boolean,
@@ -82,17 +74,14 @@ export default {
 			return getProviderMeta(this.provider).displayName;
 		},
 		description() {
-			const base = this.isPrimaryCarrier
+			// 撤内联不再单独提示"会改配置文件"：来源已由列表行标签表达，弹窗与普通删除一致（2026-05-28 拍板）。
+			// 主模型载体的强提示仍保留（安全闸）。
+			return this.isPrimaryCarrier
 				? this.$t('modelConfig.providerAuth.remove.descAffectPrimary', {
 					primary: this.currentPrimary,
 					provider: this.displayName,
 				})
 				: this.$t('modelConfig.providerAuth.remove.descNormal', { provider: this.displayName });
-			// 内联来源：撤销会改动 OpenClaw 配置文件，正文追加一行提示（whitespace-pre-line 渲染换行）
-			if (this.source === 'inline') {
-				return `${base}\n\n${this.$t('modelConfig.providerAuth.remove.descInlineNote')}`;
-			}
-			return base;
 		},
 		confirmLabel() {
 			return this.isPrimaryCarrier

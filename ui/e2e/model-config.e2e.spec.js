@@ -345,9 +345,9 @@ test('模型配置 S5：旧插件（出参无凭据信号）→ 据"无凭据"�
 });
 
 // ================================================================
-// S6：三源凭据——内联 key 可列可撤（带配置文件提示）+ env 行只读（§2.4 / §2.5）
+// S6：三源凭据——内联 key 可列可撤（强提示）+ env 行只读（§2.4 / §2.5）
 // ================================================================
-test('模型配置 S6：内联 key 列出可撤（配置文件提示+强提示）、env 行只读禁删 @ui', async ({ page }) => {
+test('模型配置 S6：内联 key 列出可撤（强提示）、env 行只读禁删 @ui', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
 	// 起始：无账本；内联 groq（承载 primary）+ env anthropic（只读）。模拟"列表空但模型能用"的真实场景。
@@ -385,13 +385,11 @@ test('模型配置 S6：内联 key 列出可撤（配置文件提示+强提示�
 	await expect(removeButtons.nth(0)).toBeEnabled();
 	await expect(removeButtons.nth(1)).toBeDisabled();
 
-	// 撤内联 groq（承载 primary）：强提示 + 配置文件提示同时出现
+	// 撤内联 groq（承载 primary）：强提示（撤内联不再单独提示"会改配置文件"——2026-05-28 拍板）
 	await removeButtons.nth(0).click();
 	const confirm = page.getByTestId('btn-remove-confirm');
 	await expect(confirm).toBeVisible({ timeout: 10_000 });
 	await expect(confirm).toHaveText(await tr(page, 'modelConfig.providerAuth.remove.confirmButtonStrong'));
-	const dialog = page.getByRole('dialog');
-	await expect(dialog).toContainText(await tr(page, 'modelConfig.providerAuth.remove.descInlineNote'));
 	await confirm.click();
 	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
 

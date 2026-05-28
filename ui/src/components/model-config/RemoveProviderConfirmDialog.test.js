@@ -138,23 +138,5 @@ describe('RemoveProviderConfirmDialog', () => {
 		expect(w.text()).toContain('provider=mystery');
 	});
 
-	// --- 内联来源：正文追加"会改动 OpenClaw 配置文件"提示 ---
-	test('inline source appends the config-file note to the description', () => {
-		const w = makeWrapper({ source: 'inline' });
-		const text = w.text();
-		expect(text).toContain('modelConfig.providerAuth.remove.descNormal');
-		expect(text).toContain('modelConfig.providerAuth.remove.descInlineNote');
-	});
-
-	test('profile source does NOT append the config-file note', () => {
-		const w = makeWrapper({ source: 'profile' });
-		expect(w.text()).not.toContain('descInlineNote');
-	});
-
-	test('inline + primary carrier: both strong-warning and config-file note present', () => {
-		const w = makeWrapper({ source: 'inline', isPrimaryCarrier: true, currentPrimary: 'minimax/M2.7' });
-		const text = w.text();
-		expect(text).toContain('descAffectPrimary');
-		expect(text).toContain('descInlineNote');
-	});
+	// 撤内联不再追加"会改配置文件"提示——确认弹窗与普通删除一致（2026-05-28 拍板），故不再有 source 分支测试
 });

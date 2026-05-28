@@ -87,10 +87,10 @@ describe('ProviderAuthRow', () => {
 		expect(w.emitted('remove')[0]).toEqual([{ provider: '', source: 'profile' }]);
 	});
 
-	// --- 来源标签（§2.4 source）---
-	test('source tag renders the profile label', () => {
+	// --- 来源标签（§2.4 source）：仅 inline/env 打标签，账本 profile 不打标签 ---
+	test('profile source renders NO source tag', () => {
 		const w = makeWrapper({ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default', source: 'profile', removable: true });
-		expect(w.find('[data-testid="provider-source-tag"]').text()).toBe('modelConfig.providerAuth.source.profile');
+		expect(w.find('[data-testid="provider-source-tag"]').exists()).toBe(false);
 	});
 
 	test('inline source: tag + emits source=inline, button enabled', async () => {
@@ -119,7 +119,8 @@ describe('ProviderAuthRow', () => {
 	// --- 旧插件退化：出参无 source / removable 字段 ---
 	test('legacy plugin (no source / removable fields) degrades to profile + removable', async () => {
 		const w = makeWrapper({ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' });
-		expect(w.find('[data-testid="provider-source-tag"]').text()).toBe('modelConfig.providerAuth.source.profile');
+		// 退化为 profile → 不打来源标签
+		expect(w.find('[data-testid="provider-source-tag"]').exists()).toBe(false);
 		const btn = w.find('[data-testid="btn-remove-provider"]');
 		expect(btn.element.disabled).toBe(false);
 		await btn.trigger('click');

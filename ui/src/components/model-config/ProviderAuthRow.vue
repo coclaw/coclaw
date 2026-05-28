@@ -5,9 +5,10 @@
 	>
 		<!-- 品牌名 + 来源小标签 + 凭据预览 -->
 		<div class="min-w-0 flex-1">
-			<div class="flex items-center gap-1.5">
+			<div class="flex items-end gap-1.5">
 				<p class="truncate text-sm font-medium">{{ displayName }}</p>
 				<UBadge
+					v-if="showSourceTag"
 					data-testid="provider-source-tag"
 					color="neutral"
 					variant="subtle"
@@ -66,6 +67,13 @@ export default {
 		source() {
 			const s = this.profile?.source;
 			return (s === 'inline' || s === 'env') ? s : 'profile';
+		},
+		/**
+		 * 是否显示来源小标签：仅内联 / 环境变量来源打标签；
+		 * 账本 profile 是默认存储（多数新用户只有这一种），不打标签——降低视觉负担。
+		 */
+		showSourceTag() {
+			return this.source === 'inline' || this.source === 'env';
 		},
 		sourceLabel() {
 			return this.$t(`modelConfig.providerAuth.source.${this.source}`);

@@ -506,7 +506,6 @@ export const jaMessages = {
 			loadFailed: '読み込みに失敗しました。もう一度お試しください。',
 			removeFailed: '{provider} の削除に失敗しました。',
 			source: {
-				profile: 'CoClaw',
 				inline: '設定ファイル',
 				env: '環境変数',
 			},
@@ -517,7 +516,6 @@ export const jaMessages = {
 				descAffectPrimary: '現在のメインモデル {primary} は {provider} 上で動作しています。削除するとメインは無効になり、エージェントは会話できなくなります — 新しいメインを選び直してください。',
 				confirmButton: '削除',
 				confirmButtonStrong: 'それでも削除',
-				descInlineNote: 'これにより OpenClaw の設定ファイルからこのキーが削除されます。',
 			},
 			add: {
 				stepSelectTitle: 'プロバイダを選択',

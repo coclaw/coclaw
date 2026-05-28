@@ -506,7 +506,6 @@ export const ptMessages = {
 			loadFailed: 'Falha ao carregar. Tente novamente.',
 			removeFailed: 'Falha ao remover {provider}.',
 			source: {
-				profile: 'CoClaw',
 				inline: 'Arquivo de configuração',
 				env: 'Ambiente',
 			},
@@ -517,7 +516,6 @@ export const ptMessages = {
 				descAffectPrimary: 'Seu modelo principal atual {primary} é executado em {provider}. Após a remoção, o principal ficará inválido e o agente não poderá conversar — você precisará escolher um novo principal.',
 				confirmButton: 'Remover',
 				confirmButtonStrong: 'Remover mesmo assim',
-				descInlineNote: 'Isso excluirá a chave do seu arquivo de configuração do OpenClaw.',
 			},
 			add: {
 				stepSelectTitle: 'Selecionar provedor',

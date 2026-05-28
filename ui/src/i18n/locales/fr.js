@@ -506,7 +506,6 @@ export const frMessages = {
 			loadFailed: 'Échec du chargement. Veuillez réessayer.',
 			removeFailed: 'Échec de la suppression de {provider}.',
 			source: {
-				profile: 'CoClaw',
 				inline: 'Fichier de configuration',
 				env: 'Environnement',
 			},
@@ -517,7 +516,6 @@ export const frMessages = {
 				descAffectPrimary: 'Votre modèle principal actuel {primary} s\'exécute sur {provider}. Après suppression, le principal deviendra invalide et l\'agent ne pourra plus discuter — vous devrez choisir un nouveau principal.',
 				confirmButton: 'Supprimer',
 				confirmButtonStrong: 'Supprimer quand même',
-				descInlineNote: 'Cela supprimera la clé de votre fichier de configuration OpenClaw.',
 			},
 			add: {
 				stepSelectTitle: 'Choisir un fournisseur',

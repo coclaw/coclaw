@@ -506,7 +506,6 @@ export const esMessages = {
 			loadFailed: 'Error al cargar. Por favor reintenta.',
 			removeFailed: 'Error al eliminar {provider}.',
 			source: {
-				profile: 'CoClaw',
 				inline: 'Archivo de configuración',
 				env: 'Entorno',
 			},
@@ -517,7 +516,6 @@ export const esMessages = {
 				descAffectPrimary: 'Tu modelo principal actual {primary} se ejecuta en {provider}. Después de eliminarlo, el principal quedará inválido y el agente no podrá conversar — tendrás que elegir uno nuevo.',
 				confirmButton: 'Eliminar',
 				confirmButtonStrong: 'Eliminar de todos modos',
-				descInlineNote: 'Esto eliminará la clave de tu archivo de configuración de OpenClaw.',
 			},
 			add: {
 				stepSelectTitle: 'Seleccionar proveedor',

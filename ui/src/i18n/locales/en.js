@@ -506,7 +506,6 @@ export const enMessages = {
 			loadFailed: 'Failed to load. Please retry.',
 			removeFailed: 'Failed to remove {provider}.',
 			source: {
-				profile: 'CoClaw',
 				inline: 'Config file',
 				env: 'Environment',
 			},
@@ -517,7 +516,6 @@ export const enMessages = {
 				descAffectPrimary: 'Your current primary model {primary} runs on {provider}. After removing, the primary will become invalid and the agent will not be able to chat — you will need to pick a new primary.',
 				confirmButton: 'Remove',
 				confirmButtonStrong: 'Remove anyway',
-				descInlineNote: 'This will delete the key from your OpenClaw config file.',
 			},
 			add: {
 				stepSelectTitle: 'Select provider',

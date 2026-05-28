@@ -506,7 +506,6 @@ export const viMessages = {
 			loadFailed: 'Tải thất bại. Vui lòng thử lại.',
 			removeFailed: 'Gỡ {provider} thất bại.',
 			source: {
-				profile: 'CoClaw',
 				inline: 'Tệp cấu hình',
 				env: 'Biến môi trường',
 			},
@@ -517,7 +516,6 @@ export const viMessages = {
 				descAffectPrimary: 'Mô hình chính hiện tại {primary} đang chạy trên {provider}. Sau khi gỡ, mô hình chính sẽ không còn hợp lệ và agent không thể trò chuyện — bạn cần chọn mô hình chính mới.',
 				confirmButton: 'Gỡ',
 				confirmButtonStrong: 'Vẫn gỡ',
-				descInlineNote: 'Thao tác này sẽ xóa key khỏi tệp cấu hình OpenClaw của bạn.',
 			},
 			add: {
 				stepSelectTitle: 'Chọn nhà cung cấp',

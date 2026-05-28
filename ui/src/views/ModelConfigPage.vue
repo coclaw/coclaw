@@ -139,7 +139,6 @@
 		<RemoveProviderConfirmDialog
 			v-model:open="removeOpen"
 			:provider="removeTarget"
-			:source="removeSource"
 			:current-primary="primary || ''"
 			:is-primary-carrier="removeTargetIsPrimaryCarrier"
 			:busy="removeBusy"
