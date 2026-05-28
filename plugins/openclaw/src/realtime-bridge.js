@@ -714,8 +714,9 @@ export class RealtimeBridge {
 		try {
 			const authToken = this.__resolveGatewayAuthToken();
 			const params = {
+				// 声明支持 v3–v4：OpenClaw 网关自 v4 起要求协议范围含 4，旧网关仍可协商回 v3
 				minProtocol: 3,
-				maxProtocol: 3,
+				maxProtocol: 4,
 				client: {
 					id: 'gateway-client',
 					version: this.__pluginVersion ?? 'unknown',

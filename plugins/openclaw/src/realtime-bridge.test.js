@@ -1794,6 +1794,10 @@ test('connect request should include device field with nonce from challenge', as
 		const connectReq = JSON.parse(String(gateway.sent[gateway.sent.length - 1] ?? '{}'));
 		assert.equal(connectReq.method, 'connect');
 
+		// 声明协议范围 v3–v4：OpenClaw 网关自 v4 起拒绝不含 4 的范围（升级后 CoClaw 失联根因）
+		assert.equal(connectReq.params.minProtocol, 3);
+		assert.equal(connectReq.params.maxProtocol, 4);
+
 		// device 字段存在且正确
 		const { device } = connectReq.params;
 		assert.ok(device, 'connect params should have device field');
