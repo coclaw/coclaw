@@ -551,6 +551,34 @@ describe('useChatStore', () => {
 			expect(store.messages).toHaveLength(0);
 		});
 
+		test('topic 正文 NOT_FOUND / PARSE_FAILED → errorText 用对应本地化 key', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			for (const [code, key] of [
+				['NOT_FOUND', 'chat.historyUnavailable'],
+				['PARSE_FAILED', 'chat.historyCorrupt'],
+			]) {
+				const err = new Error('boom');
+				err.code = code;
+				const conn = mockConn();
+				conn.request.mockRejectedValue(err);
+				setConn('1', conn);
+
+				const store = useChatStore();
+				store.sessionId = 'topic-x';
+				store.clawId = '1';
+				store.topicMode = true;
+				store.topicAgentId = 'main';
+
+				const ok = await store.loadMessages();
+				expect(ok).toBe(false);
+				expect(store.messages).toEqual([]);
+				// i18n 在测试里 stub 成回显 key
+				expect(store.errorText).toBe(key);
+			}
+		});
+
 		test('loadMessages 与 sendMessage 并发时保留乐观消息', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
@@ -6184,6 +6212,79 @@ describe('useChatStore', () => {
 			// 失败的 session 被跳过，下次加载 hist-2
 			expect(store.__historyLoadedCount).toBe(1);
 			expect(store.historyExhausted).toBe(false);
+		});
+
+		test('正文已不可恢复（NOT_FOUND）→ 入空段带 reason=missing 并推进计数', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const err = new Error('session transcript not found');
+			err.code = 'NOT_FOUND';
+			const conn = mockConn();
+			conn.request.mockRejectedValue(err);
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.rawHistorySessionIds = [
+				{ sessionId: 'hist-1', archivedAt: 200 },
+				{ sessionId: 'hist-2', archivedAt: 100 },
+			];
+
+			const ok = await store.loadNextHistorySession();
+			// 终态：占位段入列（非整段消失），返回 true
+			expect(ok).toBe(true);
+			expect(store.historySegments).toHaveLength(1);
+			expect(store.historySegments[0].sessionId).toBe('hist-1');
+			expect(store.historySegments[0].messages).toEqual([]);
+			expect(store.historySegments[0].reason).toBe('missing');
+			expect(store.__historyLoadedCount).toBe(1);
+		});
+
+		test('正文损坏（PARSE_FAILED）→ 入空段带 reason=corrupt', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const err = new Error('session transcript unparseable');
+			err.code = 'PARSE_FAILED';
+			const conn = mockConn();
+			conn.request.mockRejectedValue(err);
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.rawHistorySessionIds = [{ sessionId: 'hist-1', archivedAt: 100 }];
+
+			const ok = await store.loadNextHistorySession();
+			expect(ok).toBe(true);
+			expect(store.historySegments[0].messages).toEqual([]);
+			expect(store.historySegments[0].reason).toBe('corrupt');
+		});
+
+		test('旧插件正文没了仍返 ok:true {messages:[]} → 入空段无 reason（向前兼容）', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			// 旧插件对"正文没了"不抛错，返回空数组（成功路径）
+			const conn = mockConn();
+			conn.request.mockResolvedValue({ messages: [] });
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+			store.rawHistorySessionIds = [{ sessionId: 'hist-1', archivedAt: 100 }];
+
+			const ok = await store.loadNextHistorySession();
+			// 成功路径同样入占位空段、推进计数、返回 true，但无 reason（→ ChatPage 走中性文案）
+			expect(ok).toBe(true);
+			expect(store.historySegments).toHaveLength(1);
+			expect(store.historySegments[0].sessionId).toBe('hist-1');
+			expect(store.historySegments[0].messages).toEqual([]);
+			expect(store.historySegments[0].reason).toBeUndefined();
+			expect(store.__historyLoadedCount).toBe(1);
 		});
 
 		test('唯一的历史 session 请求失败时设置 historyExhausted', async () => {

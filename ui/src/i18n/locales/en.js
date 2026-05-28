@@ -401,6 +401,7 @@ export const enMessages = {
 		clawUnbound: 'Claw has been unbound',
 		noMoreHistory: 'No earlier messages',
 		historyUnavailable: 'This conversation is no longer available',
+		historyCorrupt: 'This conversation appears to be corrupted',
 		scrollUpForMore: '↑ Scroll up for earlier messages',
 		scrollToBottom: 'Scroll to bottom',
 		upgradeOpenClawHint: 'You may need to upgrade OpenClaw. Ask OpenClaw to upgrade itself, or run: npm install -g openclaw',

@@ -2,6 +2,16 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## loadNextHistorySession 瞬时错误也推进计数 → 该段被永久跳过
+
+**发现日期**：2026-05-28
+**来源**：session-context getById 失败态改造的设计 review（预存问题，非本次引入）
+
+- 现状：`chat.store.js` `loadNextHistorySession` 的 catch，对**瞬时错误**（RPC_TIMEOUT / RTC_LOST 等）也执行 `__historyLoadedCount++` 再 return false。结果该历史段被永久跳过，重连后也不会回补，直到整个 chat store 重建。
+- 终态错误（NOT_FOUND / PARSE_FAILED）已在本次改造中单独分支（入占位空段、推进计数），不在此列。
+- 修复方向：区分瞬时 vs 终态——瞬时分支**不**推进 `__historyLoadedCount`，留待下次触发重试；但需防"持续失败导致历史加载卡死不前进"，可加重试上限或退避。
+- 范围：仅 UI；改动牵涉历史分页推进语义，需配套测试覆盖"瞬时失败后重连回补"。
+
 ## 子页面顶部"返回"icon button 缺 aria-label（a11y）
 
 **发现日期**：2026-05-25

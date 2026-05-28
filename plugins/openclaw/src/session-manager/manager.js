@@ -300,8 +300,18 @@ export function createSessionManager(options = {}) {
 	 * 按 sessionId 获取消息，返回完整 JSONL 行级结构。
 	 * 只返回 type==="message" 且有合法 message.role 的行。
 	 * limit 语义：不传/null/非 number/NaN/Infinity/<1 → 返回全部；>=1 的有限 number → 取最后 Math.trunc(limit) 条。无默认/最大值。
+	 *
+	 * 取不到正文时用错误码区分成因，调用方据此精确处置（不再统一塌缩成空数组）：
+	 * - transcript 文件不存在（裸名 / .reset. / .deleted. 变体全无）→ 抛 code='NOT_FOUND'
+	 * - 文件在但一行都解析不出（非空却零行成功 JSON.parse）→ 抛 code='PARSE_FAILED'
+	 * - 真·读盘 IO 错误：readTranscriptText 原样上抛（由 RPC 层映射）
+	 * 空文件 / 全空白行（含仅含空格、制表符的行）/ 文件在但无 message 行 → 正常返回 { messages: [] }（良性空，非失败）。
+	 *
+	 * 部分坏行（有成功解析的行 + 个别 JSON.parse 失败）走容错：返回解析出的消息，
+	 * 并在 payload 平行附 badLines（仅 >0 时）记录坏行原文供排障，不丢整段。
+	 * badLines[].index 是坏行在「非空白内容行」序列中的 0-based 位置（空白行已被跳过，故非原始文件行号）。
 	 * @param {{ sessionId: string, agentId?: string, limit?: number }} params
-	 * @returns {Promise<{ messages: object[] }>}
+	 * @returns {Promise<{ messages: object[], badLines?: { index: number, raw: string, error: string }[] }>}
 	 */
 	async function getById(params = {}) {
 		const agentId = typeof params.agentId === 'string' && params.agentId.trim() ? params.agentId.trim() : 'main';
@@ -313,25 +323,42 @@ export function createSessionManager(options = {}) {
 		const limitNum = useLimit ? Math.trunc(params.limit) : 0;
 		const file = await resolveTranscriptFile(agentId, sessionId);
 		if (!file) {
-			return { messages: [] };
+			throw Object.assign(new Error(`session transcript not found: ${sessionId}`), { code: 'NOT_FOUND' });
 		}
 
 		const text = await readTranscriptText(file);
 		const messages = [];
+		const badLines = [];
+		// parseOk 在 JSON.parse 成功后立即 +1，必须在 type 过滤之前——
+		// 否则"全合法 JSON 但无 message 行"会被错判 PARSE_FAILED
+		let parseOk = 0;
+		let index = -1;
 		for await (const line of iterTextLines(text)) {
+			// 纯空白行（仅空格/制表符等，iterTextLines 只跳零长度段）视同空行：
+			// 既不计入 parseOk 也不进 badLines，保证"全空白文件 → 良性空"不变量、不误判 PARSE_FAILED
+			if (line.trim() === '') continue;
+			index++;
+			let row;
 			try {
-				const row = JSON.parse(line);
-				if (row?.type !== 'message') continue;
-				const msg = row?.message;
-				if (!msg || typeof msg !== 'object' || !msg.role) continue;
-				messages.push(row);
+				row = JSON.parse(line);
 			}
 			catch (err) {
+				badLines.push({ index, raw: line, error: String(err?.message ?? err) });
 				logger.warn?.(`[session-manager] bad json line skipped: ${String(err?.message ?? err)}`);
+				continue;
 			}
+			parseOk++;
+			if (row?.type !== 'message') continue;
+			const msg = row?.message;
+			if (!msg || typeof msg !== 'object' || !msg.role) continue;
+			messages.push(row);
+		}
+		// 非空文件却一行都没解析出 = 整文损坏；空 / 全空白文件（含纯空格行）跳过后零内容行 → parseOk=0 且 badLines=[]，不算损坏
+		if (parseOk === 0 && badLines.length > 0) {
+			throw Object.assign(new Error(`session transcript unparseable: ${sessionId}`), { code: 'PARSE_FAILED' });
 		}
 		const sliced = (useLimit && messages.length > limitNum) ? messages.slice(-limitNum) : messages;
-		return { messages: sliced };
+		return badLines.length > 0 ? { messages: sliced, badLines } : { messages: sliced };
 	}
 
 	return { listAll, listAllEntries, get, getById };

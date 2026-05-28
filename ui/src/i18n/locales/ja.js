@@ -401,6 +401,7 @@ export const jaMessages = {
 		clawUnbound: 'Claw のバインドが解除されました',
 		noMoreHistory: 'これより前のメッセージはありません',
 		historyUnavailable: 'この会話の内容は利用できません',
+		historyCorrupt: 'この会話の内容は破損しています',
 		scrollUpForMore: '↑ スクロールして以前のメッセージを表示',
 		scrollToBottom: '一番下へ',
 		upgradeOpenClawHint: 'OpenClaw のアップグレードが必要な場合があります。OpenClaw 自身にアップグレードを依頼するか、以下を実行してください：npm install -g openclaw',

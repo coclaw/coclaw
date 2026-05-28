@@ -687,6 +687,22 @@ test('coclaw.sessions.getById - 成功路径返回完整 JSONL 行', async () =>
 	}
 });
 
+test('coclaw.sessions.getById - 正文不存在 → ok:false NOT_FOUND', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers();
+	try {
+		let out = null;
+		await handlers.get('coclaw.sessions.getById')({
+			params: { agentId: 'main', sessionId: 'sid-missing' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.error?.code, 'NOT_FOUND');
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
 test('coclaw.sessions.getById - 缺 sessionId / 空白 → INVALID_INPUT', async () => {
 	const { handlers, tmpStateDir } = await setupSessionsHandlers();
 	try {

@@ -401,6 +401,7 @@ export const esMessages = {
 		clawUnbound: 'El Claw ha sido desvinculado',
 		noMoreHistory: 'No hay mensajes anteriores',
 		historyUnavailable: 'Esta conversación ya no está disponible',
+		historyCorrupt: 'Esta conversación parece estar dañada',
 		scrollUpForMore: '↑ Desplázate hacia arriba para ver mensajes anteriores',
 		scrollToBottom: 'Ir al final',
 		upgradeOpenClawHint: 'Es posible que necesites actualizar OpenClaw. Pídele a OpenClaw que se actualice, o ejecuta: npm install -g openclaw',

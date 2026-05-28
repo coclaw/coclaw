@@ -549,7 +549,14 @@ export function createChatStore(storeKey, opts = {}) {
 					console.debug('[chat] loadTopicMessages failed: %s', err?.message);
 					if (!silent) {
 						this.messages = [];
-						this.errorText = err?.message || 'Failed to load messages';
+						// 终态失败给本地化文案；其余（瞬时/未知）沿用原始 message 兜底
+						if (err?.code === 'NOT_FOUND') {
+							this.errorText = i18n.global.t('chat.historyUnavailable');
+						} else if (err?.code === 'PARSE_FAILED') {
+							this.errorText = i18n.global.t('chat.historyCorrupt');
+						} else {
+							this.errorText = err?.message || 'Failed to load messages';
+						}
 					}
 					return false;
 				}
@@ -1533,8 +1540,9 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 
 				this.historyLoading = true;
+				// entry 提到 try 外：终态失败分支（catch）需用它构造占位空段
+				const entry = this.historySessionIds[this.__historyLoadedCount];
 				try {
-					const entry = this.historySessionIds[this.__historyLoadedCount];
 					console.debug('[chat] loadNextHistory: loading session %d/%d id=%s',
 						this.__historyLoadedCount + 1, this.historySessionIds.length, entry.sessionId);
 					const conn = getReadyConn(this.clawId);
@@ -1558,6 +1566,19 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 				catch (err) {
 					console.warn('[chat] loadNextHistorySession failed:', err?.message);
+					// 终态失败（正文已不可恢复 / 已损坏）：入空段带 reason，让 ChatPage 渲染占位而非整段消失。
+					// 注意向前兼容：旧插件对"正文没了"仍返 ok:true {messages:[]} 走上面的 try 入空段（reason 为 undefined）；
+					// 新插件才以 NOT_FOUND/PARSE_FAILED 抛错走这里——两路最终都汇成空段占位。
+					if (err?.code === 'NOT_FOUND' || err?.code === 'PARSE_FAILED') {
+						const reason = err.code === 'PARSE_FAILED' ? 'corrupt' : 'missing';
+						this.historySegments = [
+							{ sessionId: entry.sessionId, archivedAt: entry.archivedAt, messages: [], reason },
+							...this.historySegments,
+						];
+						this.__historyLoadedCount++;
+						return true;
+					}
+					// 瞬时错误（超时 / RTC_LOST 等）维持现状：推进计数（预存问题见 ui/TODO.md）
 					this.__historyLoadedCount++;
 					return false;
 				}

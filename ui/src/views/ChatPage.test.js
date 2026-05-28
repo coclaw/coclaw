@@ -104,6 +104,7 @@ const i18nMap = {
 	'chat.cancelNotSupported': 'Cancel not supported',
 	'chat.upgradeOpenClawHint': 'Upgrade OpenClaw',
 	'chat.historyUnavailable': 'This conversation is no longer available',
+	'chat.historyCorrupt': 'This conversation appears to be corrupted',
 };
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
@@ -3739,6 +3740,40 @@ describe('ChatPage chatMessages 空归档段占位', () => {
 		const el = wrapper.find('[data-testid="empty-session"]');
 		expect(el.exists()).toBe(true);
 		expect(el.text()).toContain('This conversation is no longer available');
+	});
+
+	test('占位项透传段的 reason（missing / corrupt / 无）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-missing', archivedAt: 1700000001000, messages: [], reason: 'missing' },
+			{ sessionId: 'seg-corrupt', archivedAt: 1700000002000, messages: [], reason: 'corrupt' },
+			// 旧插件空返回 / 良性空：无 reason
+			{ sessionId: 'seg-plain', archivedAt: 1700000003000, messages: [] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const items = wrapper.vm.chatMessages;
+		expect(items.find((it) => it.id === 'empty-seg-missing').reason).toBe('missing');
+		expect(items.find((it) => it.id === 'empty-seg-corrupt').reason).toBe('corrupt');
+		expect(items.find((it) => it.id === 'empty-seg-plain').reason).toBeUndefined();
+	});
+
+	test('reason=corrupt 的占位渲染损坏文案，其余渲染中性文案', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.errorText = '';
+		chatStore.__messagesLoaded = true;
+		chatStore.messages = [];
+		chatStore.historySegments = [
+			{ sessionId: 'seg-corrupt', archivedAt: 1700000005000, messages: [], reason: 'corrupt' },
+		];
+		await wrapper.vm.$nextTick();
+		const el = wrapper.find('[data-testid="empty-session"]');
+		expect(el.exists()).toBe(true);
+		expect(el.text()).toContain('This conversation appears to be corrupted');
+		expect(el.text()).not.toContain('no longer available');
 	});
 });
 

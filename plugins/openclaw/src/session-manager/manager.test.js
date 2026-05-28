@@ -190,12 +190,14 @@ test('getById - 返回完整 JSONL 行级结构', async () => {
 	assert.equal(res.messages[1].message.content, 'hi there');
 });
 
-test('getById - 文件不存在返回空消息', async () => {
+test('getById - 文件不存在抛 NOT_FOUND', async () => {
 	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
 	await fs.mkdir(nodePath.join(root, 'main', 'sessions'), { recursive: true });
 	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
-	const res = await manager.getById({ sessionId: 'nonexistent' });
-	assert.deepStrictEqual(res, { messages: [] });
+	await assert.rejects(
+		manager.getById({ sessionId: 'nonexistent' }),
+		(err) => err.code === 'NOT_FOUND',
+	);
 });
 
 test('getById - 缺少 sessionId 抛出错误', async () => {
@@ -252,6 +254,74 @@ test('getById - 跳过无效 message 行', async () => {
 	assert.equal(res.messages[0].message.content, 'ok');
 	assert.equal(res.messages[1].message.content, 'fine');
 	assert.ok(warns.length > 0, 'should have warned about bad json');
+	// 有可解析行 + 个别坏行 → 容错返回好行，并在 badLines 记下坏行原文供排障
+	assert.equal(res.badLines.length, 1, '仅 not-json 一行 parse 失败');
+	assert.equal(res.badLines[0].index, 1, '坏行是第 2 个内容行（0-based index=1）');
+	assert.equal(res.badLines[0].raw, 'not-json', '原文不截断');
+	assert.equal(typeof res.badLines[0].error, 'string');
+});
+
+test('getById - 非空文件一行都解析不出抛 PARSE_FAILED', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(nodePath.join(sessionsDir, 'corrupt.jsonl'), 'not-json\n{bad\nalso bad\n', 'utf8');
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	await assert.rejects(
+		manager.getById({ sessionId: 'corrupt' }),
+		(err) => err.code === 'PARSE_FAILED',
+	);
+});
+
+test('getById - 全合法 JSON 但无 message 行 → 良性空（不抛、无 badLines）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 全是合法 JSON，但没有 type==='message' 且有 role 的行 → parseOk>0，不是损坏
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'meta.jsonl'),
+		'{"type":"header","id":"meta"}\n{"type":"summary","data":"x"}\n',
+		'utf8',
+	);
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.getById({ sessionId: 'meta' });
+	assert.deepStrictEqual(res, { messages: [] }, '良性空不带 badLines');
+});
+
+test('getById - 空文件 / 全空白行 / 纯空格制表符行 → 良性空（不抛 PARSE_FAILED）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	await fs.writeFile(nodePath.join(sessionsDir, 'empty.jsonl'), '', 'utf8');
+	await fs.writeFile(nodePath.join(sessionsDir, 'blank.jsonl'), '\n\n\n', 'utf8');
+	// 纯空格/制表符行：iterTextLines 会产出非零长度段（不是空段），靠 getById 内 line.trim() 兜底跳过
+	await fs.writeFile(nodePath.join(sessionsDir, 'ws.jsonl'), '   \n\t\n  \t  \n', 'utf8');
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	assert.deepStrictEqual(await manager.getById({ sessionId: 'empty' }), { messages: [] });
+	// 全空白：iterTextLines skipEmpty 产零行 → parseOk=0 且 badLines=[]，不算损坏
+	assert.deepStrictEqual(await manager.getById({ sessionId: 'blank' }), { messages: [] });
+	// 纯空白行视同空行 → 良性空，不误判为 PARSE_FAILED
+	assert.deepStrictEqual(await manager.getById({ sessionId: 'ws' }), { messages: [] });
+});
+
+test('getById - 空白行夹杂在内容行间：跳过不计入 badLines，index 按内容行计', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 第 1 内容行合法、中间夹纯空格行（应被跳过）、第 2 内容行是坏行
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'mixed.jsonl'),
+		'{"type":"message","message":{"role":"user","content":"ok"}}\n   \nnot-json\n',
+		'utf8',
+	);
+	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
+	const res = await manager.getById({ sessionId: 'mixed' });
+	assert.equal(res.messages.length, 1, '仅 1 条合法 message');
+	assert.equal(res.messages[0].message.content, 'ok');
+	assert.equal(res.badLines.length, 1, '空白行不进 badLines，仅 not-json 一行');
+	assert.equal(res.badLines[0].raw, 'not-json');
+	// 空白行被跳过（不占内容行序号）→ not-json 是第 2 个内容行 index=1
+	assert.equal(res.badLines[0].index, 1, 'index 按非空白内容行计，空白行不占号');
 });
 
 test('getById - fallback 到 reset 文件', async () => {
@@ -475,9 +545,11 @@ test('getById - agentId 参数正确路由', async () => {
 	);
 
 	const manager = createSessionManager({ resolveSessionsDir: (id) => nodePath.join(root, id, "sessions"), resolveStorePath: (id) => nodePath.join(root, id, "sessions", "sessions.json"), resolveTranscriptPath: (sid, id) => nodePath.join(root, id, "sessions", `${sid}.jsonl`), logger: { warn() {} } });
-	// 默认 agentId=main，找不到
-	const empty = await manager.getById({ sessionId: 'g6' });
-	assert.deepStrictEqual(empty, { messages: [] });
+	// 默认 agentId=main，找不到 → 抛 NOT_FOUND
+	await assert.rejects(
+		manager.getById({ sessionId: 'g6' }),
+		(err) => err.code === 'NOT_FOUND',
+	);
 	// 指定 agentId=tester
 	const res = await manager.getById({ sessionId: 'g6', agentId: 'tester' });
 	assert.equal(res.messages.length, 1);
@@ -870,9 +942,12 @@ test('get - logger 缺 warn 方法时坏 json 行不致命（可选链兜底）'
 	});
 	const res = await mgr.get({ sessionId: 'g' });
 	assert.equal(res.total, 1);
-	// getById 同源代码路径同样测一遍
+	// getById 同源代码路径同样测一遍：有 1 行合法 JSON（但非 message 行）→ 不抛 PARSE_FAILED，
+	// 坏行 BAD 进 badLines；logger 缺 warn 方法时可选链不致命
 	const r2 = await mgr.getById({ sessionId: 'g' });
-	assert.deepEqual(r2, { messages: [] }, 'getById 行只取 type==="message" 且有 role 的，全部坏行 → 空');
+	assert.deepEqual(r2.messages, [], 'getById 行只取 type==="message" 且有 role 的');
+	assert.equal(r2.badLines.length, 1, 'BAD 行进 badLines');
+	assert.equal(r2.badLines[0].raw, 'BAD');
 });
 
 test('get - 分页 nextCursor 在剩余条目时返回字符串（覆盖 ternary 非 null 分支）', async () => {

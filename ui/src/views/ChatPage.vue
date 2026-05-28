@@ -154,7 +154,7 @@
 						<div v-else-if="item.type === 'emptySession'" data-testid="empty-session" class="px-3 py-2 sm:px-4">
 							<div class="flex items-center justify-center gap-1.5 text-xs text-muted">
 								<UIcon name="i-lucide-info" class="size-3.5 shrink-0" />
-								<span>{{ $t('chat.historyUnavailable') }}</span>
+								<span>{{ item.reason === 'corrupt' ? $t('chat.historyCorrupt') : $t('chat.historyUnavailable') }}</span>
 							</div>
 						</div>
 						<ChatMsgItem
@@ -547,6 +547,9 @@ export default {
 						type: 'emptySession',
 						id: `empty-${seg.sessionId}`,
 						archivedAt: seg.archivedAt,
+						// reason 来自 loadNextHistorySession 终态分支：'missing'(NOT_FOUND) / 'corrupt'(PARSE_FAILED)；
+						// 旧插件空返回或良性空段无 reason → undefined → 走中性文案
+						reason: seg.reason,
 					});
 					continue;
 				}

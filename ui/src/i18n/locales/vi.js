@@ -401,6 +401,7 @@ export const viMessages = {
 		clawUnbound: 'Claw đã bị hủy liên kết',
 		noMoreHistory: 'Không có tin nhắn cũ hơn',
 		historyUnavailable: 'Nội dung cuộc trò chuyện này không còn khả dụng',
+		historyCorrupt: 'Nội dung cuộc trò chuyện này đã bị hỏng',
 		scrollUpForMore: '↑ Cuộn lên để xem tin nhắn cũ hơn',
 		scrollToBottom: 'Cuộn xuống cuối',
 		upgradeOpenClawHint: 'Bạn có thể cần nâng cấp OpenClaw. Yêu cầu OpenClaw tự nâng cấp, hoặc chạy: npm install -g openclaw',

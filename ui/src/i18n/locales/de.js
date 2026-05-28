@@ -401,6 +401,7 @@ export const deMessages = {
 		clawUnbound: 'Claw wurde getrennt',
 		noMoreHistory: 'Keine früheren Nachrichten',
 		historyUnavailable: 'Dieser Gesprächsabschnitt ist nicht mehr verfügbar',
+		historyCorrupt: 'Dieser Gesprächsabschnitt ist beschädigt',
 		scrollUpForMore: '↑ Nach oben scrollen für frühere Nachrichten',
 		scrollToBottom: 'Nach unten scrollen',
 		upgradeOpenClawHint: 'Möglicherweise muss OpenClaw aktualisiert werden. Bitte OpenClaw, sich selbst zu aktualisieren, oder ausführen: npm install -g openclaw',

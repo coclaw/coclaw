@@ -401,6 +401,7 @@ export const zhTWMessages = {
 		clawUnbound: 'Claw 已解除綁定',
 		noMoreHistory: '沒有更多聊天記錄了',
 		historyUnavailable: '此段對話內容已不可用',
+		historyCorrupt: '此段對話內容已損毀',
 		scrollUpForMore: '↑ 上翻載入更早記錄',
 		scrollToBottom: '回到底部',
 		upgradeOpenClawHint: '可能需要升級 OpenClaw，請讓 OpenClaw 自行升級或執行：npm install -g openclaw',
