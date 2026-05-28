@@ -40,6 +40,9 @@ function makeSdkModules() {
 			hasConfiguredSecretInput: () => false,
 			ensureAuthProfileStore: () => ({ profiles: {} }),
 		},
+		agentRuntime: {
+			resolveProviderIdForAuth: (p) => p,
+		},
 		__mutateCalls: mutateCalls,
 	};
 }
@@ -59,6 +62,7 @@ test('registerModelDefaultHandlers 注册两个 RPC method', () => {
 		loadConfigMutation: async () => mods.configMutation,
 		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
+		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({ agents: { defaults: {} } }),
 		resolveAgentDir: () => '/fake',
 	});
@@ -73,6 +77,7 @@ test('list 调用走到 handler 并返回出参', async () => {
 		loadConfigMutation: async () => mods.configMutation,
 		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
+		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({
 			agents: {
 				defaults: { model: 'openai-codex/gpt-5.5' },
@@ -101,6 +106,7 @@ test('list 出参带凭据信号：内联 key 让 providerUsable / hasAnyUsableC
 		loadConfigMutation: async () => mods.configMutation,
 		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
+		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({
 			agents: { defaults: { model: 'openai-codex/gpt-5.5' } },
 			models: { providers: { 'openai-codex': { apiKey: 'sk-inline-test' } } },
@@ -121,6 +127,7 @@ test('set 调用走到 handler 并写盘', async () => {
 		loadConfigMutation: async () => mods.configMutation,
 		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
+		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({ agents: {} }),
 		resolveAgentDir: () => '/fake',
 	});
@@ -139,6 +146,7 @@ test('SDK loader 抛错 → IO_FAILED', async () => {
 		loadConfigMutation: async () => { throw new Error('sdk gone'); },
 		loadModelsProviderRuntime: async () => ({}),
 		loadProviderAuth: async () => ({}),
+		loadAgentRuntime: async () => ({}),
 		loadConfig: () => ({ agents: {} }),
 		resolveAgentDir: () => '/fake',
 	});
@@ -149,12 +157,32 @@ test('SDK loader 抛错 → IO_FAILED', async () => {
 	assert.match(r.calls[0].error.message, /sdk gone/);
 });
 
+test('loadAgentRuntime 抛错 → IO_FAILED（钉住已接入 Promise.all bundle）', async () => {
+	// 若 loadAgentRuntime 漏接进 getHandlers 的 Promise.all，它抛错就不会变成 IO_FAILED
+	const api = makeApi();
+	const mods = makeSdkModules();
+	registerModelDefaultHandlers(api, {
+		loadConfigMutation: async () => mods.configMutation,
+		loadModelsProviderRuntime: async () => mods.modelsRuntime,
+		loadProviderAuth: async () => mods.providerAuth,
+		loadAgentRuntime: async () => { throw new Error('agent-runtime gone'); },
+		loadConfig: () => ({ agents: {} }),
+		resolveAgentDir: () => '/fake',
+	});
+	const r = makeRespond();
+	await api.__call('coclaw.model.list', { params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, false);
+	assert.equal(r.calls[0].error.code, 'IO_FAILED');
+	assert.match(r.calls[0].error.message, /agent-runtime gone/);
+});
+
 test('SDK loader 抛非 Error 字符串 → IO_FAILED message 走 ?? err 兜底', async () => {
 	const api = makeApi();
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => { throw 'boom-as-string'; },
 		loadModelsProviderRuntime: async () => ({}),
 		loadProviderAuth: async () => ({}),
+		loadAgentRuntime: async () => ({}),
 		loadConfig: () => ({ agents: {} }),
 		resolveAgentDir: () => '/fake',
 	});
@@ -167,7 +195,7 @@ test('SDK loader 抛非 Error 字符串 → IO_FAILED message 走 ?? err 兜底'
 test('并发首调：同事件循环内多次调用共享同一 handlersPromise，三个 loader 各自只调一次', async () => {
 	const api = makeApi();
 	const mods = makeSdkModules();
-	let cmLoads = 0, mrLoads = 0, paLoads = 0;
+	let cmLoads = 0, mrLoads = 0, paLoads = 0, arLoads = 0;
 	let resolveCM, resolveMR, resolvePA;
 	const cmReady = new Promise((r) => { resolveCM = r; });
 	const mrReady = new Promise((r) => { resolveMR = r; });
@@ -188,6 +216,7 @@ test('并发首调：同事件循环内多次调用共享同一 handlersPromise�
 			await paReady;
 			return mods.providerAuth;
 		},
+		loadAgentRuntime: async () => { arLoads += 1; return mods.agentRuntime; },
 		loadConfig: () => ({ agents: {} }),
 		resolveAgentDir: () => '/fake',
 	});
@@ -200,6 +229,7 @@ test('并发首调：同事件循环内多次调用共享同一 handlersPromise�
 	assert.equal(cmLoads, 1);
 	assert.equal(mrLoads, 1);
 	assert.equal(paLoads, 1);
+	assert.equal(arLoads, 1);
 	assert.equal(r1.calls[0].ok, true);
 	assert.equal(r2.calls[0].ok, true);
 });
@@ -215,6 +245,7 @@ test('handlers 实例在多次调用间复用（loader 只调一次）', async (
 		},
 		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
+		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({ agents: {} }),
 		resolveAgentDir: () => '/fake',
 	});

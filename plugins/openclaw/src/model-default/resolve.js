@@ -102,37 +102,95 @@ export function providerSegmentOf(primary) {
 }
 
 /**
- * 某 provider 是否配了内联 key（cfg.models.providers[provider].apiKey）。
+ * 某 provider 是否配了内联 key（cfg.models.providers.<id>.apiKey）。
+ * 别名感知：查询名与各内联节点 id 两侧都过 resolveProviderIdForAuth 归一后比较，
+ * 故持基座 volcengine 内联 key 的用户查 volcengine-plan（套餐变体）也命中。
  * 仅是"配置信号"（hasConfiguredSecretInput 不验证 env 引用能否真解析，
  * 见心智模型典型陷阱 #20），方向偏向少误报。
+ * @param {object} cfg
+ * @param {string} provider - 裸 provider 名
+ * @param {object} deps - { hasConfiguredSecretInput, resolveProviderIdForAuth }
+ * @returns {boolean}
  */
-function hasInlineKey(cfg, provider, hasConfiguredSecretInput) {
-	const entry = cfg?.models?.providers?.[provider];
-	return entry ? hasConfiguredSecretInput(entry.apiKey) : false;
+function hasInlineKey(cfg, provider, deps) {
+	const providers = cfg?.models?.providers;
+	if (!providers || typeof providers !== 'object') return false;
+	const targetId = deps.resolveProviderIdForAuth(provider);
+	for (const [nodeId, entry] of Object.entries(providers)) {
+		if (!entry || !deps.hasConfiguredSecretInput(entry.apiKey)) continue;
+		if (deps.resolveProviderIdForAuth(nodeId) === targetId) return true;
+	}
+	return false;
 }
 
 /**
- * 该 primary 那家 provider 有没有可用凭据。
- * 判定 = isProviderApiKeyConfigured（覆盖环境变量 + 自管账本，别名归一化其内部完成）
- *        或 该 provider 配了内联 key。
+ * 某 provider（裸名，无斜杠）有没有可用凭据 —— 统一别名感知原语。
+ * 判定 = isProviderApiKeyConfigured（覆盖 env + 自管账本，别名归一其内部完成）
+ *        ∪ hasInlineKey（内联 key，别名归一）。
+ * 覆盖 env + 内联 + 账本 + 别名套餐；统一漏 IAM/本地（hasAuthForModelProvider 未导出 plugin-sdk，接受）。
+ * 选模型器枚举 / model.set 门 / providerUsable / noKey 四个消费点同吃这一个原语，杜绝跨界面口径分叉。
+ * @param {string|null} provider - 裸 provider 名（如 'openai' / 'volcengine-plan'）
+ * @param {object} cfg
+ * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput, resolveProviderIdForAuth }
+ * @returns {boolean}
+ */
+export function computeProviderUsableByName(provider, cfg, deps) {
+	if (typeof provider !== 'string' || provider.length === 0) return false;
+	if (deps.isProviderApiKeyConfigured({ provider, agentDir: deps.agentDir })) return true;
+	return hasInlineKey(cfg, provider, deps);
+}
+
+/**
+ * 该 primary 那家 provider 有没有可用凭据：取 provider 段后委托 computeProviderUsableByName。
  * primary 解析不出 provider 段（含 null）时恒 false（UI 此时走 noPrimary，不看它）。
  * @param {string|null} primary
  * @param {object} cfg
- * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput }
+ * @param {object} deps - 同 computeProviderUsableByName
  * @returns {boolean}
  */
 export function computeProviderUsable(primary, cfg, deps) {
-	const provider = providerSegmentOf(primary);
-	if (!provider) return false;
-	if (deps.isProviderApiKeyConfigured({ provider, agentDir: deps.agentDir })) return true;
-	return hasInlineKey(cfg, provider, deps.hasConfiguredSecretInput);
+	return computeProviderUsableByName(providerSegmentOf(primary), cfg, deps);
 }
 
 /**
- * 这台 claw 有没有任何可用凭据：自管账本非空 或 任一 provider 节点有内联 key。
- * 驱动 UI 的 noKey 引导。
+ * 收集"候选 provider 名"（未归一、原始拼写）供 env 探测：
+ * default + 各 agent primary 的 provider 段 ∪ 内联节点 id ∪ 账本各 profile 的 provider。
+ * env-only 凭据无法穷举所有环境变量名，只在这些候选上用 isProviderApiKeyConfigured 探测，
+ * 与 providerAuth.list 的 env 口径一致（纯 env、又非主模型/账本/内联的 provider 不计，接受残留）。
  * @param {object} cfg
- * @param {object} deps - { agentDir, ensureAuthProfileStore, hasConfiguredSecretInput }
+ * @param {object|null} store - ensureAuthProfileStore 返回值（可能为 null）
+ * @returns {Set<string>}
+ */
+function collectCandidateProviders(cfg, store) {
+	const out = new Set();
+	const base = listAllPrimaries(cfg);
+	const seg = providerSegmentOf(base.default.primary);
+	if (seg) out.add(seg);
+	for (const v of Object.values(base.agents)) {
+		const s = providerSegmentOf(v.primary);
+		if (s) out.add(s);
+	}
+	const providers = cfg?.models?.providers;
+	if (providers && typeof providers === 'object') {
+		for (const id of Object.keys(providers)) out.add(id);
+	}
+	if (store && store.profiles && typeof store.profiles === 'object') {
+		for (const cred of Object.values(store.profiles)) {
+			if (cred && typeof cred.provider === 'string' && cred.provider.length > 0) {
+				out.add(cred.provider);
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * 这台 claw 有没有任何可用凭据：自管账本非空 OR 任一内联 key OR 任一候选 provider 有 env key。
+ * 驱动 UI 的 noKey 引导。必补 C：补 env（候选集口径见 collectCandidateProviders），
+ * 与 per-provider 的 providerUsable 口径对齐，根治"纯 env-only 用户被误弹『还没加 key』"。
+ * 补后仅漏纯 IAM-only/本地（pro，接受 spurious noKey）。
+ * @param {object} cfg
+ * @param {object} deps - { agentDir, ensureAuthProfileStore, hasConfiguredSecretInput, isProviderApiKeyConfigured }
  * @returns {boolean}
  */
 export function computeHasAnyUsableCredential(cfg, deps) {
@@ -144,14 +202,91 @@ export function computeHasAnyUsableCredential(cfg, deps) {
 			if (entry && deps.hasConfiguredSecretInput(entry.apiKey)) return true;
 		}
 	}
+	for (const provider of collectCandidateProviders(cfg, store)) {
+		if (deps.isProviderApiKeyConfigured({ provider, agentDir: deps.agentDir })) return true;
+	}
 	return false;
+}
+
+/**
+ * 别名归一的"已配 provider"集 = 用户已持任一来源凭据的基座 provider id 集，
+ * 供 UI 加 provider 时排除（套餐用户持 volcengine key 后不再被叫去加 volcengine/volcengine-plan）。
+ * 三源（每个都过 resolveProviderIdForAuth 归一后去重）：
+ *   ① 账本各 profile 的 cred.provider
+ *   ② 内联各带 apiKey 的节点 id
+ *   ③ env 候选（collectCandidateProviders 口径）中 isProviderApiKeyConfigured 命中的
+ * @param {object} cfg
+ * @param {object} deps - { agentDir, ensureAuthProfileStore, hasConfiguredSecretInput, isProviderApiKeyConfigured, resolveProviderIdForAuth }
+ * @returns {string[]} 升序去重
+ */
+export function computeConfiguredProviders(cfg, deps) {
+	const store = deps.ensureAuthProfileStore(deps.agentDir, { allowKeychainPrompt: false });
+	const out = new Set();
+	const add = (raw) => {
+		const id = deps.resolveProviderIdForAuth(raw);
+		if (id) out.add(id);
+	};
+	if (store && store.profiles && typeof store.profiles === 'object') {
+		for (const cred of Object.values(store.profiles)) {
+			if (cred && typeof cred.provider === 'string' && cred.provider.length > 0) add(cred.provider);
+		}
+	}
+	const providers = cfg?.models?.providers;
+	if (providers && typeof providers === 'object') {
+		for (const [id, entry] of Object.entries(providers)) {
+			if (entry && deps.hasConfiguredSecretInput(entry.apiKey)) add(id);
+		}
+	}
+	for (const provider of collectCandidateProviders(cfg, store)) {
+		if (deps.isProviderApiKeyConfigured({ provider, agentDir: deps.agentDir })) add(provider);
+	}
+	return [...out].sort();
+}
+
+/**
+ * 选模型器枚举（纯同步）：把干净目录按 entry.provider 分组，留 computeProviderUsableByName 为真的 provider。
+ * catalogEntries 由调用方传入（子任务 2 的 handler 调 loadModelCatalog({readOnly:true}) 后传进来），
+ * 本函数不自己 await loadModelCatalog；空 / 非数组 entries → 空 byProvider。
+ * 变体 provider（如 volcengine-plan）经 manifest 目录行进入 entries、再经基座 key 别名感知保留；
+ * 无凭据 provider 被丢（含幽灵——幽灵根本不在 loadModelCatalog 这个源里）。
+ *
+ * 文本模态过滤：核实结论 = 不过滤。loadModelCatalog 输出的 ModelCatalogEntry 无 output kind 字段
+ * （image_generation 等是网关响应的另一类型；imageModel 注入只在 buildModelsProviderData 尾部、不在此源），
+ * 故无"纯图像/视频生成"条目混入；entry.input 是"输入"模态而非输出 kind，按它滤会误删多模态文本模型。
+ *
+ * @param {object[]} catalogEntries - loadModelCatalog({readOnly:true}) 的结果（ModelCatalogEntry[]）
+ * @param {object} cfg
+ * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput, resolveProviderIdForAuth, ensureAuthProfileStore }
+ * @returns {{ byProvider: Record<string, string[]>, configuredProviders: string[] }}
+ */
+export function enumerateUsableModels(catalogEntries, cfg, deps) {
+	const grouped = new Map(); // provider -> Set<modelId>
+	if (Array.isArray(catalogEntries)) {
+		for (const entry of catalogEntries) {
+			if (!entry || typeof entry.provider !== 'string' || entry.provider.length === 0) continue;
+			if (typeof entry.id !== 'string' || entry.id.length === 0) continue;
+			let set = grouped.get(entry.provider);
+			if (!set) {
+				set = new Set();
+				grouped.set(entry.provider, set);
+			}
+			set.add(entry.id);
+		}
+	}
+	const byProvider = {};
+	for (const [provider, ids] of grouped) {
+		if (computeProviderUsableByName(provider, cfg, deps)) {
+			byProvider[provider] = [...ids].sort();
+		}
+	}
+	return { byProvider, configuredProviders: computeConfiguredProviders(cfg, deps) };
 }
 
 /**
  * 装配带凭据信号的 list 出参（docs/model-config-api.md § 3.4「凭据信号」）。
  * 在 listAllPrimaries 基础上给每个 scope 加 providerUsable，并加顶层 hasAnyUsableCredential。
  * @param {object} cfg
- * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput, ensureAuthProfileStore }
+ * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput, ensureAuthProfileStore, resolveProviderIdForAuth }
  * @returns {{
  *   default: { primary: string|null, providerUsable: boolean },
  *   agents: Record<string, { primary: string|null, providerUsable: boolean }>,

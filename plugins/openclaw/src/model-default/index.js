@@ -23,6 +23,7 @@ import { getClawConfig } from '../claw-config.js';
 let _configMutationP;
 let _modelsP;
 let _providerAuthP;
+let _agentRuntimeP;
 
 function defaultLoadConfigMutation() {
 	_configMutationP ??= import('openclaw/plugin-sdk/config-mutation');
@@ -36,6 +37,12 @@ function defaultLoadProviderAuth() {
 	_providerAuthP ??= import('openclaw/plugin-sdk/provider-auth');
 	return _providerAuthP;
 }
+function defaultLoadAgentRuntime() {
+	// 别名感知原语用：resolveProviderIdForAuth（barrel re-export provider-auth-aliases.js）；
+	// 选模型器枚举的 loadModelCatalog 也在同一 barrel（子任务 2 接入，无需新增字面量）
+	_agentRuntimeP ??= import('openclaw/plugin-sdk/agent-runtime');
+	return _agentRuntimeP;
+}
 
 /**
  * 测试辅助：清掉懒加载 SDK 缓存。
@@ -44,6 +51,7 @@ export function __resetSdkCaches() {
 	_configMutationP = undefined;
 	_modelsP = undefined;
 	_providerAuthP = undefined;
+	_agentRuntimeP = undefined;
 }
 
 /**
@@ -59,6 +67,7 @@ export function __resetSdkCaches() {
  * @param {Function} [opts.loadConfigMutation] - 必传（生产由入口注入字面量 dynamic import）
  * @param {Function} [opts.loadModelsProviderRuntime] - 必传（同上）
  * @param {Function} [opts.loadProviderAuth] - 必传（同上）
+ * @param {Function} [opts.loadAgentRuntime] - 必传（同上；resolveProviderIdForAuth / 后续 loadModelCatalog）
  */
 export function registerModelDefaultHandlers(api, opts = {}) {
 	const resolveAgentDir = opts.resolveAgentDir ?? mainAgentDir;
@@ -66,15 +75,17 @@ export function registerModelDefaultHandlers(api, opts = {}) {
 	const loadConfigMutation = opts.loadConfigMutation ?? defaultLoadConfigMutation;
 	const loadModelsProviderRuntime = opts.loadModelsProviderRuntime ?? defaultLoadModelsProviderRuntime;
 	const loadProviderAuth = opts.loadProviderAuth ?? defaultLoadProviderAuth;
+	const loadAgentRuntime = opts.loadAgentRuntime ?? defaultLoadAgentRuntime;
 
 	let handlersPromise;
 	async function getHandlers() {
 		if (!handlersPromise) {
 			handlersPromise = (async () => {
-				const [configMutation, modelsRuntime, providerAuth] = await Promise.all([
+				const [configMutation, modelsRuntime, providerAuth, agentRuntime] = await Promise.all([
 					loadConfigMutation(),
 					loadModelsProviderRuntime(),
 					loadProviderAuth(),
+					loadAgentRuntime(),
 				]);
 				const sdk = {
 					mutateConfigFile: configMutation.mutateConfigFile,
@@ -84,6 +95,8 @@ export function registerModelDefaultHandlers(api, opts = {}) {
 					isProviderApiKeyConfigured: providerAuth.isProviderApiKeyConfigured,
 					hasConfiguredSecretInput: providerAuth.hasConfiguredSecretInput,
 					ensureAuthProfileStore: providerAuth.ensureAuthProfileStore,
+					// 内联别名归一（list 凭据信号 + 选模型器枚举用）
+					resolveProviderIdForAuth: agentRuntime.resolveProviderIdForAuth,
 				};
 				return buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir });
 			})();

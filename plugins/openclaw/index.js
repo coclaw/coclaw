@@ -822,6 +822,8 @@ const plugin = {
 			loadConfigMutation: () => import('openclaw/plugin-sdk/config-mutation'),
 			loadModelsProviderRuntime: () => import('openclaw/plugin-sdk/models-provider-runtime'),
 			loadProviderAuth: () => import('openclaw/plugin-sdk/provider-auth'),
+			// agent-runtime barrel：resolveProviderIdForAuth（内联别名归一）+ 后续 loadModelCatalog（选模型器枚举）
+			loadAgentRuntime: () => import('openclaw/plugin-sdk/agent-runtime'),
 		});
 
 		const scheduler = new AutoUpgradeScheduler({ pluginId: api.id, logger });

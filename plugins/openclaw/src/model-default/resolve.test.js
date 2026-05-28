@@ -8,19 +8,23 @@ import {
 	findAgentEntry,
 	listAllPrimaries,
 	providerSegmentOf,
+	computeProviderUsableByName,
 	computeProviderUsable,
 	computeHasAnyUsableCredential,
+	computeConfiguredProviders,
+	enumerateUsableModels,
 	listAllPrimariesWithCredentials,
 	MAIN_AGENT_ID,
 } from './resolve.js';
 
-// 凭据信号测试用的 fake deps：默认全否、账本空
+// 凭据信号测试用的 fake deps：默认全否、账本空、别名归一为 identity
 function makeCredDeps(overrides = {}) {
 	return {
 		agentDir: '/fake/agents/main/agent',
 		isProviderApiKeyConfigured: () => false,
 		hasConfiguredSecretInput: () => false,
 		ensureAuthProfileStore: () => ({ profiles: {} }),
+		resolveProviderIdForAuth: (p) => p,
 		...overrides,
 	};
 }
@@ -236,6 +240,70 @@ test('computeProviderUsable: 三源全无 → false', () => {
 	assert.equal(computeProviderUsable('minimax/x', cfg, makeCredDeps()), false);
 });
 
+// ============ computeProviderUsableByName（统一原语 / B 修复 / 别名套餐）============
+
+test('computeProviderUsableByName: 裸名有账本/env 凭据 → true（B：裸名不再恒 false）', () => {
+	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'openai' });
+	assert.equal(computeProviderUsableByName('openai', {}, deps), true);
+});
+
+test('computeProviderUsableByName: 裸名无任何凭据 → false', () => {
+	assert.equal(computeProviderUsableByName('openai', {}, makeCredDeps()), false);
+});
+
+test('computeProviderUsableByName: 非字符串 / 空串 → false', () => {
+	assert.equal(computeProviderUsableByName(null, {}, makeCredDeps()), false);
+	assert.equal(computeProviderUsableByName(undefined, {}, makeCredDeps()), false);
+	assert.equal(computeProviderUsableByName('', {}, makeCredDeps()), false);
+});
+
+test('computeProviderUsableByName: 别名套餐 —— 基座账本 key 经 isProviderApiKeyConfigured 别名归一点亮变体名', () => {
+	// 模拟上游 isProviderApiKeyConfigured 的别名感知：账本只有基座 volcengine，
+	// 查询变体名 volcengine-plan 先归一到 volcengine 再命中（两侧归一在 SDK 内完成），
+	// 故 mock 不能对 volcengine-plan 直接返回 true，须建模"基座账本 + 归一查找"
+	const resolveBase = (p) => (p === 'volcengine-plan' ? 'volcengine' : p);
+	const baseLedger = new Set(['volcengine']);
+	const deps = makeCredDeps({
+		isProviderApiKeyConfigured: ({ provider }) => baseLedger.has(resolveBase(provider)),
+	});
+	assert.equal(computeProviderUsableByName('volcengine-plan', {}, deps), true);
+	assert.equal(computeProviderUsableByName('some-unconfigured', {}, deps), false);
+});
+
+test('computeProviderUsableByName: 别名套餐 —— 内联基座 key 经两侧归一让变体名为 true', () => {
+	const cfg = { models: { providers: { volcengine: { apiKey: 'sk-volc' } } } };
+	const deps = makeCredDeps({
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: (v) => v === 'sk-volc',
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+	});
+	assert.equal(computeProviderUsableByName('volcengine-plan', cfg, deps), true);
+});
+
+test('computeProviderUsableByName: 内联节点归一后不同 provider → false', () => {
+	const cfg = { models: { providers: { anthropic: { apiKey: 'sk-a' } } } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: () => true });
+	assert.equal(computeProviderUsableByName('volcengine-plan', cfg, deps), false);
+});
+
+test('computeProviderUsableByName: providers 非对象 → 内联判 false', () => {
+	const cfg = { models: { providers: 'oops' } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: () => true });
+	assert.equal(computeProviderUsableByName('openai', cfg, deps), false);
+});
+
+test('computeProviderUsableByName: 内联节点为 null / 无 apiKey 跳过不崩', () => {
+	const cfg = { models: { providers: { a: null, b: {} } } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: (v) => typeof v === 'string' });
+	assert.equal(computeProviderUsableByName('a', cfg, deps), false);
+});
+
+// computeProviderUsable 委托 ByName（取 provider 段）
+test('computeProviderUsable: 委托 ByName —— 含斜杠取段后判定', () => {
+	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'volcengine-plan' });
+	assert.equal(computeProviderUsable('volcengine-plan/ark-code-latest', {}, deps), true);
+});
+
 // ============ computeHasAnyUsableCredential ============
 
 test('computeHasAnyUsableCredential: 账本非空 → true', () => {
@@ -279,6 +347,126 @@ test('computeHasAnyUsableCredential: providers 含 null entry 不崩、跳过', 
 test('computeHasAnyUsableCredential: providers 非对象 → false', () => {
 	const cfg = { models: { providers: 'oops' } };
 	assert.equal(computeHasAnyUsableCredential(cfg, makeCredDeps()), false);
+});
+
+test('computeHasAnyUsableCredential: 必补 C —— 纯 env-only（账本/内联空，env 命中 default 主模型段）→ true', () => {
+	const cfg = { agents: { defaults: { model: 'openai/gpt-5.5' } } };
+	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'openai' });
+	assert.equal(computeHasAnyUsableCredential(cfg, deps), true);
+});
+
+test('computeHasAnyUsableCredential: env 命中 agent 主模型段（default 为空）→ true', () => {
+	const cfg = { agents: { list: [{ id: 'r', model: 'groq/x' }] } };
+	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'groq' });
+	assert.equal(computeHasAnyUsableCredential(cfg, deps), true);
+});
+
+test('computeHasAnyUsableCredential: 候选集有但 env 全不命中 → false', () => {
+	const cfg = { agents: { defaults: { model: 'openai/gpt-5.5' } } };
+	assert.equal(computeHasAnyUsableCredential(cfg, makeCredDeps()), false);
+});
+
+// ============ computeConfiguredProviders ============
+
+test('computeConfiguredProviders: 三源合并 + 别名归一 + 去重 + 升序', () => {
+	const cfg = {
+		agents: { defaults: { model: 'openai/gpt-5.5' } },
+		models: { providers: { 'volcengine-plan': { apiKey: 'sk' } } },
+	};
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({ profiles: { 'volcengine:default': { provider: 'volcengine', type: 'api_key' } } }),
+		hasConfiguredSecretInput: (v) => v === 'sk',
+		isProviderApiKeyConfigured: ({ provider }) => provider === 'openai',
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+	});
+	// 账本 volcengine + 内联 volcengine-plan(归一 volcengine) 去重 → volcengine；env 候选 openai
+	assert.deepEqual(computeConfiguredProviders(cfg, deps), ['openai', 'volcengine']);
+});
+
+test('computeConfiguredProviders: store 为 null → 跳过账本源、仅内联', () => {
+	const cfg = { models: { providers: { groq: { apiKey: 'k' } } } };
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => null,
+		hasConfiguredSecretInput: (v) => v === 'k',
+	});
+	assert.deepEqual(computeConfiguredProviders(cfg, deps), ['groq']);
+});
+
+test('computeConfiguredProviders: 账本 profile 边角（null / provider 非串 / 空串）跳过', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({
+			profiles: { p1: null, p2: { provider: 123 }, p3: { provider: '' }, p4: { provider: 'cohere' } },
+		}),
+	});
+	assert.deepEqual(computeConfiguredProviders({}, deps), ['cohere']);
+});
+
+test('computeConfiguredProviders: 归一返回空串的 provider 不计入', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({ profiles: { x: { provider: 'weird' } } }),
+		resolveProviderIdForAuth: () => '',
+	});
+	assert.deepEqual(computeConfiguredProviders({}, deps), []);
+});
+
+test('computeConfiguredProviders: 内联节点 null / 无 apiKey 跳过', () => {
+	const cfg = { models: { providers: { a: null, b: {}, c: { apiKey: 'k' } } } };
+	const deps = makeCredDeps({ hasConfiguredSecretInput: (v) => v === 'k' });
+	assert.deepEqual(computeConfiguredProviders(cfg, deps), ['c']);
+});
+
+test('computeConfiguredProviders: providers 非对象 → 不崩、空集', () => {
+	const cfg = { models: { providers: 'oops' } };
+	assert.deepEqual(computeConfiguredProviders(cfg, makeCredDeps()), []);
+});
+
+// ============ enumerateUsableModels ============
+
+test('enumerateUsableModels: 按 provider 分组、留有凭据的、含变体、丢幽灵、id 去重升序', () => {
+	const entries = [
+		{ id: 'gpt-5.5', provider: 'openai' },
+		{ id: 'gpt-4o', provider: 'openai' },
+		{ id: 'gpt-5.5', provider: 'openai' }, // 重复 id
+		{ id: 'ark-code-latest', provider: 'volcengine-plan' }, // 变体
+		{ id: 'claude', provider: 'anthropic' }, // 无凭据 → 丢
+	];
+	const deps = makeCredDeps({
+		isProviderApiKeyConfigured: ({ provider }) => provider === 'openai' || provider === 'volcengine-plan',
+	});
+	const { byProvider } = enumerateUsableModels(entries, {}, deps);
+	assert.deepEqual(byProvider, {
+		openai: ['gpt-4o', 'gpt-5.5'],
+		'volcengine-plan': ['ark-code-latest'],
+	});
+});
+
+test('enumerateUsableModels: 同时返回 configuredProviders（候选含主模型段）', () => {
+	const entries = [{ id: 'm', provider: 'openai' }];
+	const cfg = { agents: { defaults: { model: 'openai/m' } } };
+	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'openai' });
+	const out = enumerateUsableModels(entries, cfg, deps);
+	assert.deepEqual(out.byProvider, { openai: ['m'] });
+	assert.deepEqual(out.configuredProviders, ['openai']);
+});
+
+test('enumerateUsableModels: 空 / 非数组 entries → 空 byProvider', () => {
+	assert.deepEqual(enumerateUsableModels([], {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
+	assert.deepEqual(enumerateUsableModels(undefined, {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
+	assert.deepEqual(enumerateUsableModels('nope', {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
+});
+
+test('enumerateUsableModels: 跳过坏条目（null / 缺 id / 缺 provider / 空串）', () => {
+	const entries = [
+		null,
+		{ provider: 'openai' }, // 缺 id
+		{ id: 'x' }, // 缺 provider
+		{ id: '', provider: 'openai' }, // id 空串
+		{ id: 'y', provider: '' }, // provider 空串
+		{ id: 'ok', provider: 'openai' },
+	];
+	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'openai' });
+	const { byProvider } = enumerateUsableModels(entries, {}, deps);
+	assert.deepEqual(byProvider, { openai: ['ok'] });
 });
 
 // ============ listAllPrimariesWithCredentials ============

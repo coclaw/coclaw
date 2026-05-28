@@ -80,6 +80,7 @@ async function validateProviderCredAndCatalog({ provider, model, primary, cfg, s
  * @param {Function} opts.sdk.isProviderApiKeyConfigured - openclaw/plugin-sdk/provider-auth（list 凭据信号用）
  * @param {Function} opts.sdk.hasConfiguredSecretInput - openclaw/plugin-sdk/provider-auth（list 内联 key 判定）
  * @param {Function} opts.sdk.ensureAuthProfileStore - openclaw/plugin-sdk/provider-auth（list 账本非空判定）
+ * @param {Function} opts.sdk.resolveProviderIdForAuth - openclaw/plugin-sdk/agent-runtime（list 内联别名归一）
  * @param {Function} opts.loadConfig - 返回当前 cfg snapshot；缺失时返回 null
  * @param {Function} opts.resolveAgentDir - 返回 main agent /agent 子目录全路径
  * @returns {{ set: Function, list: Function }}
@@ -171,14 +172,16 @@ export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) 
 				respondIoFailed(respond, new Error('runtime config not available'));
 				return;
 			}
-			// 凭据信号（providerUsable / hasAnyUsableCredential）借三源判定：
-			// env+账本 走 isProviderApiKeyConfigured（别名归一化其内部完成），
-			// 内联 key 走 hasConfiguredSecretInput，账本非空走 ensureAuthProfileStore。
+			// 凭据信号（providerUsable / hasAnyUsableCredential）借统一别名感知原语：
+			// env+账本 走 isProviderApiKeyConfigured（别名归一其内部完成），
+			// 内联 key 走 hasConfiguredSecretInput + resolveProviderIdForAuth 两侧归一，
+			// 账本非空走 ensureAuthProfileStore。
 			const deps = {
 				agentDir: resolveAgentDir(),
 				isProviderApiKeyConfigured: sdk.isProviderApiKeyConfigured,
 				hasConfiguredSecretInput: sdk.hasConfiguredSecretInput,
 				ensureAuthProfileStore: sdk.ensureAuthProfileStore,
+				resolveProviderIdForAuth: sdk.resolveProviderIdForAuth,
 			};
 			respond(true, listAllPrimariesWithCredentials(cfg, deps));
 		}

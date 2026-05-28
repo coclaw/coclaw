@@ -32,6 +32,8 @@ function makeSdk(overrides = {}) {
 		isProviderApiKeyConfigured: () => false,
 		hasConfiguredSecretInput: () => false,
 		ensureAuthProfileStore: () => ({ profiles: {} }),
+		// 别名归一默认 identity（测试里不涉及别名时等价于精确名比较）
+		resolveProviderIdForAuth: (p) => p,
 		__cfg: {},
 		__mutateCalls: mutateCalls,
 		...overrides,
@@ -522,6 +524,36 @@ test('list: 仅内联 key（env/账本均无）→ providerUsable=true', async (
 	await handlers.list({ respond: r.respond });
 	assert.equal(r.calls[0].payload.default.providerUsable, true);
 	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
+});
+
+test('list: 别名套餐内联 key（持基座 volcengine 内联 key → volcengine-plan primary providerUsable=true）', async () => {
+	// 钉住 list deps 把 resolveProviderIdForAuth 接进来：两侧归一后基座 key 点亮变体 primary
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: (v) => v === 'sk-volc',
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+	});
+	sdk.__cfg = {
+		agents: { defaults: { model: 'volcengine-plan/ark-code-latest' } },
+		models: { providers: { volcengine: { apiKey: 'sk-volc' } } },
+	};
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.default.providerUsable, true);
+	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
+});
+
+test('list: 纯 env-only（账本/内联空，env 命中主模型段）→ hasAnyUsableCredential=true（必补 C）', async () => {
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: ({ provider }) => provider === 'openai-codex',
+	});
+	sdk.__cfg = { agents: { defaults: { model: 'openai-codex/gpt-5.5' } } };
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.list({ respond: r.respond });
+	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
+	assert.equal(r.calls[0].payload.default.providerUsable, true);
 });
 
 test('list: primary 那家 provider 无任何凭据 → providerUsable=false', async () => {
