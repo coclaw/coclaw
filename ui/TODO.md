@@ -701,3 +701,35 @@ X4 触及面比 X1 广，需要重新评估：
 - 后果：极窄窗口内橙条可能显示陈旧判断；通道一就绪、下一轮完整加载即纠正，且短暂掉线期间凭据几乎不变、旧值通常仍准。影响很小。
 - 性质：预存结构问题（"提前返回不重置"一直如此），本次凭据信号改造未引入也未加重——只是把橙条依赖的来源从重的全量目录换成了轻的凭据信号，陈旧机制不变。
 - 修复方向：在"无就绪连接"的提前返回路径上，对已存在的 claw 把"模型配置已取到"标记置否，让橙条在新一轮凭据查询成功前保持压制。低优先。
+
+## 撤销强提示对别名套餐变体主模型失灵（carrier 判定未别名归一）
+
+**发现日期**：2026-05-29
+**来源**：model-config 修订 6（子任务 #3 选模型器吃 listUsable）deep-review（4 实例一致命中）
+
+- 现状：`ModelConfigPage.vue` 的 `removeTargetIsPrimaryCarrier` / `removeTargetProvider` 用**裸 provider 名相等**判定撤销目标是否为当前主模型的载体。别名套餐变体主模型认不出与基座 key 的归属关系：用户持 `volcengine` 基座 key、主模型选了变体 `volcengine-plan/ark-code-latest`，撤 `volcengine` key 时 `volcengine-plan` ≠ `volcengine` → **不触发"撤后主模型失效"强提示**，只给普通确认。
+- 触发条件本次新引入可达性：修订 6 的新选模型器（吃 listUsable 的 byProvider）才让变体主模型可被选中；旧 picker（`providers ∩ catalog` 按原始名）选不到变体，故此盲点此前不可达。carrier 判定代码本身是 `7a4d1443` 既有、本次未改。
+- 恢复路径（非静默丢失）：撤完后 `coclaw.model.list` 的 `default.providerUsable`（别名感知）会把主模型标失效 → `/claws` 橙条 + 子页 invalidWarning 引导重选。缺的是**事前**强确认。
+- 严重度：中（仅少了事前强提示，有事后橙条兜底）。
+- UI 侧清不干净：把变体归一到基座需要 `resolveProviderIdForAuth`，UI 拿不到（设计 dump #8「归一在插件侧」）。
+- 最优修法方向：**插件在 `coclaw.model.list` 出参按 scope 附加"主模型 provider 的别名归一基座 id"字段**（additive，用已注入的 `resolveProviderIdForAuth` 算），UI carrier 判定比对该字段而非裸名。次选：UI 在 remove-flow 加"变体主模型 + 撤任一已配基座 → 强提示"的过警告启发式（多基座时会过报，且越本子任务 scope）。
+
+## 加 provider 排除：listUsable 降级（byProvider 空）时别名变体仍可加
+
+**发现日期**：2026-05-29
+**来源**：model-config 修订 6（子任务 #3）deep-review
+
+- 现状：`ModelConfigPage.vue` 的 `addProviderExclusion` = `configuredProviders ∪ Object.keys(usable)`。正常态 `usable`（byProvider）含变体 key → 变体被正确剔除。但当 `coclaw.model.listUsable` 成功却返回 `byProvider={}`（插件侧 `loadModelCatalog` 降级到静态/空目录、凭据仍在）时，排除集只剩基座 id → 变体 provider id（如 `volcengine-plan`，仍在 `models.list view:'all'` 里）重新出现在"可加 provider"列表。
+- 严重度：低。仅 catalog 降级这一窄窗口；且本质是既有"`view:'all'` 把别名变体也列为可加 provider"的老毛病在降级态冒头，正常态已被并集挡住。
+- 不采纳"空 byProvider 当回退信号"：会破坏合法的"权威空集"（干净目录 ∩ 凭据确实为空时 picker 该显示空、不该回退到旧交集）。UI 无法从响应区分"降级空"与"合法空"。
+- 修法方向：靠插件信号区分降级/权威空（如 listUsable 出参带一个 degraded 标记），或插件把"可加 provider"也按别名归一后给 UI。需越 scope（动 model.list/listUsable 契约）。
+
+## ModelConfigPage 切 claw 未重置 loading，无连接新 claw 可能卡 initialLoading（预存）
+
+**发现日期**：2026-05-29
+**来源**：model-config 修订 6（子任务 #3）deep-review（附带发现的预存问题）
+
+- 现状：`ModelConfigPage.vue` 的 `clawId` watcher 切 claw 时重置了 `loadAttempted` 等字段但**未重置 `loading`**；而 `loadAll` 在 `++__loadSeq` 之后、`this.loading = true` 之前有"无 id / 无连接"早返路径。若在一次 load 在飞时切到一台**无连接**的新 claw：旧 load 落地因 seq 变更不再置 `loading=false`，新 load 早返也不设 `loading`，于是 `initialLoading`（`loading && !loadAttempted`）可能卡住直到再次切 claw。
+- 性质：`7a4d1443` 既有结构问题，本次（加第 4 个 RPC listUsable）未引入也未加重——新 RPC 同走那套 seq/clawId/unmounted 三重门。
+- 严重度：低（需"飞行中切到无连接 claw"的窄时序）。
+- 修法方向：watcher 重置时一并 `this.loading = false`，或把 `loading` 的设置/复位移到早返之前。低优先，属 remove-flow/load 健壮性范畴，可与本文件「refreshAfterWrite 缺 seq 守卫」一并评估。
