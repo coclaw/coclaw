@@ -1,5 +1,94 @@
 # @coclaw/ui
 
+## 0.29.0
+
+### Minor Changes
+
+- 87c7f3a: Tell apart "conversation gone" from "conversation corrupted" in history placeholders
+
+  The chat history list now consumes the richer `coclaw.sessions.getById` signal to
+  give a precise reason instead of one generic placeholder:
+
+  - A `NOT_FOUND` rejection renders the existing neutral "no longer available"
+    placeholder with `reason: 'missing'`; a `PARSE_FAILED` rejection renders a new
+    "this conversation appears to be corrupted" message (`reason: 'corrupt'`).
+  - Topic mode surfaces the matching localized error text by error code.
+  - Forward-compatible with an older plugin: that plugin still returns an empty
+    message list (no error) for a missing transcript, which keeps flowing through
+    the same empty-segment placeholder (no `reason`, neutral text) — so the history
+    never silently drops a segment regardless of plugin version.
+
+  Transient errors (RTC loss, RPC timeout) keep their previous behavior. Adds a
+  `chat.historyCorrupt` string across all locales.
+
+- 9ab59ed: Support alias-plan models in the model picker and unify credential checks
+
+  The model picker can now list and select "alias-plan" variant models (e.g.
+  `volcengine-plan/ark-code-latest`), where a single base-provider key authorizes
+  both the base provider and its plan variants through the vendor manifest.
+
+  Plugin:
+
+  - Adds `coclaw.model.listUsable`, which enumerates selectable models from
+    OpenClaw's clean model catalog (`loadModelCatalog` read-only) intersected with
+    an alias-aware credential check, and returns the alias-normalized set of
+    already-configured providers so the "add provider" flow can exclude both base
+    and variant ids.
+  - `coclaw.model.set` now gates on the same alias-aware credential primitive
+    (covering ledger, inline `openclaw.json`, and environment-variable keys) instead
+    of the ledger-only check — fixing providers that were selectable but not
+    settable — while still rejecting providers with no usable credential. Existence
+    is validated against the same clean catalog as the picker, so anything
+    selectable is settable.
+  - The noKey guidance signal (`hasAnyUsableCredential`) now also counts
+    environment-variable keys.
+
+  UI:
+
+  - The model picker consumes `coclaw.model.listUsable` and excludes already-configured
+    providers (base and variant) via the plugin's alias-normalized set, falling back to
+    the previous `providerAuth.list ∩ models.list` derivation when talking to an older
+    plugin that lacks the new method.
+
+- 7a4d144: List and revoke provider credentials across all three sources
+
+  The API-keys screen now lists credentials from all three sources — CoClaw's own
+  store, inline keys written in `openclaw.json`, and host environment variables —
+  instead of only the managed store. This fixes the contradiction where a model
+  worked fine yet the list claimed no key was configured.
+
+  - `coclaw.providerAuth.list` returns a `source` (`profile` | `inline` | `env`)
+    and `removable` flag per credential (additive; old clients ignore them).
+  - `coclaw.providerAuth.remove` takes an optional `source` and dispatches
+    accordingly: the managed store deletes the credential, an inline key deletes
+    only the `apiKey` field (keeping the rest of the provider node), and env keys
+    are read-only.
+  - UI: each row shows a source tag; env rows are read-only with a hint to remove
+    on the OpenClaw host; revoking an inline key warns it edits the config file;
+    the model picker and add-provider list now account for inline/env providers.
+
+### Patch Changes
+
+- 68f82c6: Model-config UX: hide the source badge on CoClaw-stored credentials and drop the config-file note when revoking an inline key
+
+  Finalizes two UX simplifications from the model-config design revision that the prior implementation missed:
+
+  - The API-keys list no longer shows a source tag on account-stored (profile) credentials — only inline (`Config file`) and environment (`Environment`) rows are tagged. Most users only ever have profile-stored keys, so they now see no tag at all.
+  - Revoking an inline credential no longer appends a separate "this edits your config file" note; the confirm dialog now reads the same for every source. The primary-model carrier strong warning is preserved.
+
+  Also bottom-aligns the source badge with the provider name to fix its optical vertical alignment.
+
+- 9a41b71: Show a placeholder for archived sessions whose transcript content is gone
+
+  When an archived session's chat-history pointer survives but its OpenClaw
+  transcript file is gone (upgrade mishaps, manual cleanup, orphan reclamation),
+  the history list used to skip the segment entirely while scrolling — the
+  conversation vanished with no trace, leaving the user unaware it ever existed.
+  The list now keeps a neutral placeholder ("This conversation is no longer
+  available") for such empty-content archived segments instead of hiding them.
+  UI-only display change; the placeholder fires only when the segment's fetched
+  message list comes back empty.
+
 ## 0.28.0
 
 ### Minor Changes

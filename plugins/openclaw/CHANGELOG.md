@@ -1,5 +1,88 @@
 # @coclaw/openclaw-coclaw
 
+## 0.25.0
+
+### Minor Changes
+
+- 87c7f3a: Distinguish "transcript gone" from other empty results in `coclaw.sessions.getById`
+
+  `getById` used to collapse three very different outcomes into the same empty
+  array, so callers could not tell why a session had no content. It now signals
+  the cause through the response's `ok`/error channel and an optional sibling field:
+
+  - Transcript file missing (no bare / `.reset.` / `.deleted.` variant) → throws
+    `code: 'NOT_FOUND'` → the handler responds `ok: false`.
+  - A non-empty transcript where not a single line parses → `code: 'PARSE_FAILED'`.
+  - Partial corruption (some lines parse, individual JSON lines are broken) stays
+    fault-tolerant: the parsed messages are returned and the broken lines are
+    reported in a parallel `badLines` array (`{ index, raw, error }`, present only
+    when non-empty, raw kept untruncated) for diagnostics — the conversation is no
+    longer lost over one corrupt tail line.
+  - Empty file, all-whitespace file, or a file with valid JSON but no displayable
+    `message` rows remain benign empties (`{ messages: [] }`, no error).
+
+  Real disk I/O errors keep propagating as before. The "transcript present but no
+  displayable rows" benign empty is deliberately kept on the success path so it is
+  never mistaken for a truly-missing transcript.
+
+- 9ab59ed: Support alias-plan models in the model picker and unify credential checks
+
+  The model picker can now list and select "alias-plan" variant models (e.g.
+  `volcengine-plan/ark-code-latest`), where a single base-provider key authorizes
+  both the base provider and its plan variants through the vendor manifest.
+
+  Plugin:
+
+  - Adds `coclaw.model.listUsable`, which enumerates selectable models from
+    OpenClaw's clean model catalog (`loadModelCatalog` read-only) intersected with
+    an alias-aware credential check, and returns the alias-normalized set of
+    already-configured providers so the "add provider" flow can exclude both base
+    and variant ids.
+  - `coclaw.model.set` now gates on the same alias-aware credential primitive
+    (covering ledger, inline `openclaw.json`, and environment-variable keys) instead
+    of the ledger-only check — fixing providers that were selectable but not
+    settable — while still rejecting providers with no usable credential. Existence
+    is validated against the same clean catalog as the picker, so anything
+    selectable is settable.
+  - The noKey guidance signal (`hasAnyUsableCredential`) now also counts
+    environment-variable keys.
+
+  UI:
+
+  - The model picker consumes `coclaw.model.listUsable` and excludes already-configured
+    providers (base and variant) via the plugin's alias-normalized set, falling back to
+    the previous `providerAuth.list ∩ models.list` derivation when talking to an older
+    plugin that lacks the new method.
+
+- 7a4d144: List and revoke provider credentials across all three sources
+
+  The API-keys screen now lists credentials from all three sources — CoClaw's own
+  store, inline keys written in `openclaw.json`, and host environment variables —
+  instead of only the managed store. This fixes the contradiction where a model
+  worked fine yet the list claimed no key was configured.
+
+  - `coclaw.providerAuth.list` returns a `source` (`profile` | `inline` | `env`)
+    and `removable` flag per credential (additive; old clients ignore them).
+  - `coclaw.providerAuth.remove` takes an optional `source` and dispatches
+    accordingly: the managed store deletes the credential, an inline key deletes
+    only the `apiKey` field (keeping the rest of the provider node), and env keys
+    are read-only.
+  - UI: each row shows a source tag; env rows are read-only with a hint to remove
+    on the OpenClaw host; revoking an inline key warns it edits the config file;
+    the model picker and add-provider list now account for inline/env providers.
+
+### Patch Changes
+
+- 54235e8: Advertise gateway protocol range v3–v4 in the connect handshake
+
+  OpenClaw's gateway now requires protocol v4 (`MIN_CLIENT_PROTOCOL_VERSION=4`).
+  The plugin's connect request hard-coded `minProtocol: 3, maxProtocol: 3`, a range
+  that no longer includes the gateway's current protocol, so every handshake to the
+  local gateway was rejected with "protocol mismatch" after an OpenClaw upgrade —
+  leaving CoClaw unable to issue any gateway RPC even though the WebRTC transport was
+  healthy. The request now sends `maxProtocol: 4` (keeping `minProtocol: 3` so older
+  v3 gateways still negotiate down), matching the reference client handshake range.
+
 ## 0.24.0
 
 ### Minor Changes
