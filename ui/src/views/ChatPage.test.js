@@ -103,6 +103,7 @@ const i18nMap = {
 	'chat.errRunFailed': 'Agent run failed',
 	'chat.cancelNotSupported': 'Cancel not supported',
 	'chat.upgradeOpenClawHint': 'Upgrade OpenClaw',
+	'chat.historyUnavailable': 'This conversation is no longer available',
 };
 
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
@@ -3657,6 +3658,87 @@ describe('ChatPage chatMessages separator archivedAt fallback', () => {
 		await wrapper.vm.$nextTick();
 		const sep = wrapper.vm.chatMessages.find((it) => it.id === 'sep-seg-new');
 		expect(sep.archivedAt).toBe(1700000004000);
+	});
+});
+
+// 正文已丢的归档段占位：chat-history 还留着指针（带 archivedAt），但 OpenClaw 正文文件
+// 已不存在 → plugin getById 返回空消息 → 段以 messages=[] 入列。不应整段隐藏，而要留占位
+// 条目让用户知道"这段曾经存在、现已不可用"。
+describe('ChatPage chatMessages 空归档段占位', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		chatStoreManager.__reset();
+	});
+
+	function makeUserMsg(id, text, ts) {
+		return { type: 'message', id, message: { role: 'user', content: text, timestamp: ts } };
+	}
+
+	test('正文为空的归档段产出 emptySession 占位项 + 前置 separator', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+			// 正文已丢：getById 返回空消息数组
+			{ sessionId: 'seg-gone', archivedAt: 1700000005000, messages: [] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const items = wrapper.vm.chatMessages;
+		const placeholder = items.find((it) => it.id === 'empty-seg-gone');
+		expect(placeholder).toBeDefined();
+		expect(placeholder.type).toBe('emptySession');
+		expect(placeholder.archivedAt).toBe(1700000005000);
+		// 前面有内容 → 占位前应有一条 separator 标注归档时间
+		const sep = items.find((it) => it.id === 'sep-seg-gone');
+		expect(sep).toBeDefined();
+		expect(sep.archivedAt).toBe(1700000005000);
+	});
+
+	test('空归档段是首段（前面无内容）时只产出占位项、无前置 separator', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-gone', archivedAt: 1700000005000, messages: [] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const items = wrapper.vm.chatMessages;
+		expect(items.find((it) => it.id === 'empty-seg-gone')).toBeDefined();
+		expect(items.find((it) => it.id === 'sep-seg-gone')).toBeUndefined();
+	});
+
+	test('有正文但分组为空的退化段维持隐藏（不误标为不可用）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		await wrapper.vm.$nextTick();
+		chatStore.historySegments = [
+			{ sessionId: 'seg-old', archivedAt: 1700000000000, messages: [makeUserMsg('o1', 'old', 1699999990000)] },
+			// 非空原始消息但全是 type!=='message' 行 → groupSessionMessages 返回 []，应继续隐藏
+			{ sessionId: 'seg-degenerate', archivedAt: 1700000005000, messages: [{ type: 'event', id: 'e1' }] },
+		];
+		chatStore.messages = [];
+		await wrapper.vm.$nextTick();
+		const items = wrapper.vm.chatMessages;
+		expect(items.find((it) => it.id === 'empty-seg-degenerate')).toBeUndefined();
+		expect(items.find((it) => it.id === 'sep-seg-degenerate')).toBeUndefined();
+	});
+
+	test('占位项在 DOM 渲染出友好提示文案', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.errorText = '';
+		chatStore.__messagesLoaded = true;
+		chatStore.messages = [];
+		chatStore.historySegments = [
+			{ sessionId: 'seg-gone', archivedAt: 1700000005000, messages: [] },
+		];
+		await wrapper.vm.$nextTick();
+		const el = wrapper.find('[data-testid="empty-session"]');
+		expect(el.exists()).toBe(true);
+		expect(el.text()).toContain('This conversation is no longer available');
 	});
 });
 

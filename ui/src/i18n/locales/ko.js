@@ -400,6 +400,7 @@ export const koMessages = {
 		agentNotFound: 'Agent를 찾을 수 없습니다',
 		clawUnbound: 'Claw 연결이 해제되었습니다',
 		noMoreHistory: '이전 메시지가 없습니다',
+		historyUnavailable: '이 대화 내용은 더 이상 사용할 수 없습니다',
 		scrollUpForMore: '↑ 위로 스크롤하여 이전 메시지 보기',
 		scrollToBottom: '맨 아래로',
 		upgradeOpenClawHint: 'OpenClaw를 업그레이드해야 할 수 있습니다. OpenClaw에게 자체 업그레이드를 요청하거나 npm install -g openclaw를 실행하세요',

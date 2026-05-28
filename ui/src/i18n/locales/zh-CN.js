@@ -400,6 +400,7 @@ export const zhCNMessages = {
 		agentNotFound: '该 Agent 不存在',
 		clawUnbound: 'Claw 已解绑',
 		noMoreHistory: '没有更多聊天记录了',
+		historyUnavailable: '此段对话内容已不可用',
 		scrollUpForMore: '↑ 上翻加载更早记录',
 		scrollToBottom: '回到底部',
 		upgradeOpenClawHint: '可能需要升级 OpenClaw，请让 OpenClaw 自行升级或执行：npm install -g openclaw',

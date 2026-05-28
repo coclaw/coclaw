@@ -400,6 +400,7 @@ export const frMessages = {
 		agentNotFound: 'Agent introuvable',
 		clawUnbound: 'La Claw a été dissociée',
 		noMoreHistory: 'Pas de messages antérieurs',
+		historyUnavailable: "Cette conversation n'est plus disponible",
 		scrollUpForMore: '↑ Faire défiler vers le haut pour les messages précédents',
 		scrollToBottom: 'Aller en bas',
 		upgradeOpenClawHint: 'Vous devrez peut-être mettre à jour OpenClaw. Demandez à OpenClaw de se mettre à jour lui-même, ou exécutez : npm install -g openclaw',

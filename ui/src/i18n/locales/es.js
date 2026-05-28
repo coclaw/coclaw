@@ -400,6 +400,7 @@ export const esMessages = {
 		agentNotFound: 'Agent no encontrado',
 		clawUnbound: 'El Claw ha sido desvinculado',
 		noMoreHistory: 'No hay mensajes anteriores',
+		historyUnavailable: 'Esta conversación ya no está disponible',
 		scrollUpForMore: '↑ Desplázate hacia arriba para ver mensajes anteriores',
 		scrollToBottom: 'Ir al final',
 		upgradeOpenClawHint: 'Es posible que necesites actualizar OpenClaw. Pídele a OpenClaw que se actualice, o ejecuta: npm install -g openclaw',

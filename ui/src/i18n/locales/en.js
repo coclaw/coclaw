@@ -400,6 +400,7 @@ export const enMessages = {
 		agentNotFound: 'Agent not found',
 		clawUnbound: 'Claw has been unbound',
 		noMoreHistory: 'No earlier messages',
+		historyUnavailable: 'This conversation is no longer available',
 		scrollUpForMore: '↑ Scroll up for earlier messages',
 		scrollToBottom: 'Scroll to bottom',
 		upgradeOpenClawHint: 'You may need to upgrade OpenClaw. Ask OpenClaw to upgrade itself, or run: npm install -g openclaw',

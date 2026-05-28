@@ -400,6 +400,7 @@ export const ruMessages = {
 		agentNotFound: 'Agent не найден',
 		clawUnbound: 'Claw был отвязан',
 		noMoreHistory: 'Более ранних сообщений нет',
+		historyUnavailable: 'Этот фрагмент переписки больше недоступен',
 		scrollUpForMore: '↑ Прокрутите вверх для более ранних сообщений',
 		scrollToBottom: 'Прокрутить вниз',
 		upgradeOpenClawHint: 'Возможно, потребуется обновить OpenClaw. Попросите OpenClaw обновиться самостоятельно или выполните: npm install -g openclaw',

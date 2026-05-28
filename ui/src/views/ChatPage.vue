@@ -150,6 +150,13 @@
 								</div>
 							</div>
 						</div>
+						<!-- 正文已丢的归档 session 占位（书签还在、正文已不存在） -->
+						<div v-else-if="item.type === 'emptySession'" data-testid="empty-session" class="px-3 py-2 sm:px-4">
+							<div class="flex items-center justify-center gap-1.5 text-xs text-muted">
+								<UIcon name="i-lucide-info" class="size-3.5 shrink-0" />
+								<span>{{ $t('chat.historyUnavailable') }}</span>
+							</div>
+						</div>
 						<ChatMsgItem
 							v-else
 							:item="item"
@@ -524,6 +531,25 @@ export default {
 			const items = [];
 			// 历史 segments（从最旧到最近）
 			for (const seg of this.chatStore.historySegments) {
+				// 正文取回为空的归档段：留占位条目而非整段隐藏，让用户知道这段曾存在、内容现已不可用。
+				// 用 seg.messages.length 而非分组结果判定：slash 归档路径（sessions.get 不过滤）可能塞进
+				// 全是非对话行的段，那种 length>0、分组后才空，应维持隐藏；getById 取回为空才是真没正文
+				// （文件已删，或极少数文件在但无可显示消息），中性占位文案对两种情形都如实。
+				if (seg.messages.length === 0) {
+					if (items.length > 0) {
+						items.push({
+							type: 'separator',
+							id: `sep-${seg.sessionId}`,
+							archivedAt: seg.archivedAt,
+						});
+					}
+					items.push({
+						type: 'emptySession',
+						id: `empty-${seg.sessionId}`,
+						archivedAt: seg.archivedAt,
+					});
+					continue;
+				}
 				const grouped = groupSessionMessages(seg.messages);
 				if (grouped.length) {
 					if (items.length > 0) {

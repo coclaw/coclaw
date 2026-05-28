@@ -400,6 +400,7 @@ export const hiMessages = {
 		agentNotFound: 'Agent नहीं मिला',
 		clawUnbound: 'Claw अनबाउंड हो गया है',
 		noMoreHistory: 'कोई पहले का संदेश नहीं',
+		historyUnavailable: 'यह बातचीत अब उपलब्ध नहीं है',
 		scrollUpForMore: '↑ पहले के संदेशों के लिए ऊपर स्क्रॉल करें',
 		scrollToBottom: 'नीचे जाएं',
 		upgradeOpenClawHint: 'आपको OpenClaw अपग्रेड करने की जरूरत हो सकती है। OpenClaw से खुद को अपग्रेड करने के लिए कहें, या चलाएं: npm install -g openclaw',

@@ -400,6 +400,7 @@ export const ptMessages = {
 		agentNotFound: 'Agent não encontrado',
 		clawUnbound: 'Claw foi desvinculado',
 		noMoreHistory: 'Sem mensagens anteriores',
+		historyUnavailable: 'Esta conversa não está mais disponível',
 		scrollUpForMore: '↑ Role para cima para ver mensagens mais antigas',
 		scrollToBottom: 'Ir para o fim',
 		upgradeOpenClawHint: 'Talvez seja necessário atualizar o OpenClaw. Peça ao OpenClaw para se atualizar, ou execute: npm install -g openclaw',

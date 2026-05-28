@@ -400,6 +400,7 @@ export const deMessages = {
 		agentNotFound: 'Agent nicht gefunden',
 		clawUnbound: 'Claw wurde getrennt',
 		noMoreHistory: 'Keine früheren Nachrichten',
+		historyUnavailable: 'Dieser Gesprächsabschnitt ist nicht mehr verfügbar',
 		scrollUpForMore: '↑ Nach oben scrollen für frühere Nachrichten',
 		scrollToBottom: 'Nach unten scrollen',
 		upgradeOpenClawHint: 'Möglicherweise muss OpenClaw aktualisiert werden. Bitte OpenClaw, sich selbst zu aktualisieren, oder ausführen: npm install -g openclaw',
