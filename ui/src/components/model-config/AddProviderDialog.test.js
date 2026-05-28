@@ -407,6 +407,39 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 	});
 });
 
+describe('AddProviderDialog — exclusion set (alias-aware, computed by parent)', () => {
+	// catalog 含别名基座 + 变体 provider（modelsList view:'all' 把变体也列为一等 provider）
+	const aliasCatalog = [
+		{ id: 'gpt-4', provider: 'openai' },
+		{ id: 'doubao-pro', provider: 'volcengine' },
+		{ id: 'ark-code-latest', provider: 'volcengine-plan' },
+	];
+
+	test('excludes both base and variant when parent passes the union {base, variant}', () => {
+		// 父组件对新插件传 configuredProviders ∪ usable.keys = {volcengine, volcengine-plan}
+		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['volcengine', 'volcengine-plan'] });
+		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(false);
+		// 未配的 openai 仍可加
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(true);
+	});
+
+	test('exact-match only: base id alone does NOT hide the variant (documents why parent unions)', () => {
+		// 仅传基座 id → 组件按 id 精确排除，变体 id 不被覆盖（故父组件必须并入 usable.keys）
+		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['volcengine'] });
+		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(true);
+	});
+
+	test('old-plugin fallback: parent passes raw providerIds, exclusion still by exact id', () => {
+		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['openai'] });
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
+		// 未排除的基座 / 变体都还在
+		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(true);
+	});
+});
+
 describe('AddProviderDialog — open/close lifecycle', () => {
 	test('Reopening resets step to select + clears any prior key/state', async () => {
 		const w = makeWrapper({ open: false });

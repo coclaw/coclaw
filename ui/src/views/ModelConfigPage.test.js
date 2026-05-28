@@ -45,10 +45,15 @@ vi.mock('../components/model-config/AddProviderDialog.vue', () => ({
 vi.mock('../components/model-config/PrimaryModelPickerDialog.vue', () => ({
 	default: {
 		name: 'PrimaryModelPickerDialog',
-		props: ['open', 'providers', 'catalog', 'current', 'setPrimary'],
+		props: ['open', 'usable', 'fallback', 'providers', 'catalog', 'current', 'setPrimary'],
 		emits: ['update:open', 'picked'],
 		template: `
-			<div v-if="open" class="picker-dialog" :data-providers="(providers||[]).join(',')" :data-current="current||''">
+			<div v-if="open" class="picker-dialog"
+				:data-providers="(providers||[]).join(',')"
+				:data-current="current||''"
+				:data-fallback="String(fallback)"
+				:data-usable="Object.keys(usable||{}).join(',')"
+			>
 				<span class="pk-catalog-len">{{ (catalog||[]).length }}</span>
 				<button class="pk-fire-picked" @click="$emit('picked', { primary: 'groq/llama-3.3-70b-versatile' }); $emit('update:open', false)">picked</button>
 				<button class="pk-cancel" @click="$emit('update:open', false)">cancel</button>
@@ -172,6 +177,14 @@ function asModelList(primary, opts = {}) {
 	};
 }
 function asCatalog(arr) { return { models: arr }; }
+/**
+ * 构造 coclaw.model.listUsable 出参（修订 6 契约）。
+ * @param {Record<string, string[]>} [byProvider] - 可用 provider→modelId 枚举（含别名变体）
+ * @param {string[]} [configuredProviders] - 别名归一已配 provider 基座 id 集
+ */
+function asUsable(byProvider = {}, configuredProviders = []) {
+	return { byProvider, configuredProviders };
+}
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -459,6 +472,8 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 				{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
 				{ id: 'gpt-4', provider: 'openai' },
 			]);
+			if (method === 'coclaw.model.listUsable') return asUsable(
+				{ groq: ['llama-3.3-70b-versatile'] }, ['groq']);
 			return {};
 		});
 	}
@@ -780,6 +795,284 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 		// flag must remain true so primaryState classification keeps working
 		expect(w.vm.loadOk.catalog).toBe(true);
 		expect(w.vm.catalog.length).toBeGreaterThan(0);
+		w.unmount();
+	});
+});
+
+describe('ModelConfigPage — listUsable (selmodel source + add-provider exclusion) + fallback', () => {
+	function splitAttr(v) {
+		return String(v || '').split(',').filter(Boolean).sort();
+	}
+
+	test('4 RPCs allSettled: listUsable success feeds picker (byProvider, fallback=false)', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') return asUsable(
+				{ groq: ['llama-3.3-70b-versatile'], 'volcengine-plan': ['ark-code-latest'] },
+				['groq', 'volcengine']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.loadOk.usable).toBe(true);
+		expect(w.vm.usableUnsupported).toBe(false);
+		// 选模型器拿到 byProvider（含别名变体），fallback=false
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		const picker = w.find('.picker-dialog');
+		expect(picker.attributes('data-fallback')).toBe('false');
+		expect(splitAttr(picker.attributes('data-usable'))).toEqual(['groq', 'volcengine-plan']);
+		w.unmount();
+	});
+
+	test('listUsable success: add-provider exclusion = configuredProviders ∪ usable keys (base+variant)', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'volcengine', type: 'api_key', keyPreview: 'v…X', profileId: 'volcengine:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('volcengine/doubao-pro', { providerUsable: true });
+			if (method === 'models.list') return asCatalog([
+				{ id: 'doubao-pro', provider: 'volcengine' },
+				{ id: 'ark-code-latest', provider: 'volcengine-plan' },
+				{ id: 'gpt-4', provider: 'openai' },
+			]);
+			// 持基座 volcengine key：byProvider 同时点亮基座 + 变体；configuredProviders 归一为基座
+			if (method === 'coclaw.model.listUsable') return asUsable(
+				{ volcengine: ['doubao-pro'], 'volcengine-plan': ['ark-code-latest'] },
+				['volcengine']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		// 加 provider 排除既剔基座也剔变体（关键：configuredProviders 只有基座，靠合并 usable.keys 覆盖变体）
+		expect(splitAttr(w.vm.addProviderExclusion.join(','))).toEqual(['volcengine', 'volcengine-plan']);
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		expect(splitAttr(w.find('.add-dialog').attributes('data-existing'))).toEqual(['volcengine', 'volcengine-plan']);
+		w.unmount();
+	});
+
+	test('method-not-found (INVALID_REQUEST): old-plugin fallback — fallback=true, exclusion=raw providerIds', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') {
+				throw Object.assign(new Error('unknown method: coclaw.model.listUsable'), { code: 'INVALID_REQUEST' });
+			}
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.loadOk.usable).toBe(false);
+		expect(w.vm.usableUnsupported).toBe(true); // 确诊旧插件
+		expect(w.vm.usable).toEqual({});
+		expect(w.vm.configuredProviders).toBeNull();
+		// 选模型器回退态
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		expect(w.find('.picker-dialog').attributes('data-fallback')).toBe('true');
+		// 加 provider 排除回退到 raw providerIds
+		expect(w.vm.addProviderExclusion).toEqual(['groq']);
+		w.unmount();
+	});
+
+	test('transient failure (RPC_TIMEOUT): conservative fallback, NOT marked as old plugin', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') {
+				throw Object.assign(new Error('rpc timeout'), { code: 'RPC_TIMEOUT' });
+			}
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.loadOk.usable).toBe(false);
+		// 瞬时失败不确诊旧插件（写后刷新仍会重拉以恢复）
+		expect(w.vm.usableUnsupported).toBe(false);
+		// 仍回退、不空白
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		expect(w.find('.picker-dialog').attributes('data-fallback')).toBe('true');
+		expect(w.vm.addProviderExclusion).toEqual(['groq']);
+		w.unmount();
+	});
+
+	test('plugin error IO_FAILED on listUsable: treated as transient (NOT old plugin), conservative fallback', async () => {
+		// listUsable 自身业务错误（cfg 不可读等）是 IO_FAILED，而非网关 method-not-found（INVALID_REQUEST）。
+		// 必须按瞬时态处理：回退但不确诊旧插件（写后刷新仍重拉 listUsable 以恢复），别被误判为旧插件。
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') {
+				throw Object.assign(new Error('runtime config not available'), { code: 'IO_FAILED' });
+			}
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.loadOk.usable).toBe(false);
+		// 关键：IO_FAILED 不得被当成旧插件
+		expect(w.vm.usableUnsupported).toBe(false);
+		// 回退到旧派生、不空白
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		expect(w.find('.picker-dialog').attributes('data-fallback')).toBe('true');
+		expect(w.vm.addProviderExclusion).toEqual(['groq']);
+		w.unmount();
+	});
+
+	test('listUsable success but empty byProvider is authoritative (no fallback, exclusion from configuredProviders)', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			// 干净目录∩凭据为空（authoritative）→ 不该回退到旧交集
+			if (method === 'coclaw.model.listUsable') return asUsable({}, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.loadOk.usable).toBe(true);
+		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.vm.$nextTick();
+		// 成功（即便空）→ 非回退；picker 据空 usable 自行显示空态
+		expect(w.find('.picker-dialog').attributes('data-fallback')).toBe('false');
+		expect(w.find('.picker-dialog').attributes('data-usable')).toBe('');
+		w.unmount();
+	});
+
+	test('catalog still feeds primaryEffective (模型下架) independently of listUsable', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			// 主模型那家有凭据，但 catalog 里没这个 model（上游下架）→ 子页仍报失效
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-deprecated', { providerUsable: true });
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['llama-3.3-70b-versatile'] }, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.loadOk.usable).toBe(true);
+		// 模型下架检测仍走 catalog（与 listUsable 解耦）
+		expect(w.vm.primaryState).toBe('invalid');
+		expect(w.text()).toContain('modelConfig.primary.invalidWarning');
+		w.unmount();
+	});
+
+	test('refreshAfterWrite re-pulls listUsable so picker/exclusion stay fresh after a write', async () => {
+		// 初始：无 provider、空 usable
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([]);
+			if (method === 'coclaw.model.list') return asModelList(null);
+			if (method === 'models.list') return asCatalog([
+				{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
+			]);
+			if (method === 'coclaw.model.listUsable') return asUsable({}, []);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.usable).toEqual({});
+		// 打开 add（记录 __writeClawId），随后 added 触发 refreshAfterWrite
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		mockRequest.mockClear();
+		// 写后：groq 已配，listUsable 现返回 groq 枚举 + configuredProviders
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['llama-3.3-70b-versatile'] }, ['groq']);
+			return {};
+		});
+		await w.find('.ad-fire-added').trigger('click');
+		await flushPromises();
+		// refresh 确实重拉了 listUsable，且 usable/exclusion 刷新
+		const usableCalls = mockRequest.mock.calls.filter(c => c[0] === 'coclaw.model.listUsable');
+		expect(usableCalls.length).toBeGreaterThanOrEqual(1);
+		expect(w.vm.usable).toEqual({ groq: ['llama-3.3-70b-versatile'] });
+		expect(w.vm.addProviderExclusion).toEqual(['groq']);
+		// refresh 不重拉 catalog（models.list）
+		expect(mockRequest.mock.calls.filter(c => c[0] === 'models.list')).toHaveLength(0);
+		w.unmount();
+	});
+
+	test('refreshAfterWrite SKIPS listUsable when plugin is confirmed old (usableUnsupported)', async () => {
+		// 初始 load：listUsable method-not-found → usableUnsupported=true
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') {
+				throw Object.assign(new Error('unknown method'), { code: 'INVALID_REQUEST' });
+			}
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.usableUnsupported).toBe(true);
+		await w.find('[data-testid="btn-primary-change"]').trigger('click'); // 记 __writeClawId
+		await w.vm.$nextTick();
+		mockRequest.mockClear();
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			return {};
+		});
+		await w.find('.pk-fire-picked').trigger('click');
+		await flushPromises();
+		// 旧插件确诊后 refresh 不再徒劳重拉 listUsable
+		expect(mockRequest.mock.calls.filter(c => c[0] === 'coclaw.model.listUsable')).toHaveLength(0);
+		w.unmount();
+	});
+
+	test('claw switch resets usable / configuredProviders / usableUnsupported', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([
+				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
+			]);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'models.list') return asCatalog([{ id: 'llama-3.3-70b-versatile', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['llama-3.3-70b-versatile'] }, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.usable).toEqual({ groq: ['llama-3.3-70b-versatile'] });
+		// 切到一台无连接的 claw → 状态应立刻清空（旧 load 落地会被 seq 拦下）
+		clawsStoreState.byId.claw2 = { id: 'claw2', name: 'Other', online: true, dcReady: true };
+		w.vm.$route.params.clawId = 'claw2';
+		w.vm.$options.watch.clawId.handler.call(w.vm);
+		// 同步断言：reset 在 loadAll 的首个 await 之前已发生
+		expect(w.vm.usable).toEqual({});
+		expect(w.vm.configuredProviders).toBeNull();
+		expect(w.vm.usableUnsupported).toBe(false);
+		expect(w.vm.loadOk.usable).toBe(false);
+		await flushPromises();
+		delete clawsStoreState.byId.claw2;
 		w.unmount();
 	});
 });

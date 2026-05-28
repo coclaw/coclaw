@@ -1,6 +1,6 @@
 import { test, describe, expect } from 'vitest';
 
-import { mapModelConfigErrorKey, isCanceledError } from './model-config-errors.js';
+import { mapModelConfigErrorKey, isCanceledError, isMethodNotFoundError } from './model-config-errors.js';
 
 describe('mapModelConfigErrorKey', () => {
 	test('INVALID_ARGS → errInvalidArgs', () => {
@@ -85,5 +85,42 @@ describe('isCanceledError', () => {
 		expect(isCanceledError(null)).toBe(false);
 		expect(isCanceledError(undefined)).toBe(false);
 		expect(isCanceledError('cancel')).toBe(false);
+	});
+});
+
+describe('isMethodNotFoundError', () => {
+	test('true for INVALID_REQUEST (gateway unknown-method code)', () => {
+		// 网关对未注册 method 回 INVALID_REQUEST；旧插件无 listUsable 即走此路径
+		const err = Object.assign(new Error('unknown method: coclaw.model.listUsable'), { code: 'INVALID_REQUEST' });
+		expect(isMethodNotFoundError(err)).toBe(true);
+	});
+
+	test('false for INVALID_ARGS (listUsable 自身业务错误，不能误判为旧插件)', () => {
+		const err = Object.assign(new Error('bad agentId'), { code: 'INVALID_ARGS' });
+		expect(isMethodNotFoundError(err)).toBe(false);
+	});
+
+	test('false for IO_FAILED', () => {
+		const err = Object.assign(new Error('io'), { code: 'IO_FAILED' });
+		expect(isMethodNotFoundError(err)).toBe(false);
+	});
+
+	test('false for transient channel codes (超时/通道断不算旧插件)', () => {
+		for (const code of ['RPC_TIMEOUT', 'RTC_LOST', 'DC_CLOSED', 'CONNECT_TIMEOUT', 'RTC_SEND_FAILED']) {
+			expect(isMethodNotFoundError(Object.assign(new Error('x'), { code }))).toBe(false);
+		}
+	});
+
+	test('does NOT match on message text (仅认结构化 code)', () => {
+		// message 含 "unknown method" 但 code 是瞬时错误码 → 不应判为方法不存在
+		const err = Object.assign(new Error('unknown method: coclaw.model.listUsable'), { code: 'RPC_TIMEOUT' });
+		expect(isMethodNotFoundError(err)).toBe(false);
+	});
+
+	test('false for null / undefined / non-object / no code', () => {
+		expect(isMethodNotFoundError(null)).toBe(false);
+		expect(isMethodNotFoundError(undefined)).toBe(false);
+		expect(isMethodNotFoundError('INVALID_REQUEST')).toBe(false);
+		expect(isMethodNotFoundError(new Error('plain'))).toBe(false);
 	});
 });

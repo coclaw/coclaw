@@ -96,7 +96,28 @@ export default {
 			default: false,
 		},
 		/**
-		 * 已绑 provider id 列表（providerAuth.list 派生）；与 catalog 取交集
+		 * 别名感知"可用 provider→模型"枚举（coclaw.model.listUsable 的 byProvider）：
+		 * provider id（含别名套餐变体 id，如 `volcengine-plan`）→ 可用 modelId 列表。
+		 * 非回退态（fallback=false）下作为唯一数据源直接出可选项，无幽灵、含变体。
+		 *
+		 * @type {Record<string, string[]>}
+		 */
+		usable: {
+			type: Object,
+			default: () => ({}),
+		},
+		/**
+		 * 是否走旧插件回退：true 时用 `providers ∩ catalog` 派生（旧插件无 listUsable / 拉取失败时），
+		 * false 时吃 `usable` 的 byProvider。由父组件按 listUsable 是否成功决定。
+		 *
+		 * @type {boolean}
+		 */
+		fallback: {
+			type: Boolean,
+			default: false,
+		},
+		/**
+		 * 已绑 provider id 列表（providerAuth.list 派生）；仅回退态与 catalog 取交集
 		 *
 		 * @type {string[]}
 		 */
@@ -105,7 +126,7 @@ export default {
 			default: () => [],
 		},
 		/**
-		 * models.list view:"all" 派生：[{ id, provider }, ...]
+		 * models.list view:"all" 派生：[{ id, provider }, ...]；仅回退态用
 		 *
 		 * @type {{ id: string, provider?: string }[]}
 		 */
@@ -168,24 +189,45 @@ export default {
 			};
 		},
 		/**
-		 * 按 provider 分组：仅保留 providers 集合内的 provider；
-		 * 每个 group 内按 model id 字典序；用搜索词过滤 model.id（命中含 provider 名也算）
+		 * 按 provider 分组：
+		 *   - 非回退态：吃 listUsable 的 byProvider（含别名变体，已是干净目录∩别名感知凭据，无幽灵）
+		 *   - 回退态（旧插件/拉取失败）：用 `providers ∩ catalog` 派生
+		 * 每个 group 内按 model id 字典序；搜索词过滤 model id（命中 provider 名也算）；group 间按 displayName 排序。
 		 *
 		 * @returns {{ provider: string, displayName: string, models: { id: string }[] }[]}
 		 */
 		groups() {
-			const allowed = new Set(Array.isArray(this.providers) ? this.providers : []);
-			const cat = Array.isArray(this.catalog) ? this.catalog : [];
 			const q = this.searchText.trim().toLowerCase();
+			const hit = (id, provider) => !q || id.toLowerCase().includes(q) || provider.toLowerCase().includes(q);
 			/** @type {Map<string, { id: string }[]>} */
 			const byProvider = new Map();
-			for (const m of cat) {
-				if (!m || typeof m.provider !== 'string' || typeof m.id !== 'string') continue;
-				if (!allowed.has(m.provider)) continue;
-				if (q && !m.id.toLowerCase().includes(q) && !m.provider.toLowerCase().includes(q)) continue;
-				const arr = byProvider.get(m.provider) ?? [];
-				arr.push({ id: m.id });
-				byProvider.set(m.provider, arr);
+			if (this.fallback) {
+				// 旧插件回退：providers（providerAuth.list 三源原始名）∩ catalog（view:'all'）
+				const allowed = new Set(Array.isArray(this.providers) ? this.providers : []);
+				const cat = Array.isArray(this.catalog) ? this.catalog : [];
+				for (const m of cat) {
+					if (!m || typeof m.provider !== 'string' || typeof m.id !== 'string') continue;
+					if (!allowed.has(m.provider)) continue;
+					if (!hit(m.id, m.provider)) continue;
+					const arr = byProvider.get(m.provider) ?? [];
+					arr.push({ id: m.id });
+					byProvider.set(m.provider, arr);
+				}
+			}
+			else {
+				// 主路径：直接吃 listUsable 的 byProvider（provider→modelId[]）
+				const src = (this.usable && typeof this.usable === 'object') ? this.usable : {};
+				for (const provider of Object.keys(src)) {
+					if (typeof provider !== 'string' || !provider) continue;
+					const ids = Array.isArray(src[provider]) ? src[provider] : [];
+					for (const id of ids) {
+						if (typeof id !== 'string' || !id) continue;
+						if (!hit(id, provider)) continue;
+						const arr = byProvider.get(provider) ?? [];
+						arr.push({ id });
+						byProvider.set(provider, arr);
+					}
+				}
 			}
 			const out = [];
 			for (const [provider, models] of byProvider.entries()) {

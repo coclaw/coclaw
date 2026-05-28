@@ -58,8 +58,14 @@ export function mockProfile(provider) {
  * @param {{ profiles?: object[], inlineProviders?: string[], envProviders?: string[], primary?: string|null, catalog?: object[], legacy?: boolean }} initialState
  *   - inlineProviders: provider id 列表，模拟写在 openclaw.json 的内联 key（source='inline'，可撤）
  *   - envProviders: provider id 列表，模拟环境变量 key（source='env'，只读；仅 sole-source 才列）
- *   - legacy: true → 模拟旧插件，coclaw.model.list 出参不带凭据信号字段
- *     （default.providerUsable / 顶层 hasAnyUsableCredential），用于验证"不再特判旧插件、该弹就弹"
+ *   - legacy: true → 模拟旧插件：coclaw.model.list 出参不带凭据信号字段
+ *     （default.providerUsable / 顶层 hasAnyUsableCredential）；且 coclaw.model.listUsable 整方法不存在
+ *     （reject code=INVALID_REQUEST，镜像网关 unknown-method），用于验证"不再特判旧插件、该弹就弹"
+ *     + "选模型器回退到旧交集派生不空白"
+ *
+ * coclaw.model.listUsable（修订 6）：非 legacy 时按"干净目录(catalog) ∩ 三源已配 provider（含别名变体）"
+ * 合成 { byProvider, configuredProviders }。内置别名映射 volcengine→volcengine-plan：持 volcengine 基座 key
+ * 时 byProvider 同时含基座与变体条目，configuredProviders 仅含基座（归一）。
  */
 export function setupModelConfigMock(page, initialState) {
 	const initial = {
@@ -101,6 +107,16 @@ export function setupModelConfigMock(page, initialState) {
 				st.inlineProviders = Array.isArray(st.inlineProviders) ? st.inlineProviders : [];
 				st.envProviders = Array.isArray(st.envProviders) ? st.envProviders : [];
 				st.catalog = Array.isArray(st.catalog) ? st.catalog : [];
+
+				// 别名基座→变体映射：镜像厂商 manifest，一把基座 key 同时点亮基座 + 变体 id。
+				// model.list 凭据信号与 listUsable 枚举共用，保证两处口径一致（别名感知）。
+				const ALIAS_VARIANTS = { volcengine: ['volcengine-plan'] };
+				const aliasBaseOf = (p) => {
+					for (const b of Object.keys(ALIAS_VARIANTS)) {
+						if (ALIAS_VARIANTS[b].indexOf(p) !== -1) return b;
+					}
+					return p;
+				};
 
 				if (method === 'coclaw.providerAuth.list') {
 					// 镜像插件三源合并（§2.4）：账本 + 内联 + env（仅 sole-source）
@@ -166,12 +182,47 @@ export function setupModelConfigMock(page, initialState) {
 					const provs = st.profiles.map((p) => p && p.provider).filter(Boolean)
 						.concat(st.inlineProviders, st.envProviders);
 					const primaryProvider = providerOf(st.primary);
-					const providerUsable = !!primaryProvider && provs.indexOf(primaryProvider) !== -1;
+					// 别名感知：变体 primary（如 volcengine-plan/*）在持基座 key（volcengine）时也算可用，
+					// 与 listUsable 枚举同口径（杜绝"选得到却判失效"）
+					const providerUsable = !!primaryProvider
+							&& (provs.indexOf(primaryProvider) !== -1 || provs.indexOf(aliasBaseOf(primaryProvider)) !== -1);
 					return Promise.resolve({
 						default: { primary: st.primary ?? null, providerUsable },
 						agents: { main: { primary: null, providerUsable: false } },
 						hasAnyUsableCredential: provs.length > 0,
 					});
+				}
+				if (method === 'coclaw.model.listUsable') {
+					// 旧插件：网关对未注册 method 回 INVALID_REQUEST（unknown method）→ UI 回退到旧交集派生
+					if (st.legacy) {
+						return Promise.reject(Object.assign(new Error('unknown method: coclaw.model.listUsable'), { code: 'INVALID_REQUEST' }));
+					}
+					// 三源已配 provider，归一到别名基座 id（镜像真插件 resolveProviderIdForAuth：
+					// 变体凭据 volcengine-plan 归一为基座 volcengine）；账本∪内联∪env
+					const configuredProviders = [];
+					const seenCfg = new Set();
+					const addCfg = (p) => {
+						if (!p || typeof p !== 'string') return;
+						const base = aliasBaseOf(p);
+						if (!seenCfg.has(base)) { seenCfg.add(base); configuredProviders.push(base); }
+					};
+					for (const p of st.profiles) addCfg(p && p.provider);
+					for (const p of st.inlineProviders) addCfg(p);
+					for (const p of st.envProviders) addCfg(p);
+					configuredProviders.sort();
+					// 可用 provider 集 = 已配基座 ∪ 其别名变体（基座 key 点亮变体）
+					const usableSet = new Set(configuredProviders);
+					for (const base of configuredProviders) {
+						for (const v of (ALIAS_VARIANTS[base] || [])) usableSet.add(v);
+					}
+					// byProvider = 干净目录(catalog) 里属于可用 provider 的条目（含变体一等公民）
+					const byProvider = {};
+					for (const m of st.catalog) {
+						if (!m || typeof m.provider !== 'string' || typeof m.id !== 'string') continue;
+						if (!usableSet.has(m.provider)) continue;
+						(byProvider[m.provider] = byProvider[m.provider] || []).push(m.id);
+					}
+					return Promise.resolve({ byProvider, configuredProviders });
 				}
 				if (method === 'coclaw.model.set') {
 					const pr = params && params.primary;

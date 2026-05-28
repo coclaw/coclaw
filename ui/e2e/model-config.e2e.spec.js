@@ -401,3 +401,88 @@ test('模型配置 S6：内联 key 列出可撤（配置文件提示+强提示�
 	await expect(page.getByTestId('primary-warning')).toContainText(await tr(page, 'modelConfig.primary.invalidWarning'));
 	await expect(page.getByText('Anthropic Claude')).toBeVisible();
 });
+
+// ================================================================
+// S7：选模型器吃 listUsable 的 byProvider——能选到别名套餐变体（修订 6）
+// ================================================================
+test('模型配置 S7：选模型器来自 listUsable，能选中别名套餐变体模型 @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// 持基座 volcengine key；catalog 含基座 doubao-pro + 变体 ark-code-latest（manifest 变体一等公民）。
+	// listUsable mock：基座 key 同时点亮 volcengine + volcengine-plan → byProvider 两者都出。
+	const VARIANT_CATALOG = [
+		{ id: 'doubao-pro', provider: 'volcengine', name: 'Doubao Pro' },
+		{ id: 'ark-code-latest', provider: 'volcengine-plan', name: 'Ark Code' },
+	];
+	await setupModelConfigMock(page, {
+		profiles: [mockProfile('volcengine')],
+		primary: 'volcengine/doubao-pro',
+		catalog: VARIANT_CATALOG,
+	});
+	await login(page);
+	await ensureMockReady(page);
+
+	await gotoClawsCold(page);
+	const clawId = await getOnlineClawId(page);
+	await waitDashReady(page, clawId);
+	// 基座 key 让主模型有效 → 无橙条
+	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
+
+	// 齿轮进子页，主模型有效
+	const gear = page.getByTestId(`btn-model-config-${clawId}`);
+	await expect(gear).toBeEnabled({ timeout: 30_000 });
+	await gear.click();
+	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
+	await expect(page.getByTestId('primary-current')).toHaveText('volcengine/doubao-pro', { timeout: 30_000 });
+
+	// 打开选模型器（来自 listUsable byProvider）：变体作为一等可选项出现
+	const changeBtn = page.getByTestId('btn-primary-change');
+	await expect(changeBtn).toBeEnabled({ timeout: 30_000 });
+	await changeBtn.click();
+	await expect(page.getByTestId('primary-picker-dialog')).toBeVisible({ timeout: 10_000 });
+	const variantItem = page.getByTestId('primary-picker-item-volcengine-plan__ark-code-latest');
+	await expect(variantItem).toBeVisible({ timeout: 10_000 });
+	// 选中别名套餐变体 → 即选即存
+	await variantItem.click();
+	await expect(page.getByTestId('primary-picker-dialog')).not.toBeVisible({ timeout: 15_000 });
+	// 子页主模型区即时反映为变体（凭据信号别名感知 → 仍有效，不误报失效）
+	await expect(page.getByTestId('primary-current')).toHaveText('volcengine-plan/ark-code-latest');
+});
+
+// ================================================================
+// S8：旧插件无 listUsable（method-not-found）→ 选模型器回退到 providers ∩ catalog，不空白
+// ================================================================
+test('模型配置 S8：旧插件无 listUsable → 选模型器回退到旧交集仍出模型（不空白）@ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// legacy=true → coclaw.model.listUsable 整方法不存在（reject INVALID_REQUEST）。
+	// 同时 model.list 无凭据信号 → 主模型按 invalid 显示（走 selectButton 打开 picker）。
+	await setupModelConfigMock(page, {
+		profiles: [mockProfile('groq')],
+		primary: GROQ_PRIMARY,
+		catalog: MOCK_CATALOG,
+		legacy: true,
+	});
+	await login(page);
+	await ensureMockReady(page);
+
+	await gotoClawsCold(page);
+	const clawId = await getOnlineClawId(page);
+	await waitDashReady(page, clawId);
+
+	// 齿轮进子页
+	const gear = page.getByTestId(`btn-model-config-${clawId}`);
+	await expect(gear).toBeEnabled({ timeout: 30_000 });
+	await gear.click();
+	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
+
+	// 旧插件无凭据信号 → 主模型区按"失效"显示（selectButton）
+	const selBtn = page.getByTestId('btn-primary-select');
+	await expect(selBtn).toBeVisible({ timeout: 30_000 });
+	await selBtn.click();
+
+	// 关键：listUsable method-not-found → 回退到 providers(三源) ∩ catalog → 选模型器仍出 groq 模型，不空白
+	await expect(page.getByTestId('primary-picker-dialog')).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId(`primary-picker-item-groq__${GROQ_PRIMARY.split('/')[1]}`)).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId(`primary-picker-item-groq__${GROQ_PRIMARY_ALT.split('/')[1]}`)).toBeVisible();
+});

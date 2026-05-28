@@ -47,6 +47,13 @@ const UModalStub = {
 	</div>`,
 };
 
+// listUsable.byProvider 主数据源：openai + groq 可用（anthropic 未配 → 不出现）。
+const usableDefault = {
+	openai: ['gpt-4', 'gpt-3.5'],
+	groq: ['llama-3.3-70b-versatile'],
+};
+
+// 仅回退态用的 view:'all' catalog（含 anthropic / 一个未绑 provider，用于验证回退交集裁剪）
 const catalog = [
 	{ id: 'gpt-4', provider: 'openai' },
 	{ id: 'gpt-3.5', provider: 'openai' },
@@ -60,7 +67,9 @@ function makeWrapper(props = {}) {
 	return mount(PrimaryModelPickerDialog, {
 		props: {
 			open: true,
-			providers: ['openai', 'groq'], // anthropic NOT bound → its models excluded
+			usable: usableDefault,
+			fallback: false,
+			providers: ['openai', 'groq'], // 仅回退态生效
 			catalog,
 			current: 'openai/gpt-4',
 			setPrimary: vi.fn().mockResolvedValue({}),
@@ -80,18 +89,57 @@ beforeEach(() => {
 	envState.screen.ltMd = false;
 });
 
-describe('PrimaryModelPickerDialog — intersection of providers + catalog', () => {
-	test('only renders models whose provider is in the providers array', () => {
+describe('PrimaryModelPickerDialog — byProvider (listUsable) main path', () => {
+	test('renders models straight from usable.byProvider (not catalog)', () => {
 		const w = makeWrapper();
-		// openai (bound) → both models
 		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(true);
 		expect(w.find('[data-testid="primary-picker-item-openai__gpt-3.5"]').exists()).toBe(true);
-		// groq (bound) → its model
 		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
-		// anthropic NOT bound → excluded
+		// anthropic 不在 usable → 不渲染（即使 catalog 里有它）
 		expect(w.find('[data-testid="primary-picker-item-anthropic__claude-sonnet"]').exists()).toBe(false);
-		// orphan provider not in catalog (well, in catalog but not in providers list)
-		expect(w.find('[data-testid="primary-picker-item-someUnboundProvider__orphan-model"]').exists()).toBe(false);
+	});
+
+	test('renders alias plan variant model (e.g. volcengine-plan/ark-code-latest)', () => {
+		const w = makeWrapper({
+			usable: { 'volcengine-plan': ['ark-code-latest'], groq: ['llama-3.3-70b-versatile'] },
+			current: null,
+		});
+		// 别名套餐变体作为一等公民出现，可被选中
+		const variant = w.find('[data-testid="primary-picker-item-volcengine-plan__ark-code-latest"]');
+		expect(variant.exists()).toBe(true);
+		// 分组标题直接显示变体 provider id
+		expect(w.find('[data-testid="primary-picker-group-volcengine-plan"]').text()).toBe('volcengine-plan');
+	});
+
+	test('clicking the variant calls setPrimary with the variant provider/model', async () => {
+		const setPrimary = vi.fn().mockResolvedValue({});
+		const w = makeWrapper({
+			usable: { 'volcengine-plan': ['ark-code-latest'] },
+			current: null,
+			setPrimary,
+		});
+		await w.find('[data-testid="primary-picker-item-volcengine-plan__ark-code-latest"]').trigger('click');
+		await flushPromises();
+		expect(setPrimary).toHaveBeenCalledTimes(1);
+		expect(setPrimary.mock.calls[0][0].primary).toBe('volcengine-plan/ark-code-latest');
+	});
+
+	test('ignores catalog/providers entirely in main path (empty providers/catalog still lists usable)', () => {
+		const w = makeWrapper({ providers: [], catalog: [] });
+		// fallback=false → 数据只来自 usable，与 providers/catalog 无关
+		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(true);
+		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
+	});
+
+	test('empty usable → empty hint', () => {
+		const w = makeWrapper({ usable: {} });
+		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
+	});
+
+	test('provider key with empty model array contributes no group', () => {
+		const w = makeWrapper({ usable: { groq: [], openai: ['gpt-4'] }, current: null });
+		expect(w.find('[data-testid="primary-picker-group-groq"]').exists()).toBe(false);
+		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(true);
 	});
 
 	test('current model gets check mark; others do not', () => {
@@ -104,34 +152,60 @@ describe('PrimaryModelPickerDialog — intersection of providers + catalog', () 
 
 	test('groups labeled by raw provider id (no displayName mapping)', () => {
 		const w = makeWrapper();
-		// 分组标题直接显示原生 provider id（不再用 PROVIDER_META 的 displayName）
-		const openaiGroup = w.find('[data-testid="primary-picker-group-openai"]');
-		expect(openaiGroup.exists()).toBe(true);
-		expect(openaiGroup.text()).toBe('openai');
+		expect(w.find('[data-testid="primary-picker-group-openai"]').text()).toBe('openai');
 		expect(w.find('[data-testid="primary-picker-group-groq"]').text()).toBe('groq');
 	});
 
-	test('empty providers list → empty hint', () => {
-		const w = makeWrapper({ providers: [] });
-		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
-	});
-
-	test('empty catalog → empty hint', () => {
-		const w = makeWrapper({ catalog: [] });
-		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
-	});
-
-	test('current invalid format (no slash) → no item highlighted, no crash', () => {
+	test('current invalid format (no slash) → no highlight, no crash', () => {
 		const w = makeWrapper({ current: 'malformed' });
-		// 仍渲染列表，仅没人被勾上
-		const checkmarks = w.findAll('[data-icon="i-lucide-check"]');
-		expect(checkmarks.length).toBe(0);
+		expect(w.findAll('[data-icon="i-lucide-check"]').length).toBe(0);
 	});
 
 	test('current null → no checkmark, no crash', () => {
 		const w = makeWrapper({ current: null });
-		const checkmarks = w.findAll('[data-icon="i-lucide-check"]');
-		expect(checkmarks.length).toBe(0);
+		expect(w.findAll('[data-icon="i-lucide-check"]').length).toBe(0);
+	});
+
+	test('tolerates malformed usable entries (non-array values / non-string ids)', () => {
+		const w = makeWrapper({
+			usable: { openai: 'not-an-array', groq: ['llama-3.3-70b-versatile', 123, null] },
+			current: null,
+		});
+		// openai 值非数组 → 跳过；groq 仅保留合法 string id
+		expect(w.find('[data-testid="primary-picker-group-openai"]').exists()).toBe(false);
+		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
+	});
+});
+
+describe('PrimaryModelPickerDialog — old-plugin fallback (providers ∩ catalog)', () => {
+	test('fallback=true uses providers ∩ catalog, ignoring usable', () => {
+		// usable 为空，但回退态从 providers ∩ catalog 出可选项 → 不空白
+		const w = makeWrapper({ fallback: true, usable: {} });
+		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(true);
+		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
+		// anthropic 不在 providers → 被裁掉
+		expect(w.find('[data-testid="primary-picker-item-anthropic__claude-sonnet"]').exists()).toBe(false);
+		// catalog 里但不在 providers → 裁掉
+		expect(w.find('[data-testid="primary-picker-item-someUnboundProvider__orphan-model"]').exists()).toBe(false);
+	});
+
+	test('fallback=true with empty providers → empty hint', () => {
+		const w = makeWrapper({ fallback: true, providers: [], usable: {} });
+		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
+	});
+
+	test('fallback=true with empty catalog → empty hint', () => {
+		const w = makeWrapper({ fallback: true, catalog: [], usable: {} });
+		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
+	});
+
+	test('fallback path tolerates malformed catalog rows', () => {
+		const w = makeWrapper({
+			fallback: true,
+			usable: {},
+			catalog: [{ id: 'x' }, { provider: 'groq' }, null, { id: 'llama-3.3-70b-versatile', provider: 'groq' }],
+		});
+		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
 	});
 });
 
@@ -155,6 +229,13 @@ describe('PrimaryModelPickerDialog — search', () => {
 		const w = makeWrapper();
 		await w.find('[data-testid="primary-picker-search"]').setValue('zzz-nope');
 		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
+	});
+
+	test('search also applies in fallback mode', async () => {
+		const w = makeWrapper({ fallback: true, usable: {} });
+		await w.find('[data-testid="primary-picker-search"]').setValue('llama');
+		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
+		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(false);
 	});
 });
 
@@ -213,6 +294,16 @@ describe('PrimaryModelPickerDialog — click to save (immediate, no second confi
 		expect(mockNotify.error).toHaveBeenCalledWith('modelConfig.common.saveFailed');
 	});
 
+	test('canceled error → silent close, no notify', async () => {
+		const setPrimary = vi.fn().mockRejectedValue(Object.assign(new Error('abort'), { code: 'ERR_CANCELED' }));
+		const w = makeWrapper({ setPrimary });
+		await w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').trigger('click');
+		await flushPromises();
+		expect(mockNotify.error).not.toHaveBeenCalled();
+		const openEvents = w.emitted('update:open');
+		expect(openEvents[openEvents.length - 1]).toEqual([false]);
+	});
+
 	test('double-click while busy → only one RPC fires', async () => {
 		let resolveSet;
 		const setPrimary = vi.fn(() => new Promise(res => { resolveSet = res; }));
@@ -222,7 +313,6 @@ describe('PrimaryModelPickerDialog — click to save (immediate, no second confi
 		await w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').trigger('click');
 		await Promise.resolve();
 		expect(setPrimary).toHaveBeenCalledTimes(1);
-		// settle 收尾
 		resolveSet({});
 		await flushPromises();
 	});
@@ -230,15 +320,12 @@ describe('PrimaryModelPickerDialog — click to save (immediate, no second confi
 	test('spinner shows on the clicked NON-current row while saving (not tied to isCurrent)', async () => {
 		let resolveSet;
 		const setPrimary = vi.fn(() => new Promise(res => { resolveSet = res; }));
-		// current is openai/gpt-4; user clicks a different (groq) row
 		const w = makeWrapper({ setPrimary, current: 'openai/gpt-4' });
 		await w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').trigger('click');
 		await Promise.resolve();
 		await w.vm.$nextTick();
-		// the clicked groq row shows the loader spinner even though it is NOT the current primary
 		const clicked = w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]');
 		expect(clicked.find('[data-icon="i-lucide-loader-2"]').exists()).toBe(true);
-		// the current openai row does NOT spin
 		const current = w.find('[data-testid="primary-picker-item-openai__gpt-4"]');
 		expect(current.find('[data-icon="i-lucide-loader-2"]').exists()).toBe(false);
 		resolveSet({});

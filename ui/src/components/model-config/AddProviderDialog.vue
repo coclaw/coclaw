@@ -170,7 +170,11 @@ export default {
 			default: () => [],
 		},
 		/**
-		 * 当前已绑 provider id 列表（来自 providerAuth.list）；在 Step 1 中会被排除
+		 * 要从"可加 provider"列表里排除的 provider id 集（Step 1）。由父组件预先算好后传入：
+		 *   - 新插件：listUsable 的别名归一 configuredProviders ∪ usable（byProvider）的 key
+		 *     （后者含别名变体如 `volcengine-plan`，从而"持基座 key ⇒ 基座+变体都不出现"）
+		 *   - 旧插件回退：providerAuth.list 三源原始 providerIds
+		 * 本组件只做按 id 精确排除，不关心来源——口径选择全在父组件。
 		 *
 		 * @type {string[]}
 		 */
