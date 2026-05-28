@@ -459,7 +459,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 **覆盖面（修订 6）**：四处统一覆盖 env+内联+账本+**别名套餐（火山/byteplus/minimax-cn/stepfun）**；统一漏 IAM/本地（`hasAuthForModelProvider` 未导出，pro 边角，接受 spurious、不阻断使用）。**不再有"信号便宜 vs 枚举完整"分层**——同一原语贯穿，选模型器↔set↔providerUsable↔noKey 全一致。
 
-**旧插件兼容**：旧插件出参无 `hasAnyUsableCredential` 字段，UI 据此 feature-detect → 凭据信号未知则不渲染 noKey / invalid 橙条（宁可少提示不误报）。
+**旧插件不再特判（feature-detect-suppress 已移除）**：旧插件出参无 `hasAnyUsableCredential` 字段，UI 当 false → **该弹 noKey / invalid 就弹**。取舍：主动引导小白配 key 是产品价值，且 claw 很快自动升级插件，「新前端 + 旧插件」窗口极窄——窗口内旧插件用户短暂再现误报可接受，远好过对小白沉默。注意区分：子页「写完设置后那次后台刷新失败」的反误报保护是**另一回事**（`credSignalFresh`，不拿写入前的旧凭据信号误报失效），保留至今。详见 UI 设计 `ui/docs/model-config.md` § 7.4。
 
 **错误码**：仅 `IO_FAILED`（runtime cfg 不可读）。
 

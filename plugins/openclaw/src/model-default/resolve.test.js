@@ -280,6 +280,19 @@ test('computeProviderUsableByName: 别名套餐 —— 内联基座 key 经两�
 	assert.equal(computeProviderUsableByName('volcengine-plan', cfg, deps), true);
 });
 
+test('computeProviderUsableByName: 别名套餐 —— 内联变体 id 节点经 node 侧归一让基座查询为 true（钉死 node 侧归一）', () => {
+	// 反向用例：内联节点用变体 id volcengine-plan（带 key），查询用基座名 volcengine。
+	// node 侧 resolveProviderIdForAuth 把节点 id volcengine-plan 归一到 volcengine 才能与查询 targetId 命中。
+	// 价值：若去掉 hasInlineKey 里对 nodeId 的 resolveProviderIdForAuth（node 侧停在 volcengine-plan ≠ 查询归一的 volcengine），此用例失败 → 钉死 node 侧归一。
+	const cfg = { models: { providers: { 'volcengine-plan': { apiKey: 'sk-volc' } } } };
+	const deps = makeCredDeps({
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: (v) => v === 'sk-volc',
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+	});
+	assert.equal(computeProviderUsableByName('volcengine', cfg, deps), true);
+});
+
 test('computeProviderUsableByName: 内联节点归一后不同 provider → false', () => {
 	const cfg = { models: { providers: { anthropic: { apiKey: 'sk-a' } } } };
 	const deps = makeCredDeps({ hasConfiguredSecretInput: () => true });
