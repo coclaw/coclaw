@@ -814,15 +814,14 @@ const plugin = {
 			loadProviderCatalogRuntime: () => import('openclaw/plugin-sdk/provider-catalog-runtime'),
 		});
 
-		// 模型默认配置 RPC（coclaw.model.set / list）。三个 SDK 子入口的字面量
+		// 模型默认配置 RPC（coclaw.model.set / list / listUsable）。三个 SDK 子入口的字面量
 		// dynamic import 必须留在本入口源码——OpenClaw plugin loader 只扫入口源码
 		// 命中 `openclaw/plugin-sdk/*` 字面量并触发 jiti 重写；藏在子模块的字面量
 		// loader 看不到 → 原生 Node 解析必败。
 		registerModelDefaultHandlers(api, {
 			loadConfigMutation: () => import('openclaw/plugin-sdk/config-mutation'),
-			loadModelsProviderRuntime: () => import('openclaw/plugin-sdk/models-provider-runtime'),
 			loadProviderAuth: () => import('openclaw/plugin-sdk/provider-auth'),
-			// agent-runtime barrel：resolveProviderIdForAuth（内联别名归一）+ 后续 loadModelCatalog（选模型器枚举）
+			// agent-runtime barrel：resolveProviderIdForAuth（内联别名归一）+ loadModelCatalog（选模型器枚举 / set 存在性干净目录）
 			loadAgentRuntime: () => import('openclaw/plugin-sdk/agent-runtime'),
 		});
 

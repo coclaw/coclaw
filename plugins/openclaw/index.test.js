@@ -1864,6 +1864,7 @@ test('register full mode: all expected side effects fire with exact RPC method s
 		'coclaw.providerAuth.cancelOauth',
 		'coclaw.model.set',
 		'coclaw.model.list',
+		'coclaw.model.listUsable',
 	];
 	for (const m of expectedMethods) {
 		assert.ok(handlers.has(m), `expected RPC method "${m}" to be registered`);

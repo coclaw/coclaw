@@ -21,14 +21,13 @@ function makeSdk(overrides = {}) {
 			sdk.__cfg = draft;
 			return { result: undefined };
 		},
-		buildModelsProviderData: async () => ({
-			byProvider: new Map([
-				['openai-codex', new Set(['gpt-5.5', 'gpt-4o'])],
-				['anthropic', new Set(['claude-opus-4-7'])],
-			]),
-		}),
-		isProviderAuthProfileConfigured: () => true,
-		// list 凭据信号默认：env/账本无、内联无、账本空 → providerUsable / hasAny 均 false
+		// 干净目录（set 存在性 + listUsable 枚举同源）：默认含 openai-codex / anthropic 两家若干模型
+		loadModelCatalog: async () => ([
+			{ id: 'gpt-5.5', provider: 'openai-codex' },
+			{ id: 'gpt-4o', provider: 'openai-codex' },
+			{ id: 'claude-opus-4-7', provider: 'anthropic' },
+		]),
+		// 凭据信号默认：env/账本/内联全无 → providerUsable / hasAny / 凭据门 均 false（无凭据用例直观）
 		isProviderApiKeyConfigured: () => false,
 		hasConfiguredSecretInput: () => false,
 		ensureAuthProfileStore: () => ({ profiles: {} }),
@@ -39,6 +38,15 @@ function makeSdk(overrides = {}) {
 		...overrides,
 	};
 	return sdk;
+}
+
+// set 成功路径要求凭据门（统一原语 computeProviderUsable）通过：默认 mock 无任何凭据，
+// 这里从 env/账本侧放行 openai-codex，让合法 openai-codex/* 能走到存在性校验与写盘。
+function makeSetSdk(overrides = {}) {
+	return makeSdk({
+		isProviderApiKeyConfigured: ({ provider }) => provider === 'openai-codex',
+		...overrides,
+	});
 }
 
 function makeHandlers({ sdk, cfg, agentDir = '/fake/agents/main/agent' }) {
@@ -141,7 +149,7 @@ test('set: primary "/" 在结尾 → INVALID_ARGS', async () => {
 });
 
 test('set: primary 尾随空格 → trim 后通过校验并按 trim 值落盘', async () => {
-	const { handlers, sdk } = makeHandlers({});
+	const { handlers, sdk } = makeHandlers({ sdk: makeSetSdk() });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5 ' }, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
@@ -151,7 +159,7 @@ test('set: primary 尾随空格 → trim 后通过校验并按 trim 值落盘', 
 });
 
 test('set: primary 前后均有空格 → trim 后通过校验', async () => {
-	const { handlers, sdk } = makeHandlers({});
+	const { handlers, sdk } = makeHandlers({ sdk: makeSetSdk() });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: '  openai-codex/gpt-5.5  ' }, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
@@ -168,34 +176,70 @@ test('set: primary 全为空白 → trim 后空 → INVALID_ARGS（非空字符�
 	assert.match(r.calls[0].error.message, /non-empty string or null/);
 });
 
-test('set: provider 没凭据 → INVALID_ARGS', async () => {
-	const sdk = makeSdk({ isProviderAuthProfileConfigured: () => false });
-	const { handlers } = makeHandlers({ sdk });
+test('set: provider 无可用凭据 → INVALID_ARGS（统一原语凭据门）', async () => {
+	// 默认 makeSdk 三源全无凭据 → computeProviderUsable=false → 门挡住（含继续拒幽灵）
+	const { handlers } = makeHandlers({});
 	const r = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
-	assert.match(r.calls[0].error.message, /no usable auth profile/);
+	assert.match(r.calls[0].error.message, /no usable credential/);
 });
 
-test('set: model 不在 catalog → INVALID_ARGS', async () => {
-	const { handlers } = makeHandlers({});
+test('set: 内联 key（env/账本均无）也可设（修③：选得到设得上）', async () => {
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: (v) => v === 'sk-inline',
+	});
+	sdk.__cfg = {
+		agents: {},
+		models: { providers: { 'openai-codex': { apiKey: 'sk-inline' } } },
+	};
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(sdk.__mutateCalls[0].agents.defaults.model, { primary: 'openai-codex/gpt-5.5' });
+});
+
+test('set: 别名套餐基座内联 key 点亮变体 → 变体 primary 可设（修③）', async () => {
+	const sdk = makeSdk({
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: (v) => v === 'sk-volc',
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+		loadModelCatalog: async () => ([{ id: 'ark-code-latest', provider: 'volcengine-plan' }]),
+	});
+	sdk.__cfg = {
+		agents: {},
+		models: { providers: { volcengine: { apiKey: 'sk-volc' } } },
+	};
+	const { handlers } = makeHandlers({ sdk });
+	const r = makeRespond();
+	await handlers.set({ params: { primary: 'volcengine-plan/ark-code-latest' }, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(sdk.__mutateCalls[0].agents.defaults.model, { primary: 'volcengine-plan/ark-code-latest' });
+});
+
+test('set: 凭据门过但 model 不在干净目录 → INVALID_ARGS', async () => {
+	const { handlers } = makeHandlers({ sdk: makeSetSdk() });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/unknown-model' }, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
 	assert.match(r.calls[0].error.message, /not found in catalog/);
 });
 
-test('set: catalog 完全没该 provider → INVALID_ARGS', async () => {
+test('set: 幽灵 openai/gpt-5.5（无任何源凭据）→ 被门拒 INVALID_ARGS', async () => {
+	// 幽灵根本不在 loadModelCatalog；且无凭据 → 门先挡住
 	const { handlers } = makeHandlers({});
 	const r = makeRespond();
-	await handlers.set({ params: { primary: 'mystery/foo' }, respond: r.respond });
+	await handlers.set({ params: { primary: 'openai/gpt-5.5' }, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
+	assert.match(r.calls[0].error.message, /no usable credential/);
 });
 
 // ============ set: 写盘成功 ============
 
 test('set: 合法 primary default scope → 写盘 + respond(true, {})', async () => {
-	const { handlers, sdk } = makeHandlers({});
+	const { handlers, sdk } = makeHandlers({ sdk: makeSetSdk() });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
@@ -206,7 +250,7 @@ test('set: 合法 primary default scope → 写盘 + respond(true, {})', async (
 });
 
 test('set: 合法 primary per-agent scope', async () => {
-	const sdk = makeSdk();
+	const sdk = makeSetSdk();
 	sdk.__cfg = { agents: { list: [{ id: 'r', model: { primary: 'old/a' } }] } };
 	const { handlers } = makeHandlers({ sdk });
 	const r = makeRespond();
@@ -223,8 +267,7 @@ test('set: 合法 primary per-agent scope', async () => {
 test('set: primary=null default scope 跳过校验 → 直接清', async () => {
 	const sdk = makeSdk();
 	sdk.__cfg = { agents: { defaults: { model: { primary: 'old/a' } } } };
-	// 即便凭据/catalog 都报"无效"也允许清——因为 primary=null 跳过校验
-	sdk.isProviderAuthProfileConfigured = () => false;
+	// 即便三源都无凭据也允许清——因为 primary=null 跳过凭据门 / 存在性校验
 	const { handlers } = makeHandlers({ sdk });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: null }, respond: r.respond });
@@ -262,7 +305,7 @@ test('set: loadConfig 返回 null → IO_FAILED', async () => {
 });
 
 test('set: mutateConfigFile 抛错 → IO_FAILED', async () => {
-	const sdk = makeSdk({
+	const sdk = makeSetSdk({
 		mutateConfigFile: async () => { throw new Error('disk full'); },
 	});
 	const { handlers } = makeHandlers({ sdk });
@@ -273,7 +316,7 @@ test('set: mutateConfigFile 抛错 → IO_FAILED', async () => {
 });
 
 test('set: mutateConfigFile 抛非 Error 字符串 → message 走 ?? err 兜底', async () => {
-	const sdk = makeSdk({
+	const sdk = makeSetSdk({
 		mutateConfigFile: async () => { throw 'boom-as-string'; },
 	});
 	const { handlers } = makeHandlers({ sdk });
@@ -283,9 +326,10 @@ test('set: mutateConfigFile 抛非 Error 字符串 → message 走 ?? err 兜底
 	assert.equal(r.calls[0].error.message, 'boom-as-string');
 });
 
-test('set: buildModelsProviderData 抛错 → IO_FAILED', async () => {
-	const sdk = makeSdk({
-		buildModelsProviderData: async () => { throw new Error('catalog load failed'); },
+test('set: loadModelCatalog 抛错 → IO_FAILED', async () => {
+	// 凭据门过后存在性校验依赖 loadModelCatalog；整体抛错（兜底也失败）→ 外层 catch 映射 IO_FAILED
+	const sdk = makeSetSdk({
+		loadModelCatalog: async () => { throw new Error('catalog load failed'); },
 	});
 	const { handlers } = makeHandlers({ sdk });
 	const r = makeRespond();
@@ -293,9 +337,9 @@ test('set: buildModelsProviderData 抛错 → IO_FAILED', async () => {
 	assert.equal(r.calls[0].error.code, 'IO_FAILED');
 });
 
-test('set: isProviderAuthProfileConfigured 抛错 → IO_FAILED', async () => {
+test('set: 凭据探针 isProviderApiKeyConfigured 抛错 → IO_FAILED', async () => {
 	const sdk = makeSdk({
-		isProviderAuthProfileConfigured: () => { throw new Error('cred check failed'); },
+		isProviderApiKeyConfigured: () => { throw new Error('cred check failed'); },
 	});
 	const { handlers } = makeHandlers({ sdk });
 	const r = makeRespond();
@@ -373,7 +417,7 @@ test('list: loadConfig 抛错 → IO_FAILED', async () => {
 // ============ set 出参形态：不带 status wrap ============
 
 test('set: 成功 payload 不带 status wrap', async () => {
-	const { handlers } = makeHandlers({});
+	const { handlers } = makeHandlers({ sdk: makeSetSdk() });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r.respond });
 	assert.deepEqual(r.calls[0].payload, {});
@@ -402,41 +446,37 @@ test('set: cfg 不可读 + primary 形态非法 → INVALID_ARGS（形态校验�
 	assert.match(r.calls[0].error.message, /<provider>\/<model>/);
 });
 
-// ============ 调用 sdk 的入参形态 ============
+// ============ set 调用 sdk 的入参形态 ============
 
-test('set: 调 isProviderAuthProfileConfigured 时传入 cfg + agentDir', async () => {
+test('set: 凭据门调 isProviderApiKeyConfigured 时传入 provider + agentDir', async () => {
 	const calls = [];
-	const sdk = makeSdk({
-		isProviderAuthProfileConfigured: (params) => {
+	const sdk = makeSetSdk({
+		isProviderApiKeyConfigured: (params) => {
 			calls.push(params);
-			return true;
+			return params.provider === 'openai-codex';
 		},
 	});
-	const { handlers } = makeHandlers({ sdk, cfg: { agents: { list: [] }, mark: 'cfg' } });
+	const { handlers } = makeHandlers({ sdk, cfg: { agents: { list: [] } } });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r.respond });
-	assert.equal(calls.length, 1);
-	assert.equal(calls[0].provider, 'openai-codex');
-	assert.equal(calls[0].agentDir, '/fake/agents/main/agent');
-	assert.equal(calls[0].cfg.mark, 'cfg');
+	assert.equal(r.calls[0].ok, true);
+	assert.ok(calls.some((c) => c.provider === 'openai-codex' && c.agentDir === '/fake/agents/main/agent'));
 });
 
-test('set: 调 buildModelsProviderData 时使用 view: all', async () => {
+test('set: 存在性校验调 loadModelCatalog 时传 readOnly:true', async () => {
 	const calls = [];
-	const sdk = makeSdk({
-		buildModelsProviderData: async (cfg, agentId, opts) => {
-			calls.push({ cfg, agentId, opts });
-			return {
-				byProvider: new Map([['openai-codex', new Set(['gpt-5.5'])]]),
-			};
+	const sdk = makeSetSdk({
+		loadModelCatalog: async (opts) => {
+			calls.push(opts);
+			return [{ id: 'gpt-5.5', provider: 'openai-codex' }];
 		},
 	});
 	const { handlers } = makeHandlers({ sdk });
 	const r = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
 	assert.equal(calls.length, 1);
-	assert.deepEqual(calls[0].opts, { view: 'all' });
-	assert.equal(calls[0].agentId, undefined);
+	assert.deepEqual(calls[0], { readOnly: true });
 });
 
 // ============ list/set 出参形态对称（设计意图）============
@@ -456,7 +496,7 @@ test('list+set: list 出参的 agents map 形状与 default 对称', async () =>
 // ============ 端到端串联：set→list / 并存清除 ============
 
 test('set→list: 先 set default scope 再 list，default.primary 反映刚写入的值', async () => {
-	const sdk = makeSdk();
+	const sdk = makeSetSdk();
 	const { handlers } = makeHandlers({ sdk });
 	const r1 = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r1.respond });
@@ -617,4 +657,133 @@ test('list: ensureAuthProfileStore 抛错 → IO_FAILED（与 providerAuth.list 
 	const r = makeRespond();
 	await handlers.list({ respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'IO_FAILED');
+});
+
+// ============ listUsable ============
+
+test('listUsable: 成功 — byProvider 含别名变体、无幽灵、configuredProviders 别名归一', async () => {
+	const sdk = makeSdk({
+		loadModelCatalog: async () => ([
+			{ id: 'gpt-5.5', provider: 'openai-codex' },          // 无凭据 → 剔除
+			{ id: 'claude-opus-4-7', provider: 'anthropic' },      // 无凭据 → 剔除
+			{ id: 'ark-code-latest', provider: 'volcengine-plan' }, // 基座内联 key → 别名感知保留
+			{ id: 'ark-pro', provider: 'volcengine-plan' },
+		]),
+		isProviderApiKeyConfigured: () => false,
+		hasConfiguredSecretInput: (v) => v === 'sk-volc',
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+	});
+	const cfg = {
+		agents: { defaults: { model: 'volcengine-plan/ark-code-latest' } },
+		models: { providers: { volcengine: { apiKey: 'sk-volc' } } },
+	};
+	const { handlers } = makeHandlers({ sdk, cfg });
+	const r = makeRespond();
+	await handlers.listUsable({ params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(r.calls[0].payload.byProvider, { 'volcengine-plan': ['ark-code-latest', 'ark-pro'] });
+	assert.deepEqual(r.calls[0].payload.configuredProviders, ['volcengine']);
+});
+
+test('listUsable: 无凭据 → byProvider 空 + configuredProviders 空', async () => {
+	const { handlers } = makeHandlers({ cfg: { agents: {} } });
+	const r = makeRespond();
+	await handlers.listUsable({ params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(r.calls[0].payload.byProvider, {});
+	assert.deepEqual(r.calls[0].payload.configuredProviders, []);
+});
+
+test('listUsable: params 非 object → INVALID_ARGS', async () => {
+	const { handlers } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.listUsable({ params: null, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
+	assert.match(r.calls[0].error.message, /params must be an object/);
+});
+
+test('listUsable: 未知字段 → INVALID_ARGS', async () => {
+	const { handlers } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.listUsable({ params: { agentId: 'r', extra: 1 }, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
+	assert.match(r.calls[0].error.message, /unknown field: extra/);
+});
+
+test('listUsable: agentId 空字符串 → INVALID_ARGS', async () => {
+	const { handlers } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.listUsable({ params: { agentId: '' }, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
+	assert.match(r.calls[0].error.message, /agentId/);
+});
+
+test('listUsable: agentId 类型错 → INVALID_ARGS', async () => {
+	const { handlers } = makeHandlers({});
+	const r = makeRespond();
+	await handlers.listUsable({ params: { agentId: 123 }, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
+});
+
+test('listUsable: cfg 返回 null → IO_FAILED', async () => {
+	const handlers = buildModelDefaultHandlers({
+		sdk: makeSdk(),
+		loadConfig: () => null,
+		resolveAgentDir: () => '/x',
+	});
+	const r = makeRespond();
+	await handlers.listUsable({ params: {}, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'IO_FAILED');
+	assert.match(r.calls[0].error.message, /runtime config not available/);
+});
+
+test('listUsable: loadModelCatalog 抛错 → 降级不空白（byProvider 空、configuredProviders 仍算）', async () => {
+	const sdk = makeSdk({
+		loadModelCatalog: async () => { throw new Error('catalog gone'); },
+		hasConfiguredSecretInput: (v) => v === 'sk-volc',
+	});
+	const cfg = { agents: {}, models: { providers: { volcengine: { apiKey: 'sk-volc' } } } };
+	const { handlers } = makeHandlers({ sdk, cfg });
+	const r = makeRespond();
+	await handlers.listUsable({ params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(r.calls[0].payload.byProvider, {});
+	assert.deepEqual(r.calls[0].payload.configuredProviders, ['volcengine']);
+});
+
+test('listUsable: store 读失败（ensureAuthProfileStore 抛错）→ IO_FAILED', async () => {
+	const sdk = makeSdk({
+		ensureAuthProfileStore: () => { throw new Error('store read failed'); },
+	});
+	const cfg = { agents: { defaults: { model: 'openai-codex/gpt-5.5' } } };
+	const { handlers } = makeHandlers({ sdk, cfg });
+	const r = makeRespond();
+	await handlers.listUsable({ params: {}, respond: r.respond });
+	assert.equal(r.calls[0].error.code, 'IO_FAILED');
+});
+
+test('listUsable: agentId 一路贯穿到 agentDir', async () => {
+	const seen = [];
+	const sdk = makeSdk({
+		loadModelCatalog: async () => [],
+		ensureAuthProfileStore: (dir) => { seen.push(dir); return { profiles: {} }; },
+	});
+	const handlers = buildModelDefaultHandlers({
+		sdk,
+		loadConfig: () => ({ agents: {} }),
+		resolveAgentDir: (agentId) => (agentId ? `/agents/${agentId}/agent` : '/agents/main/agent'),
+	});
+	const r = makeRespond();
+	await handlers.listUsable({ params: { agentId: 'r' }, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.ok(seen.includes('/agents/r/agent'));
+});
+
+test('listUsable: 出参不带 status wrap', async () => {
+	const { handlers } = makeHandlers({ cfg: { agents: {} } });
+	const r = makeRespond();
+	await handlers.listUsable({ params: {}, respond: r.respond });
+	assert.equal(Object.hasOwn(r.calls[0].payload, 'status'), false);
+	assert.equal(Object.hasOwn(r.calls[0].payload, 'byProvider'), true);
+	assert.equal(Object.hasOwn(r.calls[0].payload, 'configuredProviders'), true);
 });

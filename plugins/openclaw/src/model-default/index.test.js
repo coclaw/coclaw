@@ -29,19 +29,14 @@ function makeSdkModules() {
 				return { result: undefined };
 			},
 		},
-		modelsRuntime: {
-			buildModelsProviderData: async () => ({
-				byProvider: new Map([['openai-codex', new Set(['gpt-5.5'])]]),
-			}),
-		},
 		providerAuth: {
-			isProviderAuthProfileConfigured: () => true,
 			isProviderApiKeyConfigured: () => false,
 			hasConfiguredSecretInput: () => false,
 			ensureAuthProfileStore: () => ({ profiles: {} }),
 		},
 		agentRuntime: {
 			resolveProviderIdForAuth: (p) => p,
+			loadModelCatalog: async () => [],
 		},
 		__mutateCalls: mutateCalls,
 	};
@@ -55,12 +50,11 @@ function makeRespond() {
 	};
 }
 
-test('registerModelDefaultHandlers 注册两个 RPC method', () => {
+test('registerModelDefaultHandlers 注册三个 RPC method', () => {
 	const api = makeApi();
 	const mods = makeSdkModules();
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => mods.configMutation,
-		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
 		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({ agents: { defaults: {} } }),
@@ -68,6 +62,7 @@ test('registerModelDefaultHandlers 注册两个 RPC method', () => {
 	});
 	assert.equal(api.__registered.has('coclaw.model.set'), true);
 	assert.equal(api.__registered.has('coclaw.model.list'), true);
+	assert.equal(api.__registered.has('coclaw.model.listUsable'), true);
 });
 
 test('list 调用走到 handler 并返回出参', async () => {
@@ -75,7 +70,6 @@ test('list 调用走到 handler 并返回出参', async () => {
 	const mods = makeSdkModules();
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => mods.configMutation,
-		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
 		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({
@@ -104,7 +98,6 @@ test('list 出参带凭据信号：内联 key 让 providerUsable / hasAnyUsableC
 	mods.providerAuth.ensureAuthProfileStore = () => ({ profiles: {} });
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => mods.configMutation,
-		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
 		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({
@@ -120,12 +113,34 @@ test('list 出参带凭据信号：内联 key 让 providerUsable / hasAnyUsableC
 	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
 });
 
+test('listUsable 调用走到 handler 并返回 byProvider + configuredProviders', async () => {
+	// 钉住 index.js 把 loadModelCatalog（agent-runtime）+ 凭据探针接进 sdk bundle：
+	// 漏接任一 → 调用抛 → IO_FAILED，下面断言失败。
+	const api = makeApi();
+	const mods = makeSdkModules();
+	mods.providerAuth.isProviderApiKeyConfigured = ({ provider }) => provider === 'openai-codex';
+	mods.agentRuntime.loadModelCatalog = async () => [{ id: 'gpt-5.5', provider: 'openai-codex' }];
+	registerModelDefaultHandlers(api, {
+		loadConfigMutation: async () => mods.configMutation,
+		loadProviderAuth: async () => mods.providerAuth,
+		loadAgentRuntime: async () => mods.agentRuntime,
+		loadConfig: () => ({ agents: { defaults: { model: 'openai-codex/gpt-5.5' } } }),
+		resolveAgentDir: () => '/fake',
+	});
+	const r = makeRespond();
+	await api.__call('coclaw.model.listUsable', { params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.deepEqual(r.calls[0].payload.byProvider, { 'openai-codex': ['gpt-5.5'] });
+	assert.deepEqual(r.calls[0].payload.configuredProviders, ['openai-codex']);
+});
+
 test('set 调用走到 handler 并写盘', async () => {
 	const api = makeApi();
 	const mods = makeSdkModules();
+	mods.providerAuth.isProviderApiKeyConfigured = ({ provider }) => provider === 'openai-codex';
+	mods.agentRuntime.loadModelCatalog = async () => [{ id: 'gpt-5.5', provider: 'openai-codex' }];
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => mods.configMutation,
-		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
 		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({ agents: {} }),
@@ -144,7 +159,6 @@ test('SDK loader 抛错 → IO_FAILED', async () => {
 	const api = makeApi();
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => { throw new Error('sdk gone'); },
-		loadModelsProviderRuntime: async () => ({}),
 		loadProviderAuth: async () => ({}),
 		loadAgentRuntime: async () => ({}),
 		loadConfig: () => ({ agents: {} }),
@@ -163,7 +177,6 @@ test('loadAgentRuntime 抛错 → IO_FAILED（钉住已接入 Promise.all bundle
 	const mods = makeSdkModules();
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => mods.configMutation,
-		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
 		loadAgentRuntime: async () => { throw new Error('agent-runtime gone'); },
 		loadConfig: () => ({ agents: {} }),
@@ -180,7 +193,6 @@ test('SDK loader 抛非 Error 字符串 → IO_FAILED message 走 ?? err 兜底'
 	const api = makeApi();
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => { throw 'boom-as-string'; },
-		loadModelsProviderRuntime: async () => ({}),
 		loadProviderAuth: async () => ({}),
 		loadAgentRuntime: async () => ({}),
 		loadConfig: () => ({ agents: {} }),
@@ -195,21 +207,15 @@ test('SDK loader 抛非 Error 字符串 → IO_FAILED message 走 ?? err 兜底'
 test('并发首调：同事件循环内多次调用共享同一 handlersPromise，三个 loader 各自只调一次', async () => {
 	const api = makeApi();
 	const mods = makeSdkModules();
-	let cmLoads = 0, mrLoads = 0, paLoads = 0, arLoads = 0;
-	let resolveCM, resolveMR, resolvePA;
+	let cmLoads = 0, paLoads = 0, arLoads = 0;
+	let resolveCM, resolvePA;
 	const cmReady = new Promise((r) => { resolveCM = r; });
-	const mrReady = new Promise((r) => { resolveMR = r; });
 	const paReady = new Promise((r) => { resolvePA = r; });
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => {
 			cmLoads += 1;
 			await cmReady;
 			return mods.configMutation;
-		},
-		loadModelsProviderRuntime: async () => {
-			mrLoads += 1;
-			await mrReady;
-			return mods.modelsRuntime;
 		},
 		loadProviderAuth: async () => {
 			paLoads += 1;
@@ -224,10 +230,9 @@ test('并发首调：同事件循环内多次调用共享同一 handlersPromise�
 	const r2 = makeRespond();
 	const p1 = api.__call('coclaw.model.list', { params: {}, respond: r1.respond });
 	const p2 = api.__call('coclaw.model.list', { params: {}, respond: r2.respond });
-	resolveCM(); resolveMR(); resolvePA();
+	resolveCM(); resolvePA();
 	await Promise.all([p1, p2]);
 	assert.equal(cmLoads, 1);
-	assert.equal(mrLoads, 1);
 	assert.equal(paLoads, 1);
 	assert.equal(arLoads, 1);
 	assert.equal(r1.calls[0].ok, true);
@@ -243,7 +248,6 @@ test('handlers 实例在多次调用间复用（loader 只调一次）', async (
 			loadConfigMutationCalls += 1;
 			return mods.configMutation;
 		},
-		loadModelsProviderRuntime: async () => mods.modelsRuntime,
 		loadProviderAuth: async () => mods.providerAuth,
 		loadAgentRuntime: async () => mods.agentRuntime,
 		loadConfig: () => ({ agents: {} }),
@@ -261,10 +265,10 @@ test('opts 缺省时回退到默认 (mainAgentDir / getClawConfig)', () => {
 	const api = makeApi();
 	registerModelDefaultHandlers(api, {
 		loadConfigMutation: async () => ({ mutateConfigFile: async () => ({}) }),
-		loadModelsProviderRuntime: async () => ({ buildModelsProviderData: async () => ({}) }),
-		loadProviderAuth: async () => ({ isProviderAuthProfileConfigured: () => false }),
+		loadProviderAuth: async () => ({ isProviderApiKeyConfigured: () => false }),
+		loadAgentRuntime: async () => ({ resolveProviderIdForAuth: (p) => p, loadModelCatalog: async () => [] }),
 	});
-	assert.equal(api.__registered.size, 2);
+	assert.equal(api.__registered.size, 3);
 });
 
 test('default loader: 不传任何 opts → fallback path 跑通（测试环境无 openclaw 包 → IO_FAILED）', async () => {

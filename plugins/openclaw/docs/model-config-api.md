@@ -335,7 +335,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 |---|---|---|
 | `coclaw.model.set` | 设 / 清 default 或某 agent 的 primary | **本期实施** |
 | `coclaw.model.list` | 列 default + 所有 agent 的 primary | **本期实施** |
-| `coclaw.model.listUsable`（名待定，动词式） | 返回选模型器枚举集（干净目录 ∩ 别名感知凭据） | **修订 6 定稿；待实施** |
+| `coclaw.model.listUsable` | 返回选模型器枚举集（干净目录 ∩ 别名感知凭据）+ 已配 provider 集 | **本期实施** |
 
 均归 `operator.admin` scope。
 
@@ -352,7 +352,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 ### 3.2.1 选模型器枚举：干净目录 ∩ 别名感知凭据（修订 6 定稿，2026-05-28）
 
-> **状态（修订 6，定稿待实施）**：本小节 + § 3.3 + § 3.4 是**已 review 通过的定稿方向**，现状代码（`7a4d1443`）仍是旧的"三源 providerIds 闸 + profiles-only 校验"，clear 后按此实施。进行中状态见 `tmp/inline-key-list-revoke--clear-dump.md`「方案（修订 6 定稿）」。**修订 4/5 曾走"能用集 `buildModelsProviderData`/cfgClone"路线，已放弃**（理由见下）。
+> **状态（修订 6，已实施）**：本小节 + § 3.3 + § 3.4 已落地——统一别名感知凭据原语（`computeProviderUsableByName` / `computeProviderUsable`）+ 选模型器枚举纯函数（`enumerateUsableModels`）在 `resolve.js`，`coclaw.model.listUsable` handler + `model.set` 换门换源在 `handlers.js`。**修订 4/5 曾走"能用集 `buildModelsProviderData`/cfgClone"路线，已放弃**（理由见下）。
 
 **问题**：判"哪些模型真能选/能设"不能靠 CoClaw 自己从凭据三源拼 provider 名再**按原始名**跟目录取交集——会漏别名授权（`volcengine` 一把 key 经厂商 manifest 同时授权 `volcengine-plan`，后者在目录里是独立 provider，**套餐用户的默认模型 `volcengine-plan/ark-code-latest` 正在其中**）。**支持别名套餐是硬需求**（套餐用户多为普通用户）。
 
@@ -365,11 +365,14 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
   - **必修 B**：现有 `computeProviderUsable(primary,…)`（resolve.js:124）对入参跑 `providerSegmentOf`，**裸 provider 名（无斜杠）返回 null → 整函数 false**。必须抽出按裸 provider 名工作的 `…ByName` 核心，`computeProviderUsable(primary)` 委托它。
 - **枚举 = 目录按 provider 分组 → 留过 `…ByName` 的 provider →（文本模态过滤）**。变体经 manifest 行进目录、经别名感知凭据（基座 key）保留；幽灵 provider 无凭据被丢。
 
-**`coclaw.model.listUsable`**（名待定、动词式，遵 `gateway-method-design`；归 `coclaw.model.*`；`operator.admin` scope）：
+**`coclaw.model.listUsable`**（动词式，遵 `gateway-method-design`；归 `coclaw.model.*`；`operator.admin` scope）：
 
-- **入参**：`{ agentId?: string }`（缺省 = default scope）；agentId 非空 string 检查失败 → `INVALID_ARGS`。**agentId 一路贯穿**到凭据判定（与 model.set/providerUsable 同 agent 的 store）。
-- **出参**：`{ byProvider: Record<string, string[]> }`（provider → 可用 modelId 列表）。供 UI 选模型器**直接出可选项**。无幽灵（凭据过滤天然剔除）。
-- **错误码**：`INVALID_ARGS`（agentId 类型错）/ `IO_FAILED`（runtime cfg 不可读 / SDK 抛错）。**降级**：`loadModelCatalog readOnly` 抛错 → 静态 manifest 兜底（不空白）。
+- **入参**：`{ agentId?: string }`（缺省 = default scope）；agentId 给了但非空 string 检查失败 → `INVALID_ARGS`；未知字段 → `INVALID_ARGS`。**agentId 一路贯穿**到凭据判定（与 model.set/providerUsable 同 agent 的 agentDir；产线 `mainAgentDir` 忽略入参恒 main，凭据按设计统一落 main、各 agent 层叠可见，故四消费点天然同 dir、不分叉）。
+- **出参**：`{ byProvider: Record<string, string[]>, configuredProviders: string[] }`
+  - `byProvider`：provider（含别名变体 id 如 `volcengine-plan`）→ 可用 modelId 列表（升序去重）。供 UI 选模型器**直接出可选项**，无幽灵（凭据过滤天然剔除）。
+  - `configuredProviders`：别名归一（`resolveProviderIdForAuth`）的"已配 provider"基座 id 集（账本 ∪ 内联 ∪ env 三源，升序去重）。供 UI **加 provider 时排除**（UI 拿不到 `resolveProviderIdForAuth`，必须插件给）。
+- **错误码**：`INVALID_ARGS`（params 形状 / agentId 类型错 / 未知字段）/ `IO_FAILED`（runtime cfg 不可读 / 凭据探针即 store 读失败等 SDK 抛错）。
+- **降级**：`loadModelCatalog({readOnly:true})` 自带"持久化失败→静态 manifest"兜底（`model-catalog.ts`）；handler 再 try/catch 兜"整个 `loadModelCatalog` 抛错"（罕见）→ 以**空 entries** 走枚举 → `{ byProvider: {}, configuredProviders }`（**不空白**：byProvider 退化为空但 `configuredProviders` 不依赖目录仍可算，UI 加 provider 排除照常）。**store 读失败**（`ensureAuthProfileStore` 抛错）走外层 catch → `IO_FAILED`（UI 回退旧派生，与既有 `coclaw.model.list` 同口径）。
 - **旧插件回退**：旧插件无此方法 → UI 必须回退到"`providerAuth.list` ∩ `models.list view:'all'`"派生（即今天 shipped 行为，升级窗口内短暂缺别名变体，可接受；见 UI doc § 7.3）。
 - **caveat（readOnly 新鲜度）**：readOnly 主路径读 lazy 缓存 `models.json`（网关启动/非 readOnly 调用时重生成）；新装厂商扩展有极窄过时窗口（自带扩展如火山在任何网关启动后即在内）。要绝对保险可走非 readOnly（更新鲜但首拉 ~10s manifest stall + discovery）——readOnly/非 readOnly 旋钮，低频子页倾向 readOnly。
 
@@ -464,7 +467,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 | 文件 | 角色 |
 |---|---|
-| `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配）；**统一原语 `computeProviderUsableByName`（抽出核心、B）+ `computeProviderUsable` 委托它 + `computeHasAnyUsableCredential` 补 env（C）**；**选模型器枚举纯函数**（`loadModelCatalog({readOnly:true})` → 按 provider 分组 → 留过 `…ByName` 的 → 文本模态过滤） |
+| `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配）；**统一原语 `computeProviderUsableByName`（抽出核心、B）+ `computeProviderUsable` 委托它 + `computeHasAnyUsableCredential` 补 env（C）**；**选模型器枚举纯函数 `enumerateUsableModels(entries, cfg, deps)`（纯同步：按 provider 分组 → 留过 `…ByName` 的 → 不做模态过滤）+ `computeConfiguredProviders`**。catalog entries 由 handler 传入（loadModelCatalog 不在本文件 await） |
 | `src/model-default/persist.js` | 字段级 set / clear 写盘（封装 `mutateConfigFile` 调用） |
 | `src/model-default/handlers.js` | set / list / **listUsable** handler（入参校验 + 副作用编排）；**set 门 + listUsable 过滤 + list 信号全部走统一原语**（§ 3.4），set 存在性走 `loadModelCatalog readOnly`；listUsable 降级兜底 |
 | `src/model-default/index.js` | 懒加载 SDK + 注册到 gateway api |
