@@ -138,17 +138,17 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 ┌──────────────────────────────────────────────────────┐
 │ API key                                     [+ 添加]  │
 ├──────────────────────────────────────────────────────┤
-│ Groq        [CoClaw]      gsk_xxxx…ABCD       [撤销]  │  ← 账本(本平台添加/扫码)
+│ Groq                      gsk_xxxx…ABCD       [撤销]  │  ← 账本(本平台添加/扫码;不打标签)
 │ minimax     [配置文件]    sk-mm…1234          [撤销]  │  ← 内联(openclaw.json 手写)
 │ openai      [环境变量]    去主机移除           [撤销]  │  ← env(灰显+禁用)
 └──────────────────────────────────────────────────────┘
 ```
 
-- 每行：provider 名 + **来源小标签**（账本 `CoClaw` / 配置文件 / 环境变量）+ keyPreview(头 4 + … + 尾 4) + 撤销动作
+- 每行：provider 名 + **来源小标签（仅 inline/env：`配置文件` / `环境变量`；账本 profile 是默认存储、不打标签）** + keyPreview(头 4 + … + 尾 4) + 撤销动作。【2026-05-28 拍板：profile 不打标签——新用户多只有 profile 源、全程看不到标签，负担最低；列表不分组】
 - **来源决定可撤性**（`removable`）：账本 / 内联可撤；**env 不可撤**（在 OpenClaw 主机进程环境里，插件改不了）——该行灰显、撤销按钮禁用，次行提示"到 OpenClaw 主机移除"
-- 同一 provider 可多来源并存（如账本 + 内联各一份），各自独立成行、撤销互不影响；`providerIds`（喂 picker / add-dialog）按**已列出的来源**跨源去重——故只有内联 key 的 provider 其模型也能在 picker 选到
-- **env 来源只列出"支撑当前主模型、且无账本/内联覆盖"的那条**（sole-source）；纯 env、非主模型的 provider 不列出、也不进 picker（接受残留，见 §7.4 与插件 `model-config-api.md`）
-- 列表为空（账本 + 内联皆空，且无支撑主模型的 sole-source env）时显示提示:"还没配任何 provider,先添加一个 API key"
+- 同一 provider 可多来源并存（如账本 + 内联各一份），各自独立成行、撤销互不影响。**注（2026-05-28 修订）**：本列表**不再喂 picker 可选性**——picker 改吃"能用集"（`coclaw.model.catalog`，见 §7.1 / §7.4）；本列表只管展示 + 撤销 + 「加 provider」时排除已配
+- **env 行的列出范围待定（#3 挂起）**：env 是否在此成行是**纯展示口径**问题——模型可选性已由能用集解决（env 模型照样能选），env 成不成行不再影响可用性。具体口径见 dump「方案 TODO」+「方案修订」
+- 列表为空（账本 + 内联皆空）时显示提示:"还没配任何 provider,先添加一个 API key"
 - 「+ 添加」打开"添加 provider"流程（已配 provider——含内联/env——从可选列表剔除，避免再加一份低优先级、不生效的 key）
 
 ---
@@ -195,6 +195,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 ```
 
 - 列表数据源：`models.list view:"all"` 返回的 provider 字段去重
+- **排除已配 provider 用别名归一名（修订 6，#8 闭合）**：列表里要排掉用户已有凭据的 provider，排除口径**两侧都按别名基座名归一**（`resolveProviderIdForAuth`，插件侧做——UI 拿不到该函数）。否则套餐用户持 `volcengine` 基座 key，仍被提供去重复加 `volcengine`/`volcengine-plan`。归一后的"已配 provider"集由插件随凭据信号或专门字段给 UI
 - "常用"分组的 provider 由 UI 端硬编码（一期人工维护一份"热门 provider"清单，按用户分布 + 国内外平衡选取）
 - displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**展示暂缓**：provider 选择列表 / 主模型选择器当前直接用原生 provider id 占位，displayName 映射暂未接入这两处展示；displayName 仍是最终目标，后续接入
 
@@ -243,9 +244,8 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 └────────────────────────────────────────┘
 ```
 
-- 数据源：从"已绑 provider"为口径，列出这些 provider 下的所有模型；按 provider 分组
-- 用 `models.list view:"all"` + 当前 `providerAuth.list` 交集
-- 点击一项即选即保存：`coclaw.model.set({ primary: '<provider>/<model>' })`
+- 数据源（修订 6）：吃 `coclaw.model.listUsable` 返回的枚举集（provider → 可用 modelId，插件侧已 `loadModelCatalog` 干净目录 ∩ 别名感知凭据、无幽灵），按 provider 分组直接出可选项；**不再**用"`models.list view:"all"` ∩ `providerAuth.list`"按原始名取交集（那会漏别名套餐变体，如 `volcengine-plan/ark-code-latest`）。旧插件无 listUsable 方法时回退到旧交集（§ 7.3）。
+- 点击一项即选即保存：`coclaw.model.set({ primary: '<provider>/<model>' })`（其凭据门与选模型器走同一别名感知原语，避免"选得到设不上"）
 - 保存成功 → 关闭模态 → 主模型区刷新 + notify
 - 不做"二次确认"——可以再换，无破坏性
 
@@ -273,7 +273,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 判断条件：当前 `model.list.default.primary` 拆出 `<provider>` 等于待撤的 provider（按 provider 段匹配，对内联来源同样适用）。
 
-**内联来源（source='inline'）追加提示**：正文末尾多一行"这会从你的 OpenClaw 配置文件里删掉这把 key"——撤内联改的是 `openclaw.json`（删 `apiKey` 字段、保留节点其余定义），与账本撤销（只删凭据账本）语义不同，需告知用户。可与强提示并存（内联 + 主模型载体 → 两段都显示）。
+**内联来源统一处理（2026-05-28 拍板）**：撤内联**不再**加"会从配置文件删 key"那句单独提示——确认弹窗与普通删除一个样。理由：来源已由列表行标签（`配置文件`）表达，弹窗重复且带术语；内联属历史遗留，用户用 CoClaw 配模型后不必再手改 `openclaw.json`，不值得让小白理解"配置文件 vs 账本"之别。主模型载体的强提示**保留**（安全闸）。（底层撤销仍是删 `apiKey` 字段、保留节点其余——见 plugin §2.5 / mental-model §4.9，只是 UI 不再特别说明。）
 
 提交：`coclaw.providerAuth.remove({ provider, source })`——`source` 透传决定后端分派（账本删凭据账本 / 内联删 key 字段；env 行已禁用、不会走到这）。成功 → 凭据列表刷新 + 主模型区刷新（若已失效会自动显示橙条）
 
@@ -318,6 +318,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 │  ─ coclaw.providerAuth.remove                              │
 │  ─ coclaw.model.list                                       │
 │  ─ coclaw.model.set                                        │
+│  ─ coclaw.model.listUsable（干净目录∩别名感知凭据；选模型器源）│
 │  ─ models.list (upstream, view:"all")                      │
 └────────────────────────────────────────────────────────────┘
               │
@@ -332,8 +333,9 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 │  （仪表盘只调 model.list 取凭据信号，不拉 catalog/providerAuth）│
 │                                                             │
 │  模型设置子页（组件 state，按需即拉）                       │
-│  ─ profiles: providerAuth.list 全量                         │
-│  ─ catalog: models.list view:"all" 派生（子页独有）         │
+│  ─ profiles: providerAuth.list 全量（仅凭据区展示/撤销）     │
+│  ─ usable: coclaw.model.listUsable（选模型器数据源，无幽灵）  │
+│  ─ catalog: models.list view:"all"（仅"模型下架"检测+旧插件回退）│
 │  ─ default: model.list.default                              │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -353,25 +355,23 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 ### 7.3 模型设置子页
 
-- 进入页面时拉：`providerAuth.list` + `model.list` + `models.list view:"all"`
+- 进入页面时拉：`providerAuth.list`（凭据区）+ `model.list`（current default + 信号）+ `coclaw.model.listUsable`（选模型器枚举集，干净目录∩别名感知凭据、无幽灵）+ `models.list view:"all"`（仅"模型下架"检测）【修订 6：选模型器吃 listUsable，插件侧已做干净目录∩凭据，UI 不再 `catalog ∩ providerIds`】
+- **旧插件回退**：旧插件无 `coclaw.model.listUsable` → 该调用 method-not-found。UI **必须回退**到旧派生「`providerAuth.list` 三源 ∩ `models.list view:"all"`」喂选模型器，否则升级窗口内选模型器空白、用户选不到任何模型。（插件随 claw 自动升级，窗口短，但 UI 独立发版，故须留回退；回退态短暂缺别名变体，可接受。）
 - 写完任一字段 → 局部更新 state + 触发 `dashboard.store` 重拉 → notify
 - 退出页面销毁——不长期占用 store
 
-### 7.4 凭据 / 有效性判定（简化定稿，2026-05）
+### 7.4 凭据 / 有效性判定（修订 6：四处统一别名感知原语）
 
-> 修订背景：原判定只数「自管账本」一处来源，漏了用户直接写在 OpenClaw 配置里的内联 key，导致手动配置的老用户被误报「未配 API key、无法对话」（线上实锤）。
-> 定调：**只修这个误报，不追求完美镜像 OpenClaw 那套多来源/IAM/本地/别名的判定**。目标用户是通过 CoClaw 界面配置的新用户——对他们「自管账本」信号本就准确；误报只发生在 CoClaw 之外手动配置的过渡期用户。下阶段 CoClaw 提供盒子/云主机后环境更可控，这类历史包袱进一步消退。
+> **修订 6 定稿（取代修订 4/5）**：修订 4 想把判定全挂 OpenClaw"能用集"，被无 auth 门幽灵污染（`openai/gpt-5.5` + imageModel + 残留自定义 provider）"非空"判 noKey 会恒真——已证伪；修订 5 改"选模型器/set 用能用集、/claws 信号用便宜检查"的**分层**，但两套口径不一致会让 IAM-only 用户"选得到却判失效"。**修订 6 收敛成单一原语**：选模型器枚举（`loadModelCatalog` 干净目录 ∩ 别名感知凭据）/ set 门 / providerUsable / noKey **全部基于 `computeProviderUsableByName`（= `isProviderApiKeyConfigured`〔env+账本，别名感知〕∪ 内联）**，杜绝跨界面矛盾、且无幽灵。详见 plugin doc § 3.2.1/§ 3.3/§ 3.4 + memory `reference_openclaw_alias_plan_catalog_and_auth_surfacing`。
+>
+> 修订背景（历史）：原判定只数「自管账本」一处，漏内联 key，导致老用户被误报「未配 API key」（线上实锤）。已发布修复＝三源信号。
 
-**判定信号改由 plugin 计算**，搭在本就会调的 `coclaw.model.list` 出参回传（新增字段，旧插件不带 → 见下方「旧插件不再特判」）：
+**判定信号由 plugin 计算**，搭在 `coclaw.model.list` 出参回传：
 
-- 「这台 claw 有没有可用凭据」（驱动 noKey）：自管账本非空 **或** 配置内联 key 存在。
-- 「主模型那家有没有可用凭据」（驱动 invalid）：对主模型 provider 走 OpenClaw 现成的凭据判定（覆盖环境变量 + 自管账本，且 **provider 旧名归一化由其内部完成、CoClaw 不写任何别名逻辑**）**或** 该 provider 的配置内联 key 存在。
+- 「主模型那家可用否」（驱动 invalid/失效）：`<scope>.providerUsable` = `computeProviderUsable(primary)`（别名感知、不读目录；账本里的别名套餐 key 已能正确判 `volcengine-plan` 可用）。与选模型器枚举**同口径** → 无"IAM-only 选得到却判失效"矛盾。
+- 「这台 claw 有没有可用凭据」（驱动 noKey）：`computeHasAnyUsableCredential` = 账本非空 OR 任一内联 key **OR env key**（修订 6 补 env，与 providerUsable 口径对齐；shipped 实现漏 env，纯 env-only 用户会"选得到却被弹没 key"，故必补）。
 
-**刻意不覆盖（接受残留；均只影响过渡期手动用户，且现状同样误报、非回归）**：
-
-- 仅写在环境变量、且既无配置节点又非主模型的 provider；
-- 「无 key 也算有认证」的情形——走 IAM 的云厂商（如 Bedrock）、本地无 key 模型（LM Studio / Ollama）。根因：能一函数包圆这些的上游入口未对插件开放，详见 `docs/openclaw-research/model-config-mental-model.md` 典型陷阱清单；
-- provider 用别名拼写、与目录/配置登记拼写不一致时的零星误判。
+**覆盖面（修订 6）**：选模型器 / set / providerUsable / noKey 四处统一覆盖 env+内联+账本+**别名套餐（火山/byteplus/minimax-cn/stepfun）**；**统一漏 IAM/本地**（`hasAuthForModelProvider` 未导出 plugin-sdk，pro 边角 → 可能 spurious noKey/失效橙条，但**不阻断使用**，按"简单优先、可接受 pro 残留"取舍）。**不再有"信号便宜 vs 枚举完整"分层**——同一原语贯穿，四处一致。
 
 **旧插件不再特判（feature-detect-suppress 已移除）**：响应里没有凭据信号字段（旧插件）→ 前端当 false → **该弹 noKey / invalid 就弹**。取舍理由：目标是通过 CoClaw 界面配置的小白用户，主动引导提示本身是产品价值；且 claw 很快会自动升级插件，「新前端 + 旧插件」窗口极窄——这段窗口内旧插件用户短暂再现误报可接受，远好过对小白沉默。
 

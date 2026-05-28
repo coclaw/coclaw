@@ -1,6 +1,6 @@
 # OpenClaw 模型配置与规则
 
-> 更新时间：2026-05-14
+> 更新时间：2026-05-28
 > 第一阅读者：xiaohuaxi（CoClaw 维护者）。第二阅读者：Agent。
 > 目的：用最简洁的方式呈现 OpenClaw 关于"模型"这件事的完整机制，让我俩看一眼就能在脑子里立起完整的规则地图。
 > 源码定位放附录 C，需要核实/扩展时再翻；CoClaw 写凭据 SOP 见附录 E。
@@ -332,6 +332,8 @@ OpenClaw 默认 agent 是 `main`。即使 `agents.list` 里没有 main 条目，
 - 明文写进主配置文件
 - 绕开 SDK 的锁和缓存清理
 
+**上游立场**：OpenClaw 自家所有录密钥入口（`models auth` / onboarding）写的都是账本（auth-profiles），**从不写内联**；`secrets audit` 把内联明文 key 标为安全 finding。内联 `apiKey` 仅作向后兼容/逃生口存在，推荐顺序 SecretRef（引外部 secret） > 账本 > 内联。**推论**：CoClaw 自己也从不往内联写 key（加 api-key 走账本，见附录 E），所以撤销功能里要删的"内联 key"基本都是用户历史遗留手写 / 脚本注入的——删它是帮用户清老配置，不是删 CoClaw 造的东西。
+
 要存 API key 走 SDK helper（`upsertAuthProfileWithLock` + `buildApiKeyCredential`），它只写 `auth-profiles.json` 秘密一份——`cfg.auth.profiles` 声明无需同步写（实测结论详见 § 4.7）。
 
 ### 4.6 多账号机制（一期不做）
@@ -389,6 +391,59 @@ OpenClaw 自家完全不展示 key 任何字符（`models auth list` / `models.a
 - 列表 / 单条详情 RPC 出参字段叫 `keyPreview`（不叫 `key`），明确这是个**只读展示串**，不是原始 key
 - 远端日志（`remoteLog`）**绝对不能**带原始 key 或 keyPreview——日志可能广播到 server
 - 单元测试要 cover 短 key（≤ 8 字符）的降级遮蔽逻辑，避免泄露过多
+
+### 4.9 provider 身份 = 定义 + 密钥两摊；删内联 key 的"内置 vs 自定义"之别
+
+一个 provider 的完整身份拆两块，走两条**互不相干**的路：
+
+- **密钥**（apiKey / token）——三源穿透解析（env → 内联 `apiKey` → 账本，见第四节 + 陷阱 #17），任一命中即用。CoClaw 和 OpenClaw 自家"加密钥"都只写**账本**。
+- **定义**（baseUrl / api / models / contextWindow…）——provider 货架字段（§1.3 / 1.4），供 provider 注册用，**不进密钥解析链**。定义有两个来源：
+  - **内置 provider**（如 pi-ai 字典里的 minimax）：定义在 OpenClaw 自带字典（`models.generated.js`），用户内联往往**只写一把 apiKey**。
+  - **自定义 provider**：定义**只存在内联节点里**。
+
+**所以删内联 key 的正确做法 = 只删 `apiKey` 字段、保留节点其余、删完节点空 `{}` 才清整节点**。这一条规则恰好同时接住两类：
+
+- **内置**：删掉那唯一的 apiKey → 节点空 → 清掉**无损**（定义在字典里没丢，重配密钥照用）。
+- **自定义**：删 key 后节点还剩 baseUrl/models → 保留 → 定义不被销毁。
+
+**反过来"删整节点"严格更危险**：会毁掉自定义 provider 的唯一定义，而 CoClaw 的"加 api-key"只写账本、**不会重建 provider 定义**，用户只剩一把指向"无定义 provider"的死账本 key。
+
+**残节点（无 apiKey、有 baseUrl/models）+ 账本 key 零冲突**：取 key 链遇节点无 apiKey 自动落账本，"节点定义 provider + 账本供 key"本就是 OpenClaw 一等配置形态。残节点对内联列举也隐身（列举只认带 apiKey 的节点 → 不会冒充幽灵凭据；模型选择器应按**能用集**过滤（§ 4.10）、不是按原始名拼凭据，重配 key 后该 provider 重新可选）。
+
+**OAuth / 扫码 provider 的内联节点天生无 apiKey**：登录时 token 写**账本**，同时往内联写一个 provider **定义**节点（baseUrl/api/models，**无 apiKey**，走 `mutateConfigFile`；典型是 minimax-portal 补内置字典漏掉的清单，见附录 F）。因为无 apiKey，内联列举 / 撤销**永远碰不到它**。这类清单的写回靠**登录流程本身**（每次 OAuth 成功整节点重写、含 models），不靠对账；对账只在 gateway 启动时补"升级后陈旧清单"且**只补已存在节点**（删了的不重建）。
+
+### 4.10 判"哪家/哪个模型能用"用 OpenClaw 鉴权解析，别自己按原始名拼三源（2026-05-28，修订 6 定稿）
+
+> **CoClaw 落地结论（修订 6）**：用**入口 C `loadModelCatalog` 干净目录 + 统一别名感知凭据原语**（见下），**放弃**入口 B"能用集 `buildModelsProviderData`/cfgClone"（幽灵 + 需 cfgClone + 鉴权口径与 /claws 信号不一致）。详见 memory [[reference_openclaw_alias_plan_catalog_and_auth_surfacing]] + dump 修订 6。
+
+"哪些 provider/模型真能选、能设"是 **OpenClaw 的职责**，不是 CoClaw 该按原始名硬拼的。**别名授权是常见、不是边角**：`models.list view:'all'` 把别名变体当**独立 provider**（`volcengine-plan` / `byteplus-plan` / `minimax-cn` / `stepfun-plan` …），一把基座 key（`volcengine`）经厂商 manifest `providerAuthAliases` 同时授权基座**和**变体；而 **套餐用户想用的默认模型常落在变体里**（volcengine 默认 = `volcengine-plan/ark-code-latest`）。`normalizeProviderId` 只做 lowercase/trim、**不做**这类语义映射，所以"自己拼三源 + 按原始名跟目录取交集"必漏。
+
+**变体从哪来 + 实测确认（2026-05-28）**：变体模型来自**厂商扩展插件清单的 `modelCatalog` 字段**（`dist/extensions/volcengine/openclaw.plugin.json` 的 `modelCatalog.providers.volcengine-plan.models[]`，含 `ark-code-latest`），**不是** pi-ai 出厂字典、**不是**别名表（`providerAuthAliases` 是同一文件里**另一个独立**字段、纯鉴权侧、不造目录条目）。本机实测：加一把基座 `volcengine` 账本 key，**默认（鉴权过滤）视图**即同时出现 `volcengine/*` 与 `volcengine-plan/ark-code-latest` 全套；删 key 归零。源码链 `createProviderAuthChecker → hasAuthForModelProvider(model-provider-auth.ts:217 listProfilesForProvider) → resolveProviderIdForAuth`（别名感知两侧）。
+
+要别名感知，有三条 OpenClaw 自家入口（取舍见下）：
+
+**入口 A（便宜、不读目录、能答"某 provider 可用否"，但不能枚举模型）**：现成已导出的 `isProviderApiKeyConfigured`（`plugin-sdk/provider-auth`）**已别名感知**——它查账本走 `listProfilesForProvider`，后者对传入名和每条凭据名都跑 `resolveProviderIdForAuth`（按 manifest `providerAuthAliases` 归一，`agents/provider-auth-aliases.ts`）再比。故 `isProviderApiKeyConfigured('volcengine-plan')` 自解析成 `volcengine` → 命中账本 key → true，**全程不读目录**。覆盖账本+env（别名感知）；**漏内联 key（它不查 `models.providers.*.apiKey`）+ IAM/本地**。`resolveProviderIdForAuth` 本体**未导出 plugin-sdk**，插件不能拿它单独解析内联名。
+
+**入口 B（完整但被污染、要读目录）"能用集" `buildModelsProviderData(cfgClone, agentId, {view:'default'}).byProvider`**（`openclaw/plugin-sdk/models-provider-runtime`，公开自 v2026.4.1）：
+
+```js
+// cfgClone = 去掉模型白名单(agents.defaults.models / agent models) + 已配主模型(model) + imageModel 的 cfg 克隆
+const data = await buildModelsProviderData(cfgClone, agentId, { view: 'default' });
+const byProvider = data.byProvider; // Map<provider, Set<modelId>>
+```
+
+⚠️ **`byProvider` ≠ 干净的"目录∩鉴权"**（修订 4 误判，已证伪——详见陷阱 #24 + memory [[reference_openclaw_buildmodelsproviderdata_byprovider_contamination]]）。前半段（visibleCatalog）确实按鉴权过滤主目录、且 `createProviderAuthChecker→hasAuthForModelProvider` 覆盖 **env+内联+账本+别名+IAM/本地** 五源；**但尾部无 auth 门硬塞三类脏数据**：①内置默认 `openai/gpt-5.5`（没配主模型时的兜底常量，摘 model 后**永远**在）②`imageModel`+fallback（摘 model 不摘 imageModel 就漏）③configuredCatalog（config 里定义过 `models.providers.<id>.models[]` 的 provider，无 auth）。`add()` 的可见性过滤近乎全通（只排 retired codex）。**唯一能枚举别名变体模型清单（如 `ark-code-latest`）的入口就是它**（入口 A 只能答 yes/no、不能列模型），这是"绕不开能用集"的根。
+
+- **摘白名单**：默认视图本被 `agents.defaults.models` 缩窄；摘掉后 `allowAny=true` = 全量鉴权集。
+- **能用集是进程内 SDK 调用、不是网关 RPC**（无"res 广播给各 UI"问题）；摘白名单后读 `loadCatalog({readOnly:true})`+750ms 超时（缓存只读、**非慢 discovery**）。
+
+**入口 C（CoClaw 修订 6 采用）：`loadModelCatalog` 干净目录 + 统一别名感知凭据原语**——`loadModelCatalog({readOnly:true})`（经 `openclaw/plugin-sdk/agent-runtime`，barrel re-export `../agents/model-catalog.js`）返回 registry + **manifest catalog 行（变体在此）** + configured 的合并目录；`readOnly` 路径**设计上零副作用**（读持久化 `models.json`/静态 manifest，跳过 `ensureOpenClawModelsJson` 与 provider discovery，不联网、不卡事件循环），**且幽灵注入在 `buildModelsProviderData` 尾部、不在 `loadModelCatalog` 里 → 此源天然无幽灵**、也不需 cfgClone（目录本就白名单之前）。枚举 = 目录按 provider 分组 → 留过"统一原语"的 provider。统一原语 = `isProviderApiKeyConfigured`（env+账本，别名感知）∪ 内联（内联名过 `resolveProviderIdForAuth` 归一）；`resolveProviderIdForAuth` **可经 `openclaw/plugin-sdk/agent-runtime` 子路径 import**（不在主桶）。统一漏 IAM/本地（`hasAuthForModelProvider` 未导出，接受）。caveat：readOnly 主路径读 lazy 缓存 `models.json`，新装厂商扩展有极窄过时窗口（自带扩展即在内），要绝对保险走非 readOnly（更新鲜但首拉慢）。
+
+**用法取舍（CoClaw 落地见 plugin `model-config-api.md` § 3.2.1，定稿见 `tmp/inline-key-list-revoke--clear-dump.md` 修订 6）**：**入口 C 是 CoClaw 采用的路**——选模型器枚举（目录∩统一原语，无幽灵、含变体）/ model.set 门 / providerUsable / noKey **四处同一原语**，杜绝跨界面矛盾。**放弃入口 B（能用集）**：它有幽灵、需 cfgClone、且其鉴权过滤走 `hasAuthForModelProvider`（覆盖 IAM）与 /claws 信号用的 `isProviderApiKeyConfigured`（不覆盖 IAM）口径不一致 → IAM-only 用户"选得到却判失效"。入口 A 是统一原语的一半（答 yes/no），入口 C 在它之上叠干净目录做枚举。
+
+**反模式（CoClaw 踩过）**：① 选模型器/凭据信号拿 `providerAuth.list`（三源凭据、**原始名**）∩ 目录 → 别名变体漏；② `model.set` 用 `isProviderAuthProfileConfigured`（**只认账本**，漏内联/env）→ 模型放行却设不上。
+
+**上游缺口（值得提 issue）**：OpenClaw 给 CLI 算了每模型的 `available` 标志，但**没经网关 `models.list` RPC 吐出来**；真吐出来，插件可直接读 `m.available`，连入口 B 的"摘白名单 + 躲幽灵"都省了。可用性本就是 OpenClaw 的职责。
 
 ---
 
@@ -470,8 +525,10 @@ OpenRouter 在插件清单里登记了一条规则：用户引用 OpenRouter 模
 18. **provider 旧名是"读时折叠"的硬编码别名表，绝不改写配置**——`normalizeProviderId`（`src/agents/provider-id.ts`，约 9 组：`doubao`/`bytedance`→`volcengine`、`kimi-code`/`kimi-coding`→`kimi`、`z.ai`/`z-ai`→`zai`、`modelstudio`/`qwencloud`→`qwen`、`moonshotai`→`moonshot`、`bedrock`/`aws-bedrock`→`amazon-bedrock`、`opencode-zen`→`opencode` 等）。只在 OpenClaw 读取/比对时临时折叠，**配置文件里能长期保留旧拼写**。凡是不走 OpenClaw 函数、自己拿两份 provider 字符串比对的地方都得先过这张表；但表只此一份、下游复刻必随上游加 provider 漂移——能委托 OpenClaw 判定就别自己比
 19. **`models.list view:"all"` 的 `provider` 字段不保证规范名**——discovered 来源原样塞（`src/agents/model-catalog.ts`，只 trim 不归一化），configured 来源另处才折叠。所以"拿主模型 provider 裸比目录 provider"对别名拼写会误判（"模型下架"类校验的残留来源）
 20. **`hasConfiguredSecretInput` 只是语法/存在感判定，不等于凭据可用**——非空字符串 → true；合规 SecretRef（`{source,provider,id}`）→ true；但 `{env:...}`/`{file:...}` 简写、空值 → false；且不验证 env 引用能否真解析（未设值的引用也算 true）。用它判"配了内联 key"只能当"配置信号"，不当"凭据可用"
-21. **别想在插件侧用 `byProvider` 判"模型在不在目录"**——`buildModelsProviderData().byProvider` 会把当前配置的主模型**无条件塞进去**（不经目录校验），拿它查主模型在不在目录是自我应验，测不出"模型下架"；且 `loadModelCatalog` 失败**返回 `[]` 不抛错**，靠抛错触发的兜底都触发不到。判"模型下架"的可靠源是 gateway `models.list view:"all"`（干净原始目录），不是 byProvider
+21. **别想在插件侧用 `byProvider` 判"模型在不在目录"/"有没有凭据"——它尾部无 auth 门硬塞脏数据（修订 5 升级：不止主模型）**——`buildModelsProviderData().byProvider` 在尾部**无条件塞入**（不经目录/鉴权校验，`commands-models.ts:281-282`）：①已配主模型；②没配主模型时的**内置默认常量 `openai/gpt-5.5`**（`agents/defaults.ts`，故摘掉 model 后它**永远**在、且是裸 `openai` 与 `openai-codex` 无关）；③`imageModel`+fallback；④configuredCatalog（config 里定义过 `models.providers.<id>.models[]` 的 provider，无 auth）。拿它查"模型在不在目录"是自我应验、测不出"模型下架"；拿它"非空"判"有没有凭据"被幽灵恒真化。且 `loadModelCatalog` 失败**返回 `[]` 不抛错**。判"模型下架"的可靠源是 gateway `models.list view:"all"`（干净原始目录），不是 byProvider；判"某 provider 可用否"用 `isProviderApiKeyConfigured`（4.10 入口 A）。详见 memory [[reference_openclaw_buildmodelsproviderdata_byprovider_contamination]]
 22. **凭据"读"是三源、"列举/撤销"曾只认账本一源 → 列表与现实打架**——key 解析吃 env + 内联 `cfg.models.providers.<id>.apiKey` + 账本 profiles 三源（第 17 条），但早期 `coclaw.providerAuth.list` 只遍历账本 store：用户把 key 直接手写在 `openclaw.json`（内联）或塞环境变量时，模型照常能用，列表却空着说"没配 key"，引导自相矛盾。**撤销更没有统一入口**：账本走 `removeProviderAuthProfilesWithLock`、内联只能 `mutateConfigFile` 删 `apiKey` 字段（删字段不删节点——`baseUrl`/`api`/`models` 是用户自定义 provider 定义）、env 进程级根本撤不了。且 **OpenClaw 自己从不删内联 key**（`logout --provider` 只清账本、re-onboard 仍保留内联），把它当用户私有手写配置。CoClaw 越过这条线让内联可撤。**已治本**：list 合并三源、每条带 `source`/`removable`，remove 按 `source` 分派（plugin `model-config-api.md` § 2.4 / § 2.5）
+23. **provider 身份 = 定义 + 密钥两摊；删内联 key 内置 vs 自定义不同**——密钥三源穿透解析、定义另走一路；内置 provider 定义在字典（删空壳无损）、自定义定义只在内联节点（必须保留，删整节点会毁掉且 CoClaw 加 key 补不回）；残节点 + 账本 key 零冲突；OAuth/扫码节点天生无 apiKey 故内联撤销碰不到（详见 4.9）
+24. **判"模型能不能选/设"用 OpenClaw 别名感知鉴权，但 `byProvider` ≠ 干净"目录∩鉴权"（修订 5 订正前曾误判）**——`buildModelsProviderData(cfg 去白名单+主模型+imageModel, view:'default').byProvider` 前半段是目录∩鉴权（覆盖 env+内联+账本+别名+IAM/本地），**但尾部无 auth 门硬塞内置默认 `openai/gpt-5.5`（摘 model 后永远在）+ imageModel + configuredCatalog**（详见陷阱 #21 升级版 + memory [[reference_openclaw_buildmodelsproviderdata_byprovider_contamination]]）。故能用集**可枚举别名变体模型**，但**不能拿"非空"判"有没有 key"**（幽灵恒真化 noKey）。**CoClaw 修订 6 已弃用 byProvider 喂选模型器**，改用入口 C `loadModelCatalog` 干净目录（天然无幽灵、含变体）∩ 统一别名感知凭据原语（详见 4.10 入口 C）。自己按原始名拼三源 ∩ 目录会漏别名套餐（`volcengine-plan` 选不到）；`model.set` 旧用 `isProviderAuthProfileConfigured` 只认账本（漏内联/env，"选得到设不上"根因，修订 6 换统一原语）；上游每模型 `available` 未经网关 RPC 暴露（详见 4.10）
 
 ---
 

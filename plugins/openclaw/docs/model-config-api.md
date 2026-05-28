@@ -233,6 +233,8 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 **列出所有可见凭据，跨认证类型（api_key / oauth / token）且跨来源（账本 / 内联 / 环境变量）。** 弥补两个坑：① `models.authStatus` 只列 OAuth/refreshable provider（mental-model 陷阱 #16）；② 早期只读账本，漏了用户手写在 `openclaw.json` 的内联 key 与环境变量 key，导致"模型能用却显示没配 key"的列表/引导不一致（陷阱 #22，三源详见 mental-model「provider key 三源」）。
 
+> **与选模型器解耦（2026-05-28 修订）**：本 RPC 仅服务"凭据管理 UI"（展示 + 撤销）与"加 provider 时排除已配"。**不再**被选模型器借作"哪些 provider 可用"的闸——那已改由 `coclaw.model.catalog` 的能用集承担（§ 3.2.1）。下方实现要点 #3 的"env 列出范围"退化为**纯展示口径**问题（模型可选性已由能用集解决、env 那根刺已拔；列不列 env 行待定，见 dump）。
+
 #### 凭据三源（本节核心）
 
 | `source` | 存放位置 | CoClaw 能否撤销 (`removable`) |
@@ -333,6 +335,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 |---|---|---|
 | `coclaw.model.set` | 设 / 清 default 或某 agent 的 primary | **本期实施** |
 | `coclaw.model.list` | 列 default + 所有 agent 的 primary | **本期实施** |
+| `coclaw.model.listUsable`（名待定，动词式） | 返回选模型器枚举集（干净目录 ∩ 别名感知凭据） | **修订 6 定稿；待实施** |
 
 均归 `operator.admin` scope。
 
@@ -346,6 +349,29 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
   - 模态字段（`imageModel` / `imageGenerationModel` / `videoGenerationModel` / `musicGenerationModel` / `pdfModel`）——独立 primary+fallbacks 结构，与 D1 解耦
   - `auth.order` profile 顺序
 - **不 hook**：setApiKey / removeApiKey 不联动重算 fallbacks
+
+### 3.2.1 选模型器枚举：干净目录 ∩ 别名感知凭据（修订 6 定稿，2026-05-28）
+
+> **状态（修订 6，定稿待实施）**：本小节 + § 3.3 + § 3.4 是**已 review 通过的定稿方向**，现状代码（`7a4d1443`）仍是旧的"三源 providerIds 闸 + profiles-only 校验"，clear 后按此实施。进行中状态见 `tmp/inline-key-list-revoke--clear-dump.md`「方案（修订 6 定稿）」。**修订 4/5 曾走"能用集 `buildModelsProviderData`/cfgClone"路线，已放弃**（理由见下）。
+
+**问题**：判"哪些模型真能选/能设"不能靠 CoClaw 自己从凭据三源拼 provider 名再**按原始名**跟目录取交集——会漏别名授权（`volcengine` 一把 key 经厂商 manifest 同时授权 `volcengine-plan`，后者在目录里是独立 provider，**套餐用户的默认模型 `volcengine-plan/ark-code-latest` 正在其中**）。**支持别名套餐是硬需求**（套餐用户多为普通用户）。
+
+**为什么不用"能用集"（`buildModelsProviderData().byProvider`）**：①尾部无 auth 门硬塞**幽灵**（内置默认 `openai/gpt-5.5` + imageModel + configuredCatalog）；②要靠 `cfgClone`（删白名单）才能拿全集（它无"忽略白名单"开关）；③其鉴权过滤走 `hasAuthForModelProvider`（覆盖 IAM），与 /claws 信号用的 `computeProviderUsable`（不覆盖 IAM）**口径不一致 → IAM-only 用户"选得到却被判失效"自相矛盾**。详见 mental-model § 4.10 / 陷阱 #21/#24。
+
+**定稿做法：`loadModelCatalog` 干净目录 + 统一别名感知凭据原语**（四个消费点同口径，杜绝跨界面矛盾）：
+
+- **干净目录** `loadModelCatalog({ readOnly: true })`（`openclaw/plugin-sdk/agent-runtime`，barrel re-export `../agents/model-catalog.js`）：合并 registry + **manifest catalog 行（变体在此，如 `volcengine-plan/ark-code-latest`）** + configured。`readOnly` 路径**设计上零副作用**（读持久化 `models.json`/静态 manifest，跳过 `ensureOpenClawModelsJson` 与 provider discovery，不联网、不卡事件循环）。**幽灵注入在 `buildModelsProviderData` 尾部、不在 `loadModelCatalog` 里 → 此源天然无幽灵**，也不需 cfgClone（目录本就白名单之前）。
+- **统一原语** `computeProviderUsableByName(provider, cfg, deps)` = `isProviderApiKeyConfigured`（env+账本，别名感知）∪ `hasInlineKey`（内联，名过 `resolveProviderIdForAuth` 归一）。覆盖 env+内联+账本+别名；统一漏 IAM/本地（`hasAuthForModelProvider` 未导出 plugin-sdk，接受）。
+  - **必修 B**：现有 `computeProviderUsable(primary,…)`（resolve.js:124）对入参跑 `providerSegmentOf`，**裸 provider 名（无斜杠）返回 null → 整函数 false**。必须抽出按裸 provider 名工作的 `…ByName` 核心，`computeProviderUsable(primary)` 委托它。
+- **枚举 = 目录按 provider 分组 → 留过 `…ByName` 的 provider →（文本模态过滤）**。变体经 manifest 行进目录、经别名感知凭据（基座 key）保留；幽灵 provider 无凭据被丢。
+
+**`coclaw.model.listUsable`**（名待定、动词式，遵 `gateway-method-design`；归 `coclaw.model.*`；`operator.admin` scope）：
+
+- **入参**：`{ agentId?: string }`（缺省 = default scope）；agentId 非空 string 检查失败 → `INVALID_ARGS`。**agentId 一路贯穿**到凭据判定（与 model.set/providerUsable 同 agent 的 store）。
+- **出参**：`{ byProvider: Record<string, string[]> }`（provider → 可用 modelId 列表）。供 UI 选模型器**直接出可选项**。无幽灵（凭据过滤天然剔除）。
+- **错误码**：`INVALID_ARGS`（agentId 类型错）/ `IO_FAILED`（runtime cfg 不可读 / SDK 抛错）。**降级**：`loadModelCatalog readOnly` 抛错 → 静态 manifest 兜底（不空白）。
+- **旧插件回退**：旧插件无此方法 → UI 必须回退到"`providerAuth.list` ∩ `models.list view:'all'`"派生（即今天 shipped 行为，升级窗口内短暂缺别名变体，可接受；见 UI doc § 7.3）。
+- **caveat（readOnly 新鲜度）**：readOnly 主路径读 lazy 缓存 `models.json`（网关启动/非 readOnly 调用时重生成）；新装厂商扩展有极窄过时窗口（自带扩展如火山在任何网关启动后即在内）。要绝对保险可走非 readOnly（更新鲜但首拉 ~10s manifest stall + discovery）——readOnly/非 readOnly 旋钮，低频子页倾向 readOnly。
 
 ### 3.3 `coclaw.model.set`
 
@@ -364,7 +390,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 | code | 触发 |
 |---|---|
-| `INVALID_ARGS` | params 非 object / array / 未知字段 / agentId 非空 string 检查失败 / primary 缺失或类型错 / primary 形态错（无 `/`、`/` 在端点）/ provider 无可用凭据 / model 不在 catalog |
+| `INVALID_ARGS` | params 非 object / array / 未知字段 / agentId 非空 string 检查失败 / primary 缺失或类型错 / primary 形态错（无 `/`、`/` 在端点）/ provider 无可用凭据（统一原语 `computeProviderUsable`）**或** model 不在干净目录 |
 | `IO_FAILED` | runtime cfg 不可读 / `mutateConfigFile` 抛错 / SDK 校验函数抛错 |
 
 **校验流程（fail-fast）**：
@@ -375,10 +401,10 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 4. `primary` 必传，类型为 string 或 null
 5. 非 null 时：
    - 含 `/`，且 `/` 不在首尾（拆出 `<provider>` + `<model>`）
-   - `isProviderAuthProfileConfigured({ provider, cfg, agentDir })` 返回 true
-   - `buildModelsProviderData(cfg, undefined, { view: 'all' })` 的 `byProvider.get(provider)?.has(model)` 为 true
+   - **凭据门**：`computeProviderUsable(primary, cfg, deps)` 为 true（统一原语，§ 3.2.1；primary 含斜杠故直接可用，无需 `…ByName`）
+   - **存在性**：`(provider, model)` 在干净目录 `loadModelCatalog({readOnly:true})` 里（与选模型器同源）；或信任 picker、省此步（用户从选模型器里挑、必在目录）
 
-注意 catalog 校验用 `view: 'all'`：默认 view 会过滤掉 picker 不可见的合法 provider，导致 false negative（subagent 调研结论）。
+**与选模型器同源**（一致性红线：选模型器枚举与 set 校验走**同一别名感知凭据原语**，否则别名/IAM 变体"选得到设不上"复现）。凭据门**取代**旧的 profiles-only `isProviderAuthProfileConfigured`：旧法只认账本，裸 env / 内联 / 别名授权的 provider 被误拒，即"选得到却设不上"（③）的根因。换原语后**顺带继续拒幽灵**（`openai/gpt-5.5` 无任何源凭据 → 门挡住）——不再有"能设但 runtime 用不了"。**去掉旧的 `view:'all'` 全量目录存在性拉取**（~1076 模型/~10s，且 view:'all' 鉴权盲、过松），改 readOnly 同源或信任 picker。**cooldown 口径**：沿用 `isProviderApiKeyConfigured` 既有立场（冷却中凭据仍算已配置，上游 fallback 会跳），与 picker/providerUsable 一致。
 
 **写盘行为**：
 
@@ -421,14 +447,14 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 `primary: null` 表示该 scope 未覆盖。primary **只回 raw**——effective primary（per-agent → default → 内置兜底）由 UI 自行解析。
 
-#### 凭据信号（`providerUsable` / `hasAnyUsableCredential`，简化定稿 2026-05）
+#### 凭据信号（`providerUsable` / `hasAnyUsableCredential`，修订 6：统一原语）
 
-为根治"手动配置用户被误报未配 key"（UI 设计 `ui/docs/model-config.md` § 7.4），list 顺带回传凭据判定，**避免新增 RPC**：
+为根治"手动配置用户被误报未配 key"（UI 设计 `ui/docs/model-config.md` § 7.4），list 顺带回传凭据判定，**避免新增 RPC**。修订 6 让**四个消费点全部基于同一别名感知原语**（选模型器枚举过滤 / model.set 门 / providerUsable / noKey），杜绝跨界面口径分叉：
 
-- `<scope>.providerUsable`：该 scope 的 primary 那家 provider **有没有可用凭据**。判定 = OpenClaw 现成 `isProviderApiKeyConfigured`（覆盖环境变量 + 自管账本，**provider 旧名归一化由其内部完成、本插件不写别名逻辑**）**或** 该 provider 的配置内联 key 存在（`hasConfiguredSecretInput(cfg.models.providers[…].apiKey)`）。`primary` 为 `null` 时恒 `false`（UI 此时走 noPrimary，不看它）。
-- `hasAnyUsableCredential`：这台 claw **有没有任何可用凭据**（自管账本非空 **或** 任一 provider 节点有内联 key）。驱动 UI 的 noKey 引导。
+- `<scope>.providerUsable`（驱动 invalid/失效）：该 scope 的 primary 那家 provider 是否可用 = `computeProviderUsable(primary, …)`（统一原语，§ 3.2.1）。别名感知、不读目录、/claws 零热路径开销；与选模型器枚举**同口径** → 无"IAM-only 选得到却判失效"矛盾（修订 5 分层方案曾有此隐患，已消）。`primary` 为 `null` 时恒 `false`（UI 走 noPrimary）。
+- `hasAnyUsableCredential`（驱动 noKey 引导）：`computeHasAnyUsableCredential`（resolve.js）= 账本非空 OR 任一内联 key **OR env key**。**必补 C**：shipped 实现（resolve.js:138-148）只查账本 ∪ 内联、**漏 env**，而 providerUsable 覆盖 env → 纯 env-only 用户"选得到却被弹『还没加 key』"自相矛盾；**直接补 env**（与 per-provider 口径对齐），不当待拍项。补后**仅漏纯 IAM-only/本地**（pro，接受 spurious noKey）。
 
-**刻意不覆盖（接受残留，仅影响 CoClaw 之外手动配置的过渡期用户，且现状同样误报 = 非回归）**：纯环境变量且无节点非主模型的 provider、"无 key 也算 authed"的 IAM（aws-sdk / bedrock）与本地无 key 模型、别名拼写零星误判。根因（含"全集判定函数 `hasAuthForModelProvider` 未对插件导出"）见 `docs/openclaw-research/model-config-mental-model.md` 典型陷阱清单。
+**覆盖面（修订 6）**：四处统一覆盖 env+内联+账本+**别名套餐（火山/byteplus/minimax-cn/stepfun）**；统一漏 IAM/本地（`hasAuthForModelProvider` 未导出，pro 边角，接受 spurious、不阻断使用）。**不再有"信号便宜 vs 枚举完整"分层**——同一原语贯穿，选模型器↔set↔providerUsable↔noKey 全一致。
 
 **旧插件兼容**：旧插件出参无 `hasAnyUsableCredential` 字段，UI 据此 feature-detect → 凭据信号未知则不渲染 noKey / invalid 橙条（宁可少提示不误报）。
 
@@ -438,11 +464,11 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 | 文件 | 角色 |
 |---|---|
-| `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配） |
+| `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配）；**统一原语 `computeProviderUsableByName`（抽出核心、B）+ `computeProviderUsable` 委托它 + `computeHasAnyUsableCredential` 补 env（C）**；**选模型器枚举纯函数**（`loadModelCatalog({readOnly:true})` → 按 provider 分组 → 留过 `…ByName` 的 → 文本模态过滤） |
 | `src/model-default/persist.js` | 字段级 set / clear 写盘（封装 `mutateConfigFile` 调用） |
-| `src/model-default/handlers.js` | set / list handler（入参校验 + 副作用编排） |
+| `src/model-default/handlers.js` | set / list / **listUsable** handler（入参校验 + 副作用编排）；**set 门 + listUsable 过滤 + list 信号全部走统一原语**（§ 3.4），set 存在性走 `loadModelCatalog readOnly`；listUsable 降级兜底 |
 | `src/model-default/index.js` | 懒加载 SDK + 注册到 gateway api |
-| `index.js`（plugin 入口） | 注入三个 SDK 子入口字面量 `import('openclaw/plugin-sdk/...')` |
+| `index.js`（plugin 入口） | 注入 SDK 子入口字面量 `import('openclaw/plugin-sdk/...')`，新增 `loadModelCatalog` / `resolveProviderIdForAuth`（均经 `openclaw/plugin-sdk/agent-runtime`） |
 
 ### 3.6 不做项（明确否决）
 
