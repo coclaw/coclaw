@@ -666,7 +666,8 @@ X4 触及面比 X1 广，需要重新评估：
 
 - `ModelConfigPage.vue` 的 `refreshAfterWrite` 只用 `__unmounted` / `clawId` 守卫，没有 `loadAll` 那套 `__loadSeq` 计数守卫。两次针对同一 claw 的写操作（如快速连点加 provider）触发的并发 refresh 落地顺序若颠倒，靠后的旧响应会覆盖较新的 `__applyModelList` 结果。
 - 严重度：低。写操作是用户逐个对话框发起，实际并发概率很低；且下一次 `loadAll` / 重连恢复会自愈。
-- 与上面"写后刷新失败静默"同属 `refreshAfterWrite` 健壮性范畴；修复时可一并评估（统一加 seq 守卫 + 失败提示/重试）。本次凭据信号改造未引入该问题（原 `refreshAfterWrite` 直接写 `this.primary` 时已存在同类竞态）。
+- 与上面"写后刷新失败静默"同属 `refreshAfterWrite` 健壮性范畴；修复时可一并评估（统一加 seq 守卫 + 失败提示/重试）。该竞态在原 `refreshAfterWrite` 直接写 `this.primary` 时已存在（2026-05-27 登记时如此）。
+- **2026-05-29 修订 6 补注（终审发现登记不全）**：选模型器改造让 `refreshAfterWrite` 也重拉 `coclaw.model.listUsable` 并写 `usable` / `configuredProviders` / `loadOk.usable` —— 这三个新字段同样落进无 `__loadSeq` 守卫的路径。后果较原条目（仅 `primary` / `__applyModelList`）**爆炸半径扩大**：在飞旧 refresh 晚于新 `loadAll`（如 `connReady` 抖动触发重连）落地时，会把刚恢复的 listUsable 成功态打回 fallback（picker 退回旧交集）或回显陈旧凭据。仍仅同 claw（`clawId` 守卫挡住跨 claw 这个真正危险场景）、自纠正、需"写+重连重叠"窄时序，维持低优先；统一加共享单调 seq 时把这三字段一并纳入。
 
 
 ## NuxtUiDemoPage 的 "Back to Auth Prototype" 按钮文案已失效
@@ -723,6 +724,7 @@ X4 触及面比 X1 广，需要重新评估：
 - 严重度：低。仅 catalog 降级这一窄窗口；且本质是既有"`view:'all'` 把别名变体也列为可加 provider"的老毛病在降级态冒头，正常态已被并集挡住。
 - 不采纳"空 byProvider 当回退信号"：会破坏合法的"权威空集"（干净目录 ∩ 凭据确实为空时 picker 该显示空、不该回退到旧交集）。UI 无法从响应区分"降级空"与"合法空"。
 - 修法方向：靠插件信号区分降级/权威空（如 listUsable 出参带一个 degraded 标记），或插件把"可加 provider"也按别名归一后给 UI。需越 scope（动 model.list/listUsable 契约）。
+- **精度补注（2026-05-29 终审，未独立核验 view:all 实时行为）**：上面"正常态已被并集挡住"仅对**持基座 key 的用户**成立——完全没配该基座的用户，正常态下变体 id 仍可能因 `models.list view:'all'`（鉴权盲、把别名变体列为独立 provider）出现在可加列表。这本质仍是既有"view:all 列变体"老毛病、非本次引入，且即便误加变体 key 也会落到基座解析（无害），边角程度同上。
 
 ## ModelConfigPage 切 claw 未重置 loading，无连接新 claw 可能卡 initialLoading（预存）
 
