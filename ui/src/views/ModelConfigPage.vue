@@ -423,6 +423,13 @@ export default {
 			const conn = useClawConnections().get(id);
 			if (!conn) return;
 			this.loading = true;
+			// 记下发请求那一刻的"配置版本"：若 await 期间有写操作（切主模型 / 增删凭据）落地，
+			// __writeEpoch 会被 refreshAfterWrite 抬高 → 这批读到的是写前的陈旧数据，落地后必须丢弃，
+			// 否则会把写后已刷新的新值覆盖回旧值（连接抖动重连触发的 loadAll 与切换撞车时的竞态）。
+			// 残留竞态（已记 TODO，未修）：本守卫只挡"写前发出、await 期间被写抢占"的 loadAll；若 loadAll
+			// 在写后 ~800ms 运行时陈旧快照窗口内才发起，会捕到新 epoch、读到陈旧 model.list 覆盖刚切的 primary。
+			// 需重连恰好撞窗口（dcReady 很稳，几乎不翻）故极罕见，未加时间栅栏（避免耦合后端 hot-reload 时序 / 遮蔽外部改动）。
+			const writeEpoch = this.__writeEpoch;
 			try {
 				// listUsable 缺省 default scope（本期 UI 不暴露 per-agent，不传 agentId）
 				const [profilesRes, modelRes, catalogRes, usableRes] = await Promise.allSettled([
@@ -431,8 +438,9 @@ export default {
 					conn.request('models.list', { view: 'all' }, { timeout: RPC_TIMEOUT }),
 					conn.request('coclaw.model.listUsable', {}, { timeout: RPC_TIMEOUT }),
 				]);
-				// 三重门：1) 组件还活着；2) clawId 还是同一个；3) 没被更新一轮抢占
-				if (this.__unmounted || seq !== this.__loadSeq || id !== this.clawId) return;
+				// 四重门：1) 组件还活着；2) clawId 还是同一个；3) 没被更新一轮 loadAll 抢占；
+				// 4) await 期间没有写操作落地（否则这批已是写前陈旧数据，丢弃以防覆盖写后新值）
+				if (this.__unmounted || seq !== this.__loadSeq || id !== this.clawId || writeEpoch !== this.__writeEpoch) return;
 				this.loadOk = {
 					profiles: profilesRes.status === 'fulfilled',
 					primary: modelRes.status === 'fulfilled',
@@ -463,48 +471,66 @@ export default {
 			}
 		},
 
-		// --- 写后局部刷新：重拉 providerAuth.list + model.list + listUsable，catalog 不会因写操作变化 ---
+		// --- 写后局部刷新：重拉 providerAuth.list + listUsable，catalog 不会因写操作变化（不重拉）---
 		// listUsable 必须重拉：写后"可用 provider→模型"枚举与"已配 provider"集都会变（如刚加完 key
 		// 该 provider 的模型要立即能选/被排除），否则下次开选模型器/加 provider 拿的是写前的陈旧枚举。
-		async refreshAfterWrite() {
+		// model.list 是否重拉看 trustPrimary：
+		//   - trustPrimary=true（仅切主模型）：primary 与凭据信号已由 onPrimaryPicked 按"成功即权威"置好，
+		//     不重拉 model.list——写后那次读可能命中写前的运行时陈旧快照，会把刚置的新值/新 provider 凭据
+		//     覆盖回旧值（本次"切主模型回跳"bug 根因）。成功即权威，不重读确认。
+		//   - 默认（加/删 provider）：primary 未变，model.list 仍是权威源，照常重拉并 apply
+		//     （删掉主模型那家 provider 时，model.list 会正确报 providerUsable=false → 翻失效，必须放行）。
+		async refreshAfterWrite({ trustPrimary = false } = {}) {
+			// 写操作（切主模型 / 增删凭据）已落地：抬高"配置版本"。一抬两用：
+			//   ① 让任何写前发出、仍在飞的 loadAll 落地时被其四重门判陈旧而丢弃；
+			//   ② 本方法自己在 await 后也校验 writeEpoch——若在飞期间又有更晚的写落地
+			//      （如删 provider 的 refresh 在飞、用户又切了主模型），更早这次 refresh 不得 apply
+			//      model.list 把更晚写入的新值覆盖回旧值。
+			// 同步执行、先于任何 await——确保与 onPrimaryPicked 的成功赋值在同一同步段内完成，
+			// 不给在飞 loadAll 留下"新值已写、版本号未抬"的可乘窗口。
+			const writeEpoch = ++this.__writeEpoch;
 			const id = this.clawId;
 			const conn = useClawConnections().get(id);
 			if (!conn) return;
 			// 旧插件确认无 listUsable（method-not-found）→ 不再徒劳重拉；选模型器走 raw 派生回退，
 			// 而那靠 profiles 重拉已保持新鲜。瞬时失败不算 unsupported，仍会重拉以便恢复。
 			const pullUsable = !this.usableUnsupported;
+			const pullModel = !trustPrimary;
 			try {
-				const reqs = [
+				// 固定三槽（profiles / model / usable），未拉的槽以 resolve(null) 占位保持解构稳定，
+				// 下方按 pullModel / pullUsable 决定是否 apply
+				const [profilesRes, modelRes, usableRes] = await Promise.allSettled([
 					conn.request('coclaw.providerAuth.list', {}, { timeout: RPC_TIMEOUT }),
-					conn.request('coclaw.model.list', {}, { timeout: RPC_TIMEOUT }),
-				];
-				if (pullUsable) reqs.push(conn.request('coclaw.model.listUsable', {}, { timeout: RPC_TIMEOUT }));
-				const [profilesRes, modelRes, usableRes] = await Promise.allSettled(reqs);
-				// unmount / 切 claw 后丢弃这次 refresh 结果
-				if (this.__unmounted || id !== this.clawId) return;
+					pullModel ? conn.request('coclaw.model.list', {}, { timeout: RPC_TIMEOUT }) : Promise.resolve(null),
+					pullUsable ? conn.request('coclaw.model.listUsable', {}, { timeout: RPC_TIMEOUT }) : Promise.resolve(null),
+				]);
+				// unmount / 切 claw / 被更晚的写抢占 后丢弃这次 refresh 结果（见上方 writeEpoch 注释 ②）
+				if (this.__unmounted || id !== this.clawId || writeEpoch !== this.__writeEpoch) return;
 				if (profilesRes.status === 'fulfilled') {
 					const arr = profilesRes.value?.profiles;
 					this.profiles = Array.isArray(arr) ? arr : [];
 					this.loadOk.profiles = true;
 				}
-				if (modelRes.status === 'fulfilled') {
-					this.__applyModelList(modelRes.value);
-					this.loadOk.primary = true;
+				if (pullModel) {
+					if (modelRes.status === 'fulfilled') {
+						this.__applyModelList(modelRes.value);
+						this.loadOk.primary = true;
+					}
+					else {
+						// 写后刷新没拿到新凭据信号 → 标记信号陈旧，避免用写入前的旧 providerUsable 误报"主模型失效"
+						// （§7.4 宁可少提示不可误报）。primary 显示值保留，下一次 loadAll / 重连恢复会刷新
+						this.credSignalFresh = false;
+					}
 				}
-				else {
-					// 写后刷新没拿到新凭据信号 → 标记信号陈旧，避免用写入前的旧 providerUsable 误报"主模型失效"
-					// （§7.4 宁可少提示不可误报）。primary 显示值保留，下一次 loadAll / 重连恢复会刷新
-					this.credSignalFresh = false;
-				}
-				if (pullUsable && usableRes) {
+				if (pullUsable) {
 					// 成功 → 刷新枚举/已配集并清 unsupported；失败 → 清空触发回退（method-not-found 才确诊旧插件）
 					this.loadOk.usable = usableRes.status === 'fulfilled';
 					this.__applyUsable(usableRes);
 				}
-				if (profilesRes.status === 'rejected' || modelRes.status === 'rejected') {
+				if (profilesRes.status === 'rejected' || (pullModel && modelRes.status === 'rejected')) {
 					console.warn('[ModelConfigPage] refreshAfterWrite partial failure',
 						profilesRes.status === 'rejected' ? profilesRes.reason?.message : null,
-						modelRes.status === 'rejected' ? modelRes.reason?.message : null);
+						(pullModel && modelRes.status === 'rejected') ? modelRes.reason?.message : null);
 				}
 			}
 			catch (err) {
@@ -597,16 +623,37 @@ export default {
 		},
 
 		/**
-		 * PrimaryModelPickerDialog 'picked' 事件回调
+		 * PrimaryModelPickerDialog 'picked' 事件回调。
+		 *
+		 * picker 是 await setPrimary 成功后才 emit 'picked'，故进到这里时主模型已写盘成功。
+		 * 按"成功即权威、不重读确认"：直接把成功值设为页面主模型，不靠之后那次可能陈旧的 model.list 读回覆盖
+		 * （那次读可能命中写前的运行时快照 → 把新值盖回旧值，即本次"切主模型回跳"bug）。
+		 *
+		 * §7.4 凭据信号：set 的校验门已过 ⟹ 该 provider 凭据可用、且模型在选模型器目录（插件
+		 * loadModelCatalog readOnly:true，与 set 同源）里。故同时置 primaryProviderUsable / credSignalFresh /
+		 * loadOk.primary，不拿写前旧快照的凭据结论误判失效；并经 refreshAfterWrite(trustPrimary) 跳过 model.list 重读。
+		 *
+		 * 目录半（primaryEffective 用 this.catalog = models.list view:all 裸比对）保留不动：
+		 * 实测 view:all 是选模型器可选集的超集（2026-05-30 核实：minimax-portal 别名套餐变体 -highspeed 亦在内），
+		 * 故刚切的模型在 this.catalog 里天然命中、不会误报失效，同时这半继续守"模型真被下架"。
+		 * 万一将来某扩展插件让"选得到但 view:all 没有"：若只是 view:all 当时陈旧（下次 loadAll 重新发现即补上）
+		 * 则刷新即愈；若是结构性缺口（view:all 永远不含该模型）则每次重载仍误报失效，需给本路加
+		 * "信任 set、跳过目录复核"的 justSet 短路。
 		 *
 		 * @param {{ primary: string }} info
 		 */
 		async onPrimaryPicked(info) {
 			const target = this.__writeClawId;
 			if (this.__unmounted || !target || this.clawId !== target) return;
-			// 立即把本地 primary 字段同步给用户看到的"已选"状态——比等 RPC refresh 更快
-			if (info?.primary) this.primary = info.primary;
-			await this.refreshAfterWrite();
+			if (info?.primary) {
+				// 成功即权威：主模型 + 凭据信号一次性置好，refreshAfterWrite(trustPrimary) 不再重拉 model.list 覆盖
+				this.primary = info.primary;
+				this.primaryProviderUsable = true;
+				this.credSignalFresh = true;
+				this.loadOk.primary = true;
+			}
+			// 仅在确有成功值时信任 primary；缺值（理论上 picker 不会发）回退默认路径，照常重读 model.list
+			await this.refreshAfterWrite({ trustPrimary: !!info?.primary });
 			if (this.__unmounted || this.clawId !== target) return;
 			// 成功不 notify：主模型区会立即刷新成新模型，用户可直接分辨；失败才提示
 			try {
@@ -700,6 +747,8 @@ export default {
 	},
 	beforeCreate() {
 		this.__loadSeq = 0;
+		// "配置版本"计数器：每次写操作（refreshAfterWrite）+1，loadAll 据此丢弃跨写陈旧结果
+		this.__writeEpoch = 0;
 		this.__unmounted = false;
 		// 当前打开的 add/picker dialog 所针对的 claw（写操作目标），见 onProviderAdded/onPrimaryPicked
 		this.__writeClawId = '';

@@ -2,6 +2,29 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## ModelConfigPage 切主模型后极罕见残留竞态：写后 ~800ms 内新发起的 loadAll 仍可能把 primary 覆盖回旧值
+
+**发现日期**：2026-05-30
+**来源**：model-config 切主模型"回跳"修复的深度 review（本次引入修复后暴露的残留窗口，未修）
+
+- 现状：切主模型已修主路径（onPrimaryPicked 成功即权威 + refreshAfterWrite trustPrimary 不重读；refreshAfterWrite 自身 writeEpoch 守卫挡"在飞期间被更晚写抢占"）。但 `loadAll` 的 `__writeEpoch` 守卫只挡"写前发出、await 期间被写抢占"的 loadAll；若 loadAll 在写后 ~800ms（OpenClaw 运行时陈旧快照、hot reload 滞后）窗口内**才发起**，会捕到写后的新 epoch、读到陈旧 `model.list`，`__applyModelList` 用写前旧 primary 覆盖刚切的新值 → 复现"回跳"。
+- 触发条件：需 `connReady` 在切主模型后 ~800ms 内 false→true（重连触发 loadAll）恰好撞窗口。而 dcReady/connReady 很稳（ICE restart 都不翻），故**极罕见**；且这是把原 100% 必现 bug 改为极低频后残留的窗口，非新引入的高频问题。
+- 暂不修的理由：像样的修法要么给一个有界时间栅栏（~2s 内忽略与刚切值矛盾的读，但耦合后端 hot-reload 时序的魔法常数），要么用"信任刚设值"的状态栅栏（有遮蔽**外部**改动的副作用，且需防永久遮蔽）。两者都属为极罕见场景加复杂度，与本次"避免过度设计"取舍一致。
+- 修复方向（若将来要补安全带）：有界 ~2s 时间栅栏最简单——onPrimaryPicked 记 `__primaryTrustUntil`，loadAll 的 `__applyModelList` 在窗口内遇 `pri !== this.primary` 跳过覆盖 primary（凭据半照常），窗口过后恢复信任读。
+- 范围：仅 UI（`ModelConfigPage.vue` loadAll / __applyModelList）。
+
+## /claws 仪表盘卡片切主模型后引导状态(警告)可能短暂陈旧（与子页"回跳"同根因）
+
+**发现日期**：2026-05-30
+**来源**：model-config 切主模型"回跳"修复的深度 review（预存问题，本次不修）
+
+- 现状：切主模型时 `ModelConfigPage.onPrimaryPicked` 末尾会 `dashboardStore.loadDashboard(target, { force:true })`。该刷新读 `coclaw.model.list` 落在 OpenClaw 运行时**写前陈旧快照**窗口（hot reload 滞后约 1s）内，把 `entry.primaryModel` / `primaryProviderUsable` 写成写前旧值。子页 `this.primary` 本次已修（不再被陈旧读覆盖），但 dashboard store 是独立一条读路径，未受益。
+- 影响面**不是模型名显示**：`/claws` 卡片只把 `primaryModel`+凭据信号喂 `pickGuidanceState`（`ManageClawsPage.vue` → `guidance-state.js`）算引导警告（noKey/noPrimary/invalid），不渲染模型名。故症状是**引导警告可能短暂陈旧**——例如从"失效的旧主模型"切到"有效的新主模型"后，卡片可能还短暂显示"主模型失效"警告，直到下次 dashboard 刷新。普通"有效→有效"切换两态警告都为 null，多半无可见差异。
+- 与子页不同：dashboard 是一次性 force 刷新，无后续保证的再触发，可能停在旧值直到下次手动刷新/重连。
+- 待核实：实际陈旧窗口下引导态是否真错、是否有其它事件自愈（本次未运行时核实）。
+- 修复方向（候选）：切主模型成功后把权威 `info.primary` + 凭据信号传给 dashboard store（或让 store 接受 known-primary 提示），而非让它重读 `model.list`；与子页"成功即权威"同精神。
+- 范围：仅 UI（`dashboard.store.js` + `ModelConfigPage.onPrimaryPicked` 调用处）。
+
 ## loadNextHistorySession 瞬时错误也推进计数 → 该段被永久跳过
 
 **发现日期**：2026-05-28

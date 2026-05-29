@@ -218,7 +218,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - input type 用 password
 - 「去官网创建」链接：UI 维护一份 `provider id → dashboard URL` 映射表，有才显，没有就不显；点击在外部浏览器打开（Electron / Capacitor 用各自的 openExternal API）
 - 提交：调 `coclaw.providerAuth.setApiKey({ provider, apiKey })`
-- 成功 → 关闭 → 列表刷新 → notify
+- 成功 → 关闭 → 列表刷新（**成功不 notify**：新增项立即出现在凭据列表即反馈）
 - 失败 → 表单内显示错误（`INVALID_ARGS` / `IO_FAILED`），错误码映射成本地化的人话
 
 ### 5.3 换主模型流程
@@ -246,7 +246,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 - 数据源（修订 6）：吃 `coclaw.model.listUsable` 返回的枚举集（provider → 可用 modelId，插件侧已 `loadModelCatalog` 干净目录 ∩ 别名感知凭据、无幽灵），按 provider 分组直接出可选项；**不再**用"`models.list view:"all"` ∩ `providerAuth.list`"按原始名取交集（那会漏别名套餐变体，如 `volcengine-plan/ark-code-latest`）。旧插件无 listUsable 方法时回退到旧交集（§ 7.3）。
 - 点击一项即选即保存：`coclaw.model.set({ primary: '<provider>/<model>' })`（其凭据门与选模型器走同一别名感知原语，避免"选得到设不上"）
-- 保存成功 → 关闭模态 → 主模型区刷新 + notify
+- 保存成功 → 关闭模态 → 主模型区刷新（**成功不 notify**：主模型区立即变更即反馈）
 - 不做"二次确认"——可以再换，无破坏性
 
 ### 5.4 撤销 provider 流程
@@ -357,7 +357,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 - 进入页面时拉：`providerAuth.list`（凭据区）+ `model.list`（current default + 信号）+ `coclaw.model.listUsable`（选模型器枚举集，干净目录∩别名感知凭据、无幽灵）+ `models.list view:"all"`（仅"模型下架"检测）【修订 6：选模型器吃 listUsable，插件侧已做干净目录∩凭据，UI 不再 `catalog ∩ providerIds`】
 - **旧插件回退**：旧插件无 `coclaw.model.listUsable` → 该调用 method-not-found。UI **必须回退**到旧派生「`providerAuth.list` 三源 ∩ `models.list view:"all"`」喂选模型器，否则升级窗口内选模型器空白、用户选不到任何模型。（插件随 claw 自动升级，窗口短，但 UI 独立发版，故须留回退；回退态短暂缺别名变体，可接受。）
-- 写完任一字段 → 局部更新 state + 触发 `dashboard.store` 重拉 → notify
+- 写完任一字段 → 局部更新 state + 触发 `dashboard.store` 重拉（**成功不 notify**：界面变化即反馈）
 - 退出页面销毁——不长期占用 store
 
 ### 7.4 凭据 / 有效性判定（修订 6：四处统一别名感知原语）
@@ -378,6 +378,11 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 > 历史：早期版本曾按「出参无凭据信号 → 视为旧插件 → 压制 noKey/invalid」做 feature-detect-suppress（宁可少提示不可误报）。后因「宁可放过不误报」与小白引导价值冲突而废弃——见 commit 历史。子页「写完设置后那次后台刷新失败」的反误报保护是**另一回事**（不拿写入前的旧凭据信号误报失效），保留至今。
 
 **仪表盘不查目录**：主模型「灵不灵」只看凭据，不为此拉全量目录判「模型是否还在 catalog」。「模型下架」这种情形**仅在设置子页暴露**（子页持全量目录，见 §7.3）；仪表盘从轻、且**根本不拉 catalog**（§7.2）。橙条显隐与 catalog 解耦。
+
+**切主模型走「成功即权威、不重读确认」**：picker await `model.set` 成功后才回调，子页据此**直接**把成功值设为 `primary`、并按 set 校验门已过的事实置 `providerUsable=true / credSignalFresh=true`，写后刷新**不重拉 `model.list` 覆盖**（`refreshAfterWrite({ trustPrimary:true })`）。
+- 动因：写盘成功后立即读 `model.list` 可能命中 OpenClaw 运行时**写前陈旧快照**（hot reload 滞后约 1s），把刚切的新值/新 provider 凭据盖回旧值——即「切主模型后显示回跳」bug。成功即权威，不靠读回确认（与项目通则一致）。
+- **目录半保留不动**：`primaryEffective` 仍拿 `this.catalog`（`models.list view:"all"`）裸比对守「模型真被下架」。前提：**`view:all` 是选模型器可选集（`loadModelCatalog readOnly:true` ∩ 别名感知凭据）的超集**——2026-05-30 运行时核实，含 `minimax-portal` 别名套餐变体 `-highspeed`，故刚切的模型在 `this.catalog` 里天然命中、不误报失效。若将来某扩展插件打破此超集关系（选得到但 `view:all` 没有）：当时只是 `view:all` 陈旧（下次 loadAll 重新发现补上）→ 刷新即愈；若是**结构性缺口**（`view:all` 永远不含该模型）→ 每次重载仍误报失效，需给切主模型路加「信任 set、跳过目录复核」的 justSet 短路。
+- 仅切主模型一路 trust；**加/删 provider 仍走默认路径**重拉并 apply `model.list`（primary 未变，且删掉主模型那家 provider 时 `model.list` 会正确报 `providerUsable=false` → 翻失效，必须放行）。
 
 ---
 
@@ -518,7 +523,7 @@ export const PROVIDER_META = {
 
 ## 十二、可访问性与安全
 
-- 添加 / 撤销 / 设主模型成功失败一律 notify（按全局 notify 规范）
+- 添加 / 撤销 / 设主模型：**成功不 notify**（界面变化即可让用户分辨），**失败一律 notify**（按全局 notify 规范）
 - API key 在 input 中用 password 类型，提交后**不落地 UI 任何缓存**，只取 plugin 返回的 keyPreview
 - 不在 UI 端 log raw key（即便 console.log 也不行）
 - 错误信息不包含 raw key 片段

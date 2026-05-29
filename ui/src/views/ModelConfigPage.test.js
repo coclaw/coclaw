@@ -606,7 +606,8 @@ describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
 		await flushPromises();
 		await w.find('[data-testid="btn-primary-change"]').trigger('click');
 		await w.vm.$nextTick();
-		// refresh-after-write returns updated primary
+		// 切主模型走 trustPrimary：onPrimaryPicked 直接用 picked 值置 primary，refreshAfterWrite 跳过 model.list
+		// （下方 model.list mock 此路径不会被调用，保留仅作兜底）
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.list') return asProfiles([
 				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
@@ -1778,6 +1779,306 @@ describe('ModelConfigPage — three-source credentials (§2.4)', () => {
 		w.vm.$options.watch.clawId.handler.call(w.vm);
 		await w.vm.$nextTick();
 		expect(w.vm.removeSource).toBe('profile');
+		w.unmount();
+	});
+});
+
+describe('ModelConfigPage — write vs in-flight loadAll race (__writeEpoch)', () => {
+	// 复现并钉死：连接抖动重连触发的整页 loadAll 若在切主模型「写后刷新」之后才落地，
+	// 不得用写前的陈旧 primary 覆盖写后的新值（否则页面先显示新模型、~2s 后跳回旧模型）。
+	test('a stale loadAll resolving after a primary switch must NOT clobber the freshly-picked primary', async () => {
+		const profiles = [{ provider: 'groq', source: 'profile' }];
+		const catalog = [{ id: 'old-model', provider: 'groq' }, { id: 'llama-3.3-70b-versatile', provider: 'groq' }];
+
+		// 1) 初始加载：primary = 旧模型
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/old-model');
+			if (method === 'models.list') return asCatalog(catalog);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old-model', 'llama-3.3-70b-versatile'] }, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/old-model');
+
+		// 打开 picker（记录 __writeClawId）
+		w.vm.onChangePrimary();
+
+		// 2) 模拟"重连触发、写之前发出、写之后才落地"的在飞 loadAll：deferred 卡住其 RPC
+		const staleResolvers = [];
+		mockRequest.mockImplementation((method) => new Promise((resolve) => {
+			staleResolvers.push(() => {
+				if (method === 'coclaw.providerAuth.list') resolve(asProfiles(profiles));
+				else if (method === 'coclaw.model.list') resolve(asModelList('groq/old-model'));
+				else if (method === 'models.list') resolve(asCatalog(catalog));
+				else if (method === 'coclaw.model.listUsable') resolve(asUsable({ groq: ['old-model', 'llama-3.3-70b-versatile'] }, ['groq']));
+				else resolve({});
+			});
+		}));
+		w.vm.loadAll();
+		await Promise.resolve();
+
+		// 3) 用户选了新模型 → onPrimaryPicked：乐观置新值 + refreshAfterWrite（fresh 立即 resolve）
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/llama-3.3-70b-versatile');
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['llama-3.3-70b-versatile'] }, ['groq']);
+			if (method === 'models.list') return asCatalog(catalog);
+			return {};
+		});
+		await w.vm.onPrimaryPicked({ primary: 'groq/llama-3.3-70b-versatile' });
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/llama-3.3-70b-versatile');
+
+		// 4) 在飞旧 loadAll 落地（慢 RPC 终于返回）——必须被 __writeEpoch 判陈旧而丢弃
+		staleResolvers.forEach((fn) => fn());
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/llama-3.3-70b-versatile');
+
+		// loading 仍由 seq 机制正常归位（被丢弃的 loadAll 不应卡住"加载中"）
+		expect(w.vm.loading).toBe(false);
+		w.unmount();
+	});
+
+	test('a normal reconnect loadAll (no intervening write) still applies its result', async () => {
+		const profiles = [{ provider: 'groq', source: 'profile' }];
+		const catalog = [{ id: 'old-model', provider: 'groq' }];
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/old-model');
+			if (method === 'models.list') return asCatalog(catalog);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old-model'] }, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/old-model');
+
+		// 无写操作的纯重连刷新：服务端此时 primary 已是新值 → 必须照常应用
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/new-model');
+			if (method === 'models.list') return asCatalog([{ id: 'new-model', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['new-model'] }, ['groq']);
+			return {};
+		});
+		await w.vm.loadAll();
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/new-model');
+		w.unmount();
+	});
+});
+
+describe('ModelConfigPage — primary switch "success is authoritative" (§7.4 / no re-read clobber)', () => {
+	// 修复"切主模型回跳"：写成功后不重读 model.list 覆盖 primary；陈旧快照不再把新值盖回旧值。
+	test('switch trusts set success: does NOT re-read model.list; primary stays the picked value (no revert)', async () => {
+		const profiles = [{ provider: 'groq', source: 'profile', profileId: 'groq:default' }];
+		const catalog = [{ id: 'old-model', provider: 'groq' }, { id: 'new-model', provider: 'groq' }];
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/old-model');
+			if (method === 'models.list') return asCatalog(catalog);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old-model', 'new-model'] }, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/old-model');
+
+		w.vm.onChangePrimary(); // 记 __writeClawId
+		await w.vm.$nextTick();
+
+		// 模拟写后运行时陈旧快照：model.list 仍返回旧值（若被 apply 就会回跳）
+		mockRequest.mockClear();
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/old-model'); // 陈旧
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old-model', 'new-model'] }, ['groq']);
+			if (method === 'models.list') return asCatalog(catalog);
+			return {};
+		});
+		await w.vm.onPrimaryPicked({ primary: 'groq/new-model' });
+		await flushPromises();
+
+		expect(w.vm.primary).toBe('groq/new-model'); // 不回跳
+		// 切主模型路径不重读 model.list（成功即权威，不重读确认）
+		const modelListCalls = mockRequest.mock.calls.filter((c) => c[0] === 'coclaw.model.list');
+		expect(modelListCalls).toHaveLength(0);
+		// §7.4：凭据信号按 set 成功置真
+		expect(w.vm.primaryProviderUsable).toBe(true);
+		expect(w.vm.credSignalFresh).toBe(true);
+		expect(w.vm.primaryState).toBe('effective');
+		w.unmount();
+	});
+
+	test('§7.4: switching to an alias-plan variant present in this.catalog stays effective (no false-invalid)', async () => {
+		// 别名套餐变体：picker 能选 + view:all(this.catalog) 含它（实测 view:all ⊇ picker 集）
+		const profiles = [{ provider: 'minimax-portal', source: 'profile', profileId: 'minimax-portal:default' }];
+		const catalog = [
+			{ id: 'MiniMax-M2.7', provider: 'minimax-portal' },
+			{ id: 'MiniMax-M2.7-highspeed', provider: 'minimax-portal' },
+		];
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('minimax-portal/MiniMax-M2.7');
+			if (method === 'models.list') return asCatalog(catalog);
+			if (method === 'coclaw.model.listUsable') return asUsable({ 'minimax-portal': ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] }, ['minimax-portal']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		w.vm.onChangePrimary();
+		await w.vm.$nextTick();
+		await w.vm.onPrimaryPicked({ primary: 'minimax-portal/MiniMax-M2.7-highspeed' });
+		await flushPromises();
+		expect(w.vm.primary).toBe('minimax-portal/MiniMax-M2.7-highspeed');
+		expect(w.vm.primaryState).toBe('effective'); // 目录里有该变体 → 不误报失效
+		w.unmount();
+	});
+
+	test('switch credential signal is NOT clobbered by a stale model.list reporting providerUsable=false', async () => {
+		// 切到另一家 provider；陈旧 model.list 仍报旧 primary 视角 providerUsable=false（若被 apply 会误报失效）
+		const profiles = [
+			{ provider: 'groq', source: 'profile', profileId: 'groq:default' },
+			{ provider: 'openai', source: 'profile', profileId: 'openai:default' },
+		];
+		const catalog = [{ id: 'old', provider: 'groq' }, { id: 'gpt-4', provider: 'openai' }];
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/old', { providerUsable: true });
+			if (method === 'models.list') return asCatalog(catalog);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old'], openai: ['gpt-4'] }, ['groq', 'openai']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		w.vm.onChangePrimary();
+		await w.vm.$nextTick();
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/old', { providerUsable: false, hasAny: false });
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old'], openai: ['gpt-4'] }, ['groq', 'openai']);
+			if (method === 'models.list') return asCatalog(catalog);
+			return {};
+		});
+		await w.vm.onPrimaryPicked({ primary: 'openai/gpt-4' });
+		await flushPromises();
+		expect(w.vm.primary).toBe('openai/gpt-4');
+		expect(w.vm.primaryProviderUsable).toBe(true); // 未被陈旧读覆盖
+		expect(w.vm.primaryState).toBe('effective');
+		w.unmount();
+	});
+
+	test('remove provider path still applies model.list: removing the primary carrier flips state to invalid', async () => {
+		const catalog = [{ id: 'gpt-4', provider: 'openai' }];
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([{ provider: 'openai', source: 'profile', profileId: 'openai:default' }]);
+			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4', { providerUsable: true });
+			if (method === 'models.list') return asCatalog(catalog);
+			if (method === 'coclaw.model.listUsable') return asUsable({ openai: ['gpt-4'] }, ['openai']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primaryState).toBe('effective');
+
+		// 删掉 openai（主模型那家）：写后 model.list 报 providerUsable=false → 必须翻失效（默认路径放行）
+		w.vm.onRemoveProvider({ provider: 'openai', source: 'profile' });
+		await w.vm.$nextTick();
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.remove') return {};
+			if (method === 'coclaw.providerAuth.list') return asProfiles([]);
+			if (method === 'coclaw.model.list') return asModelList('openai/gpt-4', { providerUsable: false, hasAny: false });
+			if (method === 'coclaw.model.listUsable') return asUsable({}, []);
+			if (method === 'models.list') return asCatalog(catalog);
+			return {};
+		});
+		await w.vm.onConfirmRemove();
+		await flushPromises();
+		expect(w.vm.primaryProviderUsable).toBe(false);
+		expect(w.vm.primaryState).toBe('invalid');
+		w.unmount();
+	});
+
+	test('add provider path still re-reads model.list (default path applies fresh credential signal)', async () => {
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([{ provider: 'groq', source: 'profile', profileId: 'groq:default' }]);
+			if (method === 'coclaw.model.list') return asModelList('groq/old', { providerUsable: false, hasAny: false });
+			if (method === 'models.list') return asCatalog([{ id: 'old', provider: 'groq' }]);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old'] }, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primaryProviderUsable).toBe(false);
+
+		w.vm.onAddProvider();
+		await w.vm.$nextTick();
+		mockRequest.mockClear();
+		// 加完 key 后该家有凭据：model.list 现报 providerUsable=true → 默认路径必须重读并 apply
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles([{ provider: 'groq', source: 'profile', profileId: 'groq:default' }]);
+			if (method === 'coclaw.model.list') return asModelList('groq/old', { providerUsable: true });
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old'] }, ['groq']);
+			if (method === 'models.list') return asCatalog([{ id: 'old', provider: 'groq' }]);
+			return {};
+		});
+		await w.vm.onProviderAdded({ provider: 'groq', profileId: 'groq:default' });
+		await flushPromises();
+		const modelListCalls = mockRequest.mock.calls.filter((c) => c[0] === 'coclaw.model.list');
+		expect(modelListCalls.length).toBeGreaterThan(0); // 默认路径仍重读 model.list
+		expect(w.vm.primaryProviderUsable).toBe(true); // 已 apply 新凭据信号
+		w.unmount();
+	});
+
+	test('an older default refreshAfterWrite resolving AFTER a later primary switch must NOT clobber the new primary (writeEpoch self-guard)', async () => {
+		// 复现并钉死：删/加 provider 的默认刷新（重读 model.list）若在飞期间用户又切了主模型，
+		// 这次更早的刷新落地时不得用写前旧 primary 覆盖刚切的新值——靠 refreshAfterWrite 自身的 writeEpoch 守卫拦下。
+		const profiles = [{ provider: 'groq', source: 'profile', profileId: 'groq:default' }];
+		const catalog = [{ id: 'old', provider: 'groq' }, { id: 'new', provider: 'groq' }];
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.list') return asModelList('groq/old');
+			if (method === 'models.list') return asCatalog(catalog);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['old', 'new'] }, ['groq']);
+			return {};
+		});
+		const w = makeWrapper();
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/old');
+
+		// 1) 起一个默认路径 refreshAfterWrite（模拟 add/remove 后的刷新），其 RPC 用 deferred 卡住
+		const resolvers = [];
+		mockRequest.mockImplementation((method) => new Promise((resolve) => {
+			resolvers.push(() => {
+				if (method === 'coclaw.providerAuth.list') resolve(asProfiles(profiles));
+				else if (method === 'coclaw.model.list') resolve(asModelList('groq/old')); // 写前旧值
+				else if (method === 'coclaw.model.listUsable') resolve(asUsable({ groq: ['old', 'new'] }, ['groq']));
+				else resolve({});
+			});
+		}));
+		const stalePromise = w.vm.refreshAfterWrite(); // 默认路径，epoch+1，RPC 在飞
+		await Promise.resolve();
+
+		// 2) 用户切主模型：onPrimaryPicked 置新值 + trustPrimary refresh（epoch 再+1）
+		w.vm.onChangePrimary();
+		await w.vm.$nextTick();
+		mockRequest.mockImplementation(async (method) => {
+			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);
+			if (method === 'coclaw.model.listUsable') return asUsable({ groq: ['new'] }, ['groq']);
+			if (method === 'models.list') return asCatalog(catalog);
+			return {}; // trustPrimary 路径不会调 model.list
+		});
+		await w.vm.onPrimaryPicked({ primary: 'groq/new' });
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/new');
+
+		// 3) 更早的默认 refresh 现在才落地（model.list 返回写前旧值）——必须被 writeEpoch 判陈旧丢弃
+		resolvers.forEach((fn) => fn());
+		await stalePromise;
+		await flushPromises();
+		expect(w.vm.primary).toBe('groq/new'); // 不被旧 refresh 覆盖回 old
 		w.unmount();
 	});
 });
