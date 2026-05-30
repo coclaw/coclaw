@@ -43,6 +43,8 @@ Thumbs.db
 # .claude is a symlink to .agents, git won't traverse into it
 **/.agents/settings.json
 **/.agents/settings.local.json
+# git worktrees live here (nested checkouts, transient) — never track them
+/.agents/worktrees/
 # Claude Code runtime lock (scheduled tasks)
 **/scheduled_tasks.lock
 # codex-rescue subagent 会在各 workspace 留下空 .codex 标记文件，不入库；
