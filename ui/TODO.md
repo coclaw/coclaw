@@ -684,14 +684,7 @@ X4 触及面比 X1 广，需要重新评估：
 - 严重度：低。服务端实际已写成功，退出重进子页 `loadAll` 重拉即自愈，仅暂时性困惑（"提示成功了怎么没看到"）。
 - 修复方向：`refreshAfterWrite` 失败时给一个轻提示（如"列表可能未刷新，稍后重进"）或失败自动重试一次；二选一需带 trade-off 评估。
 - 用户已明确**本期不处理**，仅登记。
-
-### 附：refreshAfterWrite 缺 seq 守卫（预存，2026-05-27 deep-review 发现）
-
-- `ModelConfigPage.vue` 的 `refreshAfterWrite` 只用 `__unmounted` / `clawId` 守卫，没有 `loadAll` 那套 `__loadSeq` 计数守卫。两次针对同一 claw 的写操作（如快速连点加 provider）触发的并发 refresh 落地顺序若颠倒，靠后的旧响应会覆盖较新的 `__applyModelList` 结果。
-- 严重度：低。写操作是用户逐个对话框发起，实际并发概率很低；且下一次 `loadAll` / 重连恢复会自愈。
-- 与上面"写后刷新失败静默"同属 `refreshAfterWrite` 健壮性范畴；修复时可一并评估（统一加 seq 守卫 + 失败提示/重试）。该竞态在原 `refreshAfterWrite` 直接写 `this.primary` 时已存在（2026-05-27 登记时如此）。
-- **2026-05-29 修订 6 补注（终审发现登记不全）**：选模型器改造让 `refreshAfterWrite` 也重拉 `coclaw.model.listUsable` 并写 `usable` / `configuredProviders` / `loadOk.usable` —— 这三个新字段同样落进无 `__loadSeq` 守卫的路径。后果较原条目（仅 `primary` / `__applyModelList`）**爆炸半径扩大**：在飞旧 refresh 晚于新 `loadAll`（如 `connReady` 抖动触发重连）落地时，会把刚恢复的 listUsable 成功态打回 fallback（picker 退回旧交集）或回显陈旧凭据。仍仅同 claw（`clawId` 守卫挡住跨 claw 这个真正危险场景）、自纠正、需"写+重连重叠"窄时序，维持低优先；统一加共享单调 seq 时把这三字段一并纳入。
-
+- **附「refreshAfterWrite 缺 seq 守卫」已解决（2026-05-30，commit `4ccf7e59`）**：`refreshAfterWrite` 现按 `__writeEpoch`（配置版本号）作竞态守卫——两次写操作的刷新乱序落地时，旧那次整批被判陈旧丢弃（含 `usable`/`configuredProviders`/`loadOk.*`），原"快速连点旧盖新"已挡住。原补注里"旧 refresh 晚于新 `loadAll` 把 listUsable 打回 fallback"那条依赖 `connReady` 抖动触发重连 loadAll，而该路径实测不可达（[[project_rtc_connection_hard_to_break]]：ICE restart 3min+ 预算、dcReady 几乎不翻），故残角不可达、不再加守卫（加 recency 守卫会换来"更晚但失败的 loadAll 作废更早但成功的 refresh"对称毛病，得不偿失）。
 
 ## NuxtUiDemoPage 的 "Back to Auth Prototype" 按钮文案已失效
 
@@ -748,13 +741,3 @@ X4 触及面比 X1 广，需要重新评估：
 - 不采纳"空 byProvider 当回退信号"：会破坏合法的"权威空集"（干净目录 ∩ 凭据确实为空时 picker 该显示空、不该回退到旧交集）。UI 无法从响应区分"降级空"与"合法空"。
 - 修法方向：靠插件信号区分降级/权威空（如 listUsable 出参带一个 degraded 标记），或插件把"可加 provider"也按别名归一后给 UI。需越 scope（动 model.list/listUsable 契约）。
 - **精度补注（2026-05-29 终审，未独立核验 view:all 实时行为）**：上面"正常态已被并集挡住"仅对**持基座 key 的用户**成立——完全没配该基座的用户，正常态下变体 id 仍可能因 `models.list view:'all'`（鉴权盲、把别名变体列为独立 provider）出现在可加列表。这本质仍是既有"view:all 列变体"老毛病、非本次引入，且即便误加变体 key 也会落到基座解析（无害），边角程度同上。
-
-## ModelConfigPage 切 claw 未重置 loading，无连接新 claw 可能卡 initialLoading（预存）
-
-**发现日期**：2026-05-29
-**来源**：model-config 修订 6（子任务 #3）deep-review（附带发现的预存问题）
-
-- 现状：`ModelConfigPage.vue` 的 `clawId` watcher 切 claw 时重置了 `loadAttempted` 等字段但**未重置 `loading`**；而 `loadAll` 在 `++__loadSeq` 之后、`this.loading = true` 之前有"无 id / 无连接"早返路径。若在一次 load 在飞时切到一台**无连接**的新 claw：旧 load 落地因 seq 变更不再置 `loading=false`，新 load 早返也不设 `loading`，于是 `initialLoading`（`loading && !loadAttempted`）可能卡住直到再次切 claw。
-- 性质：`7a4d1443` 既有结构问题，本次（加第 4 个 RPC listUsable）未引入也未加重——新 RPC 同走那套 seq/clawId/unmounted 三重门。
-- 严重度：低（需"飞行中切到无连接 claw"的窄时序）。
-- 修法方向：watcher 重置时一并 `this.loading = false`，或把 `loading` 的设置/复位移到早返之前。低优先，属 remove-flow/load 健壮性范畴，可与本文件「refreshAfterWrite 缺 seq 守卫」一并评估。

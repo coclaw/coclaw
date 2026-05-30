@@ -415,22 +415,23 @@ export default {
 
 		async loadAll() {
 			// 始终先 ++seq：让任何仍 inflight 的旧 load 在 await 后被丢弃。
-			// 必须在所有早返前——否则 clawId 切到 "无连接 claw" 时不 bump，
-			// 上一台 claw 的 inflight 还能写入新 claw 的状态
 			const seq = ++this.__loadSeq;
-			const id = this.clawId;
-			if (!id) return;
-			const conn = useClawConnections().get(id);
-			if (!conn) return;
+			// loading 一律在此置位、由 finally 按 seq 复位——连早返路径（无 id / 无连接）也走 finally；
+			// 否则"加载在飞时切到无连接 claw"会留下 loading=true（旧 load 被 seq 拦下不复位、新 load 早返又不置位/复位）
+			// → initialLoading 永久卡住。loading 生命周期完全归 loadAll 自管，watcher 不再代管。
 			this.loading = true;
-			// 记下发请求那一刻的"配置版本"：若 await 期间有写操作（切主模型 / 增删凭据）落地，
-			// __writeEpoch 会被 refreshAfterWrite 抬高 → 这批读到的是写前的陈旧数据，落地后必须丢弃，
-			// 否则会把写后已刷新的新值覆盖回旧值（连接抖动重连触发的 loadAll 与切换撞车时的竞态）。
-			// 残留竞态（已记 TODO，未修）：本守卫只挡"写前发出、await 期间被写抢占"的 loadAll；若 loadAll
-			// 在写后 ~800ms 运行时陈旧快照窗口内才发起，会捕到新 epoch、读到陈旧 model.list 覆盖刚切的 primary。
-			// 需重连恰好撞窗口（dcReady 很稳，几乎不翻）故极罕见，未加时间栅栏（避免耦合后端 hot-reload 时序 / 遮蔽外部改动）。
-			const writeEpoch = this.__writeEpoch;
 			try {
+				const id = this.clawId;
+				if (!id) return;
+				const conn = useClawConnections().get(id);
+				if (!conn) return;
+				// 记下发请求那一刻的"配置版本"：若 await 期间有写操作（切主模型 / 增删凭据）落地，
+				// __writeEpoch 会被 refreshAfterWrite 抬高 → 这批读到的是写前的陈旧数据，落地后必须丢弃，
+				// 否则会把写后已刷新的新值覆盖回旧值（连接抖动重连触发的 loadAll 与切换撞车时的竞态）。
+				// 残留竞态（已记 TODO，未修）：本守卫只挡"写前发出、await 期间被写抢占"的 loadAll；若 loadAll
+				// 在写后 ~800ms 运行时陈旧快照窗口内才发起，会捕到新 epoch、读到陈旧 model.list 覆盖刚切的 primary。
+				// 需重连恰好撞窗口（dcReady 很稳，几乎不翻）故极罕见，未加时间栅栏（避免耦合后端 hot-reload 时序 / 遮蔽外部改动）。
+				const writeEpoch = this.__writeEpoch;
 				// listUsable 缺省 default scope（本期 UI 不暴露 per-agent，不传 agentId）
 				const [profilesRes, modelRes, catalogRes, usableRes] = await Promise.allSettled([
 					conn.request('coclaw.providerAuth.list', {}, { timeout: RPC_TIMEOUT }),

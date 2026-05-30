@@ -459,6 +459,36 @@ describe('ModelConfigPage — offline / connection gating', () => {
 		expect(mockRequest).not.toHaveBeenCalled();
 		w.unmount();
 	});
+
+	test('switch to a no-connection claw while a load is in flight resets loading (no stuck initialLoading)', async () => {
+		// 3a 回归：前一次 load 卡在飞中（loading=true）；切到无连接 claw 触发的新一轮 loadAll 因无 conn 早返。
+		// 该早返必须经 finally 复位 loading——否则旧 load 被 seq 拦下不复位、新 load 早返又不置位/复位 →
+		// initialLoading 永久卡转圈。（注：测试桩 $route 非响应式、clawId computed 被缓存，故用"conn 置空"
+		// 如实模拟"新 claw 无连接"这一 bug 机制——clawId 字面值与本 bug 无关。）
+		let resolveFirst;
+		const firstPending = new Promise((res) => { resolveFirst = res; });
+		mockRequest.mockImplementation(() => firstPending); // 首个 load 的四个 RPC 全卡住
+
+		const w = makeWrapper(); // claw1 dcReady=true → connReady 触发首个 loadAll，卡在 await
+		await Promise.resolve();
+		expect(w.vm.loading).toBe(true); // 首个 load 在飞、loading 已置位
+
+		// 模拟"切到无连接 claw"：get 此刻起返回 undefined；clawId watcher 触发新一轮 loadAll（早返）
+		mockClawConnGet.mockReturnValue(undefined);
+		w.vm.$options.watch.clawId.handler.call(w.vm);
+		await flushPromises();
+
+		// 关键断言：早返也复位 loading；initialLoading 不卡（页面落到离线/空态而非永久转圈）
+		expect(w.vm.loading).toBe(false);
+		expect(w.vm.initialLoading).toBe(false);
+
+		// 收尾：在飞旧 load 终于落地——必被 seq 拦下、不得复活 loading
+		resolveFirst(asProfiles([]));
+		await flushPromises();
+		expect(w.vm.loading).toBe(false);
+
+		w.unmount();
+	});
 });
 
 describe('ModelConfigPage — T3 add-provider + primary-picker wiring', () => {
