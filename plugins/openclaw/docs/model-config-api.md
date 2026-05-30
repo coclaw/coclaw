@@ -360,7 +360,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 **定稿做法：`loadModelCatalog` 干净目录 + 统一别名感知凭据原语**（四个消费点同口径，杜绝跨界面矛盾）：
 
-- **干净目录** `loadModelCatalog({ readOnly: true })`（`openclaw/plugin-sdk/agent-runtime`，barrel re-export `../agents/model-catalog.js`）：合并 registry + **manifest catalog 行（变体在此，如 `volcengine-plan/ark-code-latest`）** + configured。`readOnly` 路径**设计上零副作用**（读持久化 `models.json`/静态 manifest，跳过 `ensureOpenClawModelsJson` 与 provider discovery，不联网、不卡事件循环）。**幽灵注入在 `buildModelsProviderData` 尾部、不在 `loadModelCatalog` 里 → 此源天然无幽灵**，也不需 cfgClone（目录本就白名单之前）。
+- **目录源** `loadModelCatalog({ readOnly: false })`（`openclaw/plugin-sdk/agent-runtime`，barrel re-export `../agents/model-catalog.js`）：合并 registry + **manifest catalog 行（变体与 manifest-only provider 在此，如 `volcengine-plan/ark-code-latest`、`openai-codex/*`）** + configured。**为什么 readOnly:false 而非 true（本次回归根因）**：`readOnly:true` 只读落盘 `models.json`，**缺 manifest-only provider**——`openai-codex/*`（ChatGPT 订阅授权点亮的 8 个 GPT-5.x）从不落盘，落盘里只有一个空 `openai-codex` 节点 + 一个 `codex` 马甲 → 凭据已授权（`isProviderApiKeyConfigured('openai-codex')===true`）但目录里零条目 → 选不出。`readOnly:false` 含 manifest 合并，`openai-codex/*` 才进得来（且**不含** `codex` 马甲）。**幽灵注入在 `buildModelsProviderData` 尾部、不在 `loadModelCatalog` 里 → 此源任何 readOnly 取值都天然无幽灵**（凭据门过滤后 `openai/*` 等无 auth-profile 的 provider 被丢、无泄漏），也不需 cfgClone（目录本就白名单之前）。**不发 gateway RPC**（直调 plugin-sdk `loadModelCatalog`，等价 `models.list view:all` 背后那条路径但不走信令）。
 - **统一原语** `computeProviderUsableByName(provider, cfg, deps)` = `isProviderApiKeyConfigured`（env+账本，别名感知）∪ `hasInlineKey`（内联，名过 `resolveProviderIdForAuth` 归一）。覆盖 env+内联+账本+别名；统一漏 IAM/本地（`hasAuthForModelProvider` 未导出 plugin-sdk，接受）。
   - **必修 B**：现有 `computeProviderUsable(primary,…)`（resolve.js:124）对入参跑 `providerSegmentOf`，**裸 provider 名（无斜杠）返回 null → 整函数 false**。必须抽出按裸 provider 名工作的 `…ByName` 核心，`computeProviderUsable(primary)` 委托它。
 - **枚举 = 目录按 provider 分组 → 留过 `…ByName` 的 provider →（文本模态过滤）**。变体经 manifest 行进目录、经别名感知凭据（基座 key）保留；幽灵 provider 无凭据被丢。
@@ -372,9 +372,20 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
   - `byProvider`：provider（含别名变体 id 如 `volcengine-plan`）→ 可用 modelId 列表（升序去重）。供 UI 选模型器**直接出可选项**，无幽灵（凭据过滤天然剔除）。
   - `configuredProviders`：别名归一（`resolveProviderIdForAuth`）的"已配 provider"基座 id 集（账本 ∪ 内联 ∪ env 三源，升序去重）。供 UI **加 provider 时排除**（UI 拿不到 `resolveProviderIdForAuth`，必须插件给）。
 - **错误码**：`INVALID_ARGS`（params 形状 / agentId 类型错 / 未知字段）/ `IO_FAILED`（runtime cfg 不可读 / 凭据探针即 store 读失败等 SDK 抛错）。
-- **降级**：`loadModelCatalog({readOnly:true})` 自带"持久化失败→静态 manifest"兜底（`model-catalog.ts`）；handler 再 try/catch 兜"整个 `loadModelCatalog` 抛错"（罕见）→ 以**空 entries** 走枚举 → `{ byProvider: {}, configuredProviders }`（**不空白**：byProvider 退化为空但 `configuredProviders` 不依赖目录仍可算，UI 加 provider 排除照常）。**store 读失败**（`ensureAuthProfileStore` 抛错）走外层 catch → `IO_FAILED`（UI 回退旧派生，与既有 `coclaw.model.list` 同口径）。
+- **降级**：handler try/catch 兜"整个 `loadModelCatalog({readOnly:false})` 抛错"（罕见，如 runtime config 取不到）→ 以**空 entries** 走枚举 → `{ byProvider: {}, configuredProviders }`（**不空白**：byProvider 退化为空但 `configuredProviders` 不依赖目录仍可算，UI 加 provider 排除照常）。**store 读失败**（`ensureAuthProfileStore` 抛错）走外层 catch → `IO_FAILED`（UI 回退旧派生，与既有 `coclaw.model.list` 同口径）。
 - **旧插件回退**：旧插件无此方法 → UI 必须回退到"`providerAuth.list` ∩ `models.list view:'all'`"派生（即今天 shipped 行为，升级窗口内短暂缺别名变体，可接受；见 UI doc § 7.3）。
-- **caveat（readOnly 新鲜度）**：readOnly 主路径读 lazy 缓存 `models.json`（网关启动/非 readOnly 调用时重生成）；新装厂商扩展有极窄过时窗口（自带扩展如火山在任何网关启动后即在内）。要绝对保险可走非 readOnly（更新鲜但首拉 ~10s manifest stall + discovery）——readOnly/非 readOnly 旋钮，低频子页倾向 readOnly。
+- **caveat（readOnly 新鲜度 / 性能）**：**已采用 `readOnly:false`**——更新鲜（含新装厂商扩展）+ 含 manifest（才有 `openai-codex/*` 等 manifest-only provider）。代价是 `readOnly:false` 触发 discovery 重建：独立冷进程 ~10s，但活网关维持热缓存、实测每次 ~1.2s（UI 现有 `view:all` 回退本就在用同条路径保温）；仅网关冷启 / 配置变更后首次付重建代价，低频子页可接受；指纹未变不写盘。
+
+#### interim 已知缺口（readOnly:false 方案下，如实记录）
+
+`readOnly:false` 含 manifest 的"完整 catalog ∩ 归一 provider 过凭据门"修好了 manifest-only provider（如 ChatGPT via `openai-codex`），但以下缺口本轮**不**收口：
+
+1. **`claude-cli/*`（本机本地 Claude 模型，3 个）**：OpenClaw 靠"装了 Claude CLI 即合成授权"点亮，该信号**未经任何 plugin-sdk 零件暴露**，插件够不着 → interim **不列**。归并到上游 issue #88392（待上游暴露真 available 信号后逐字照搬）。
+2. **`openai/gpt-5.5`（配置回声）**：凭据门丢弃（无 `openai` auth-profile）。它与 `openai-codex/gpt-5.5` 是同一模型、运行时也落 `openai-codex`，用户照样能从 `openai-codex` 选到，**无损**。**刻意不复刻 OpenClaw 的 `openai→codex` 运行时兜底**——否则会把 `openai/*` 41 个废模型全列进来。
+3. **IAM-only / AWS-bedrock**：沿用既有缺口（`hasAuthForModelProvider` 未导出 plugin-sdk），接受。
+4. **`isNonSecretApiKeyMarker` 增强本轮不做**：实测它对 `claude-cli` / `codex-app-server` 均返回 false（只认 `ollama-local` / OAuth / AWS / env 名），修不了 `claude-cli`，仅覆盖手填本地 provider 这类边角，与本 bug 无关。
+
+**忠实性说明**：本做法 = "完整 catalog（含 manifest）∩ 归一 provider 过凭据门"，与 OpenClaw 对 manifest catalog 行的真实判法同构（`list.rows.ts` 对这些行传 `allowProviderAvailabilityFallback:true`、`openai-codex/*` 纯靠 provider 级 `hasProviderAuth` 点亮）。
 
 ### 3.3 `coclaw.model.set`
 
@@ -405,9 +416,9 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 5. 非 null 时：
    - 含 `/`，且 `/` 不在首尾（拆出 `<provider>` + `<model>`）
    - **凭据门**：`computeProviderUsable(primary, cfg, deps)` 为 true（统一原语，§ 3.2.1；primary 含斜杠故直接可用，无需 `…ByName`）
-   - **存在性**：`(provider, model)` 在干净目录 `loadModelCatalog({readOnly:true})` 里（与选模型器同源）；或信任 picker、省此步（用户从选模型器里挑、必在目录）
+   - **存在性**：`(provider, model)` 在目录源 `loadModelCatalog({readOnly:false})` 里（与选模型器同源 → 含 manifest，manifest-only provider 如 `openai-codex/*` 也在）；或信任 picker、省此步（用户从选模型器里挑、必在目录）
 
-**与选模型器同源**（一致性红线：选模型器枚举与 set 校验走**同一别名感知凭据原语**，否则别名/IAM 变体"选得到设不上"复现）。凭据门**取代**旧的 profiles-only `isProviderAuthProfileConfigured`：旧法只认账本，裸 env / 内联 / 别名授权的 provider 被误拒，即"选得到却设不上"（③）的根因。换原语后**顺带继续拒幽灵**（`openai/gpt-5.5` 无任何源凭据 → 门挡住）——不再有"能设但 runtime 用不了"。**去掉旧的 `view:'all'` 全量目录存在性拉取**（~1076 模型/~10s，且 view:'all' 鉴权盲、过松），改 readOnly 同源或信任 picker。**cooldown 口径**：沿用 `isProviderApiKeyConfigured` 既有立场（冷却中凭据仍算已配置，上游 fallback 会跳），与 picker/providerUsable 一致。
+**与选模型器同源**（一致性红线：选模型器枚举与 set 校验走**同一别名感知凭据原语**，否则别名/IAM 变体"选得到设不上"复现）。凭据门**取代**旧的 profiles-only `isProviderAuthProfileConfigured`：旧法只认账本，裸 env / 内联 / 别名授权的 provider 被误拒，即"选得到却设不上"（③）的根因。换原语后**顺带继续拒幽灵**（`openai/gpt-5.5` 无任何源凭据 → 门挡住）——不再有"能设但 runtime 用不了"。**去掉旧的 `view:'all'` gateway RPC 全量目录存在性拉取**（~1076 模型、view:'all' 鉴权盲、过松），改 `loadModelCatalog({readOnly:false})` 同源（含 manifest、与凭据门联用不过松）或信任 picker。**cooldown 口径**：沿用 `isProviderApiKeyConfigured` 既有立场（冷却中凭据仍算已配置，上游 fallback 会跳），与 picker/providerUsable 一致。
 
 **写盘行为**：
 
@@ -469,7 +480,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 |---|---|
 | `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配）；**统一原语 `computeProviderUsableByName`（抽出核心、B）+ `computeProviderUsable` 委托它 + `computeHasAnyUsableCredential` 补 env（C）**；**选模型器枚举纯函数 `enumerateUsableModels(entries, cfg, deps)`（纯同步：按 provider 分组 → 留过 `…ByName` 的 → 不做模态过滤）+ `computeConfiguredProviders`**。catalog entries 由 handler 传入（loadModelCatalog 不在本文件 await） |
 | `src/model-default/persist.js` | 字段级 set / clear 写盘（封装 `mutateConfigFile` 调用） |
-| `src/model-default/handlers.js` | set / list / **listUsable** handler（入参校验 + 副作用编排）；**set 门 + listUsable 过滤 + list 信号全部走统一原语**（§ 3.4），set 存在性走 `loadModelCatalog readOnly`；listUsable 降级兜底 |
+| `src/model-default/handlers.js` | set / list / **listUsable** handler（入参校验 + 副作用编排）；**set 门 + listUsable 过滤 + list 信号全部走统一原语**（§ 3.4），set 存在性 + listUsable 枚举同走 `loadModelCatalog({readOnly:false})`（含 manifest）；listUsable 降级兜底 |
 | `src/model-default/index.js` | 懒加载 SDK + 注册到 gateway api |
 | `index.js`（plugin 入口） | 注入 SDK 子入口字面量 `import('openclaw/plugin-sdk/...')`，新增 `loadModelCatalog` / `resolveProviderIdForAuth`（均经 `openclaw/plugin-sdk/agent-runtime`） |
 

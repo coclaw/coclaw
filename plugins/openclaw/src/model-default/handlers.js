@@ -12,7 +12,9 @@
  *   （纯字符串：含 '/'、'/' 不在端点；不依赖 cfg）→ loadConfig → 凭据门 → 存在性
  *   形态校验**前置在 loadConfig 之前**，cfg 不可读时非法形态仍是 INVALID_ARGS 而非 IO_FAILED
  * - 凭据门 + 选模型器枚举 + list 信号全部走统一别名感知原语（resolve.js），杜绝跨界面口径分叉（§ 3.2.1）
- * - set 存在性 + listUsable 枚举走同一干净目录 loadModelCatalog({readOnly:true})：选得到 ⇒ 设得上（红线天然成立）
+ * - set 存在性 + listUsable 枚举走同一目录源 loadModelCatalog({readOnly:false})：选得到 ⇒ 设得上（红线天然成立）。
+ *   用 readOnly:false（含 manifest 合并）才带进 openai-codex/* 等 manifest-only provider；readOnly:true 只读落盘，
+ *   这类从不落盘的 provider 缺失（oauth 已授权却选不出，本次回归根因）。
  */
 
 import { listAllPrimariesWithCredentials, computeProviderUsable, enumerateUsableModels } from './resolve.js';
@@ -72,9 +74,10 @@ function buildCredDeps(sdk, agentDir) {
  * - 凭据门走统一原语 computeProviderUsable（取代旧 ledger-only isProviderAuthProfileConfigured）：
  *   覆盖 env + 账本 + 内联 + 别名套餐，修「内联/env/别名 provider 选得到设不上」，且继续拒幽灵
  *   （无任何源凭据的 openai/gpt-5.5 被门挡住）。cooldown 中凭据仍算已配置（沿用 isProviderApiKeyConfigured 立场）。
- * - 存在性走干净目录 loadModelCatalog({readOnly:true})（与选模型器枚举同源 → 「选得到设不上」红线天然成立）；
- *   去掉旧 buildModelsProviderData view:'all'（~1076 模型/~10s、鉴权盲、过松）。
- *   loadModelCatalog readOnly 自带「持久化失败→静态 manifest」兜底；整体抛错由外层 catch 映射 IO_FAILED（set 是写操作，失败安全为先）。
+ * - 存在性走目录源 loadModelCatalog({readOnly:false})（与选模型器枚举同源 → 「选得到设不上」红线天然成立）；
+ *   用 readOnly:false（含 manifest 合并）才有 openai-codex/* 这类 manifest-only provider（readOnly:true 只读落盘缺它们）。
+ *   它返回全量 manifest，但与凭据门联用并不过松——无凭据 provider 仍被门挡住；且非 buildModelsProviderData，无幽灵注入。
+ *   整体抛错由外层 catch 映射 IO_FAILED（set 是写操作，失败安全为先）。
  *
  * @returns {Promise<string|null>} 错误 message；null 表通过
  */
@@ -82,7 +85,7 @@ async function validateProviderCredAndCatalog({ provider, model, primary, cfg, s
 	if (!computeProviderUsable(primary, cfg, deps)) {
 		return `provider "${provider}" has no usable credential`;
 	}
-	const entries = await sdk.loadModelCatalog({ readOnly: true });
+	const entries = await sdk.loadModelCatalog({ readOnly: false });
 	const exists = Array.isArray(entries)
 		&& entries.some((e) => e && e.provider === provider && e.id === model);
 	if (!exists) {
@@ -233,12 +236,13 @@ export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) 
 			// 故四个消费点在产线天然同 dir；测试可注入按 agentId 分目录的 resolver 钉住贯穿。
 			const deps = buildCredDeps(sdk, resolveAgentDir(agentId));
 
-			// 干净目录 loadModelCatalog({readOnly:true}) 自带「持久化失败→静态 manifest」兜底（model-catalog.ts）。
-			// 仍整体抛错（罕见，如 runtime config 取不到）→ 兜空 entries：byProvider 退化为空，
+			// 目录源 loadModelCatalog({readOnly:false})：含 manifest 合并，才有 openai-codex/* 这类 manifest-only provider
+			// （readOnly:true 只读落盘缺它们 → oauth 已授权却选不出，本次回归根因）。
+			// 整体抛错（罕见，如 runtime config 取不到）→ 兜空 entries：byProvider 退化为空，
 			// 但 configuredProviders 不依赖目录仍可算 → 「不空白」，UI 加 provider 排除照常工作（§ 3.2.1 降级）。
 			let entries;
 			try {
-				entries = await sdk.loadModelCatalog({ readOnly: true });
+				entries = await sdk.loadModelCatalog({ readOnly: false });
 			}
 			catch {
 				entries = [];

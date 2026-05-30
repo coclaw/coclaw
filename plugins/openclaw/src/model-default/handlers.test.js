@@ -463,7 +463,7 @@ test('set: 凭据门调 isProviderApiKeyConfigured 时传入 provider + agentDir
 	assert.ok(calls.some((c) => c.provider === 'openai-codex' && c.agentDir === '/fake/agents/main/agent'));
 });
 
-test('set: 存在性校验调 loadModelCatalog 时传 readOnly:true', async () => {
+test('set: 存在性校验调 loadModelCatalog 时传 readOnly:false（含 manifest）', async () => {
 	const calls = [];
 	const sdk = makeSetSdk({
 		loadModelCatalog: async (opts) => {
@@ -476,7 +476,50 @@ test('set: 存在性校验调 loadModelCatalog 时传 readOnly:true', async () =
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
 	assert.equal(calls.length, 1);
-	assert.deepEqual(calls[0], { readOnly: true });
+	assert.deepEqual(calls[0], { readOnly: false });
+});
+
+test('listUsable: 枚举目录源调 loadModelCatalog 时传 readOnly:false（含 manifest）', async () => {
+	const calls = [];
+	const sdk = makeSdk({
+		loadModelCatalog: async (opts) => {
+			calls.push(opts);
+			return [];
+		},
+	});
+	const { handlers } = makeHandlers({ sdk, cfg: { agents: {} } });
+	const r = makeRespond();
+	await handlers.listUsable({ params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, true);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0], { readOnly: false });
+});
+
+// 不变量：listUsable 枚举 + set 存在性校验都以 { readOnly: false } 调 loadModelCatalog
+// → 同目录源 → 「选得到 ⇒ 设得上」红线。防止将来有人只改一处破坏一致性。
+test('invariant: listUsable 枚举与 set 存在性校验同走 readOnly:false（选得到⇒设得上）', async () => {
+	const optsSeen = [];
+	const sdk = makeSetSdk({
+		loadModelCatalog: async (opts) => {
+			optsSeen.push(opts);
+			return [{ id: 'gpt-5.5', provider: 'openai-codex' }];
+		},
+	});
+	const { handlers } = makeHandlers({ sdk, cfg: { agents: {} } });
+
+	const rList = makeRespond();
+	await handlers.listUsable({ params: {}, respond: rList.respond });
+	assert.equal(rList.calls[0].ok, true);
+
+	const rSet = makeRespond();
+	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: rSet.respond });
+	assert.equal(rSet.calls[0].ok, true);
+
+	// 两次调用（先 listUsable 后 set）必须都传 readOnly:false，且只用这一个 opts 形态
+	assert.equal(optsSeen.length, 2);
+	for (const opts of optsSeen) {
+		assert.deepEqual(opts, { readOnly: false });
+	}
 });
 
 // ============ list/set 出参形态对称（设计意图）============
