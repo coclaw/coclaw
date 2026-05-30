@@ -272,7 +272,7 @@ export function computeConfiguredProviders(cfg, deps) {
 }
 
 /**
- * 选模型器枚举（纯同步）：把干净目录按 entry.provider 分组，留 computeProviderUsableByName 为真的 provider。
+ * 选模型器枚举（纯同步）：把目录源按 entry.provider 分组，留 computeProviderUsableByName 为真的 provider。
  * catalogEntries 由调用方传入（handler 调 loadModelCatalog({readOnly:false}) 后传进来；含 manifest 才有 openai-codex/* 这类 manifest-only provider），
  * 本函数不自己 await loadModelCatalog；空 / 非数组 entries → 空 byProvider。
  * 变体 provider（如 volcengine-plan）经 manifest 目录行进入 entries、再经基座 key 别名感知保留；

@@ -1,5 +1,20 @@
 # Plugin TODO
 
+## 选模型器目录读取裸调 loadModelCatalog，缺网关的 stale-while-revalidate / 超时保护
+
+**发现日期**：2026-05-31（8ea6d41b `readOnly:true→false` 修复的 deep-review 时识别）
+**关联**：`plugins/openclaw/src/model-default/handlers.js`（:88 set 存在性校验 / :245 listUsable 枚举）
+
+**问题**：两处把 `loadModelCatalog({readOnly:true})` 改成 `{readOnly:false}`（修 manifest-only provider 如 `openai-codex/*` 选不出——修复正确、保留）。但 `readOnly:false` 会跑 discovery，其中 `discoverModels`（`ModelRegistry` 构造，OpenClaw `agents/sessions/model-registry.ts`）对 `models.json` 是同步 `readFileSync`+`JSON.parse`+schema 校验、`discoverAuthStorage` 同步清 legacy `auth.json`——这些同步活会卡网关事件循环（OpenClaw 自己在 `agents/model-catalog.ts` readOnly 分支注释点明 "provider discovery blocks the event loop"，并为此给原生 `models.list` 路径套了 stale-while-revalidate 缓存 + 750ms 超时）。本插件是**裸调** `loadModelCatalog`，没有那两层保护；`loadModelCatalog` 自带的 `modelCatalogPromise` 模块缓存被网关 config reload 置空（`resetModelCatalogCache`，**含 `coclaw.model.set` 写配置触发的热重载**）→ 缓存失效后首次 `listUsable`/`set` 当场等一次重扫、同步段冻住网关（平时几十 ms 级、网关冷启最坏到秒级，期间其他对话/心跳被阻）。
+
+**为什么暂不立刻修**：①代码修复本身正确，bug（ChatGPT 模型选不出）必须修；②低频用户主动子页（开选模型器 / 切主模型），多数命中缓存无感，影响面有限；③治本要么插件侧自建 stale-while-revalidate/超时（新设计、需单独评审），要么等上游 #88392 暴露廉价的 available 信号后改读廉价源、绕开整条 discovery 路径——后者首选，故挂起等上游。
+
+**注（前提订正）**：旧 dump/docs 里"性能没问题 / `view:all` 本就触发同路径、非新增风险"的依据是用 `openclaw gateway call models.list` 测的 ~1.2s——那走的是网关有保护的 `loadGatewayModelCatalog` 路径，代表不了插件裸路径。已在 `docs/model-config-api.md` §3.2.1 caveat 更正。
+
+**修复方向**：优先等 #88392；若要插件侧先行兜底，给 listUsable/set 的目录读取加一层"缓存命中即返、过期后台刷"包装 + 上限超时，避免裸 `loadModelCatalog({readOnly:false})` 同步卡网关。
+
+---
+
 ## hasInlineKey 缺 empty-id 守卫（与 hasLedgerCred 不对称）
 
 **发现日期**：2026-05-30（listUsable oauth gate 修复的 deep-review 时识别）

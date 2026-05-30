@@ -68,7 +68,7 @@ function buildCredDeps(sdk, agentDir) {
 }
 
 /**
- * cfg 相关的 primary 校验：凭据门 + 干净目录存在性。
+ * cfg 相关的 primary 校验：凭据门 + 目录源存在性。
  * 形态拆分由调用方完成（fail-fast 前置在 loadConfig 之前）。
  *
  * - 凭据门走统一原语 computeProviderUsable（取代旧 ledger-only isProviderAuthProfileConfigured）：
@@ -100,7 +100,7 @@ async function validateProviderCredAndCatalog({ provider, model, primary, cfg, s
  * @param {object} opts
  * @param {object} opts.sdk
  * @param {Function} opts.sdk.mutateConfigFile - openclaw/plugin-sdk/config-mutation（set 写盘）
- * @param {Function} opts.sdk.loadModelCatalog - openclaw/plugin-sdk/agent-runtime（set 存在性 + listUsable 枚举的干净目录）
+ * @param {Function} opts.sdk.loadModelCatalog - openclaw/plugin-sdk/agent-runtime（set 存在性 + listUsable 枚举的目录源）
  * @param {Function} opts.sdk.isProviderApiKeyConfigured - openclaw/plugin-sdk/provider-auth（env+账本凭据信号，别名感知）
  * @param {Function} opts.sdk.hasConfiguredSecretInput - openclaw/plugin-sdk/provider-auth（内联 key 判定）
  * @param {Function} opts.sdk.ensureAuthProfileStore - openclaw/plugin-sdk/provider-auth（账本非空 / configuredProviders）
