@@ -1,5 +1,55 @@
 # @coclaw/openclaw-coclaw
 
+## 0.25.1
+
+### Patch Changes
+
+- a0ddc09: Fix OAuth-only providers (e.g. `openai-codex`) being dropped from the model
+  picker's usable list
+
+  `coclaw.model.listUsable`'s provider gate (`computeProviderUsableByName`) only
+  recognized API keys: `isProviderApiKeyConfigured` (env + the api-key credentials
+  in the auth-profile ledger) and inline `cfg.models.providers[].apiKey`. A provider
+  authenticated purely via OAuth (codex, and device-code family providers like
+  copilot) has only an `oauth`/`token` ledger credential and no key, so both probes
+  returned false and `enumerateUsableModels` dropped its whole model group from
+  `byProvider` — the picker listed nothing for it. This contradicted the same RPC's
+  `configuredProviders`, which reads the full ledger and recognized the provider.
+
+  The gate now also consults the auth-profile ledger for any well-formed profile
+  whose provider matches the queried provider after alias normalization (mirroring
+  `computeConfiguredProviders`), so `oauth`/`token` credentials count as usable. The
+  primitive stays synchronous and the dependency injection is unchanged
+  (`ensureAuthProfileStore` + `resolveProviderIdForAuth` were already wired in). The
+  api-key checks still short-circuit first, so providers with keys never pay the
+  extra ledger read. Root cause of the workaround: upstream plugin-sdk does not
+  export a full-coverage `hasAuthForModelProvider`, so CoClaw composes the gate from
+  api-key probes and was missing the OAuth path.
+
+- 8ea6d41: Switch the model picker's catalog source to the manifest-merged catalog so
+  OAuth-authorized but manifest-only providers (e.g. ChatGPT via `openai-codex`)
+  list their models again
+
+  `coclaw.model.listUsable` (enumeration) and `coclaw.model.set` (existence check)
+  both read the catalog via `loadModelCatalog({ readOnly: true })`, which only reads
+  the persisted `models.json`. Manifest-only providers never land on disk:
+  `openai-codex/*` (the 8 GPT-5.x models that a ChatGPT subscription lights up via
+  OAuth) are absent — the persisted file holds only an empty `openai-codex` node and
+  a `codex` stand-in. So even though the credential gate already recognized the
+  provider (`isProviderApiKeyConfigured('openai-codex')` is true), the catalog had
+  zero entries for it and the picker showed nothing.
+
+  Both call sites now use `loadModelCatalog({ readOnly: false })`, the same function
+  with manifest merging, which brings in `openai-codex/*` (and drops the `codex`
+  stand-in). The credential gate is unchanged: providers without any credential are
+  still filtered out (`loadModelCatalog` performs no ghost injection at any
+  `readOnly` value — ghosts only exist in the separate `buildModelsProviderData`),
+  so the full manifest combined with the gate is not over-permissive. Keeping both
+  the enumeration and the set existence check on the same source preserves the
+  "selectable ⇒ settable" invariant. `readOnly: false` triggers a discovery rebuild
+  (~10s cold, but a live gateway keeps the cache warm, ~1.2s in practice; the
+  fingerprint stays unchanged so nothing is rewritten).
+
 ## 0.25.0
 
 ### Minor Changes
