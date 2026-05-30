@@ -124,20 +124,48 @@ function hasInlineKey(cfg, provider, deps) {
 }
 
 /**
+ * 某 provider（裸名）在自管账本里有没有任一来源凭据（oauth / token / api-key）。
+ * 别名感知：查询名与各 profile 的 cred.provider 两侧都过 resolveProviderIdForAuth 归一后比较，
+ * 与 computeConfiguredProviders 的账本口径一致（不校验 type：匹配到任一 well-formed profile 即算）。
+ * 补 isProviderApiKeyConfigured 只认 api-key 的缺口：纯 OAuth provider（codex / copilot 等设备码家族）
+ * 只有 oauth 凭据、无 key，旧逻辑两路皆 false 会被全组丢出 byProvider（见 changeset / TODO 根成因）。
+ * 归一为空串的 provider 不匹配（与 computeConfiguredProviders 的丢弃空 id 一致），
+ * 避免 whitespace-only 查询名与 whitespace-only cred 同归一到 '' 的误命中。
+ * @param {string} provider - 裸 provider 名
+ * @param {object} deps - { agentDir, ensureAuthProfileStore, resolveProviderIdForAuth }
+ * @returns {boolean}
+ */
+function hasLedgerCred(provider, deps) {
+	const store = deps.ensureAuthProfileStore(deps.agentDir, { allowKeychainPrompt: false });
+	if (!store || !store.profiles || typeof store.profiles !== 'object') return false;
+	const targetId = deps.resolveProviderIdForAuth(provider);
+	if (!targetId) return false;
+	for (const cred of Object.values(store.profiles)) {
+		if (!cred || typeof cred.provider !== 'string' || cred.provider.length === 0) continue;
+		if (deps.resolveProviderIdForAuth(cred.provider) === targetId) return true;
+	}
+	return false;
+}
+
+/**
  * 某 provider（裸名，无斜杠）有没有可用凭据 —— 统一别名感知原语。
- * 判定 = isProviderApiKeyConfigured（覆盖 env + 自管账本，别名归一其内部完成）
- *        ∪ hasInlineKey（内联 key，别名归一）。
- * 覆盖 env + 内联 + 账本 + 别名套餐；统一漏 IAM/本地（hasAuthForModelProvider 未导出 plugin-sdk，接受）。
- * 选模型器枚举 / model.set 门 / providerUsable / noKey 四个消费点同吃这一个原语，杜绝跨界面口径分叉。
+ * 判定 = isProviderApiKeyConfigured（env + 账本里的 api-key，别名归一其内部完成）
+ *        ∪ hasInlineKey（内联 key，别名归一）
+ *        ∪ hasLedgerCred（账本里的 oauth/token 等非 api-key 凭据，别名归一）。
+ * 覆盖 env + 内联 + 账本（api-key / oauth / token 全口径）+ 别名套餐；
+ * 统一漏 IAM/本地（hasAuthForModelProvider 未导出 plugin-sdk，接受）。
+ * 选模型器枚举 / model.set 门 / providerUsable 三个消费点同吃本原语；noKey 走姊妹原语
+ * computeHasAnyUsableCredential（同源探针 + 账本判定），口径与本原语对齐、不跨界面分叉。
  * @param {string|null} provider - 裸 provider 名（如 'openai' / 'volcengine-plan'）
  * @param {object} cfg
- * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput, resolveProviderIdForAuth }
+ * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput, ensureAuthProfileStore, resolveProviderIdForAuth }
  * @returns {boolean}
  */
 export function computeProviderUsableByName(provider, cfg, deps) {
 	if (typeof provider !== 'string' || provider.length === 0) return false;
 	if (deps.isProviderApiKeyConfigured({ provider, agentDir: deps.agentDir })) return true;
-	return hasInlineKey(cfg, provider, deps);
+	if (hasInlineKey(cfg, provider, deps)) return true;
+	return hasLedgerCred(provider, deps);
 }
 
 /**

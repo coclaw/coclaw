@@ -1,5 +1,18 @@
 # Plugin TODO
 
+## hasInlineKey 缺 empty-id 守卫（与 hasLedgerCred 不对称）
+
+**发现日期**：2026-05-30（listUsable oauth gate 修复的 deep-review 时识别）
+**关联**：`plugins/openclaw/src/model-default/resolve.js` `hasInlineKey`
+
+**问题**：`hasInlineKey` 计算 `targetId = resolveProviderIdForAuth(provider)` 后不校验 `targetId` 是否为空就与内联节点 id 的归一结果比较。若查询 provider 是 whitespace-only（如 `'  '`，长度>0 故过了 `computeProviderUsableByName` 的 `length===0` 守卫）归一到 `''`，且 `cfg.models.providers` 里恰有个同样归一到 `''` 的节点 id，会误命中返回 true。本次给新写的 `hasLedgerCred` 加了 `if (!targetId) return false`（对齐 `computeConfiguredProviders`），但 `hasInlineKey` 是预存代码未一并改，形成不对称。
+
+**为什么本次未一并修**：极度 contrived——要 openclaw.json 里出现 whitespace-only 的 provider 节点 key（正常永不发生）；且按"review 仅修本次引入"原则不动预存代码。影响面仅 `model.list` 的 providerUsable 显示信号（set 写门会 trim 拒绝、listUsable 枚举的 catalog provider 永非空白）。
+
+**修复方向**：给 `hasInlineKey` 在 `const targetId = ...` 后加同款 `if (!targetId) return false;`，与 `hasLedgerCred` / `computeConfiguredProviders` 一致；补一条 whitespace-only 节点 id 的回归测试。
+
+---
+
 ## RPC handler 错误响应 `err.message` 透传可能泄露内部细节
 
 **发现日期**：2026-05-15（D1 model-default deep-review 时识别）

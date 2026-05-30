@@ -311,6 +311,113 @@ test('computeProviderUsableByName: 内联节点为 null / 无 apiKey 跳过不�
 	assert.equal(computeProviderUsableByName('a', cfg, deps), false);
 });
 
+// ---- 账本 oauth/token 凭据（listUsable oauth gate 回归修复）----
+
+test('computeProviderUsableByName: 账本 oauth-only provider（无 key）→ true', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({
+			profiles: { 'openai-codex:default': { provider: 'openai-codex', type: 'oauth' } },
+		}),
+	});
+	assert.equal(computeProviderUsableByName('openai-codex', {}, deps), true);
+});
+
+test('computeProviderUsableByName: 账本 token 凭据 → true', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({
+			profiles: { 'copilot:default': { provider: 'copilot', type: 'token' } },
+		}),
+	});
+	assert.equal(computeProviderUsableByName('copilot', {}, deps), true);
+});
+
+test('computeProviderUsableByName: 账本里别家 oauth、查询 provider 不匹配 → false', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({
+			profiles: { 'openai-codex:default': { provider: 'openai-codex', type: 'oauth' } },
+		}),
+	});
+	assert.equal(computeProviderUsableByName('anthropic', {}, deps), false);
+});
+
+test('computeProviderUsableByName: 账本 oauth 别名归一 —— 基座 cred 点亮套餐变体名', () => {
+	// 账本只有基座 volcengine 的 oauth，查询变体名 volcengine-plan：两侧归一到 volcengine 后命中
+	const resolveBase = (p) => (p === 'volcengine-plan' ? 'volcengine' : p);
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({
+			profiles: { 'volcengine:default': { provider: 'volcengine', type: 'oauth' } },
+		}),
+		resolveProviderIdForAuth: resolveBase,
+	});
+	assert.equal(computeProviderUsableByName('volcengine-plan', {}, deps), true);
+});
+
+test('computeProviderUsableByName: 账本 cred 用变体 id、查询基座名 —— node 侧归一命中（钉死 node 侧归一）', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({
+			profiles: { 'volcengine-plan:default': { provider: 'volcengine-plan', type: 'oauth' } },
+		}),
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+	});
+	assert.equal(computeProviderUsableByName('volcengine', {}, deps), true);
+});
+
+test('computeProviderUsableByName: store 为 null → 账本路 false（无其它源 → false）', () => {
+	const deps = makeCredDeps({ ensureAuthProfileStore: () => null });
+	assert.equal(computeProviderUsableByName('openai-codex', {}, deps), false);
+});
+
+test('computeProviderUsableByName: store.profiles 非对象 → 账本路 false', () => {
+	const deps = makeCredDeps({ ensureAuthProfileStore: () => ({ profiles: 'oops' }) });
+	assert.equal(computeProviderUsableByName('openai-codex', {}, deps), false);
+});
+
+test('computeProviderUsableByName: 账本 profile 边角（null / provider 非串 / 空串）跳过、不误命中', () => {
+	const deps = makeCredDeps({
+		ensureAuthProfileStore: () => ({
+			profiles: { p1: null, p2: { provider: 123 }, p3: { provider: '' } },
+		}),
+	});
+	assert.equal(computeProviderUsableByName('openai-codex', {}, deps), false);
+});
+
+test('computeProviderUsableByName: api-key 路命中时短路，不读账本', () => {
+	let storeReads = 0;
+	const deps = makeCredDeps({
+		isProviderApiKeyConfigured: ({ provider }) => provider === 'openai',
+		ensureAuthProfileStore: () => {
+			storeReads++;
+			return { profiles: {} };
+		},
+	});
+	assert.equal(computeProviderUsableByName('openai', {}, deps), true);
+	assert.equal(storeReads, 0);
+});
+
+test('computeProviderUsableByName: 内联 key 命中时短路，不读账本', () => {
+	let storeReads = 0;
+	const cfg = { models: { providers: { minimax: { apiKey: 'sk-inline' } } } };
+	const deps = makeCredDeps({
+		hasConfiguredSecretInput: (v) => v === 'sk-inline',
+		ensureAuthProfileStore: () => {
+			storeReads++;
+			return { profiles: {} };
+		},
+	});
+	assert.equal(computeProviderUsableByName('minimax', cfg, deps), true);
+	assert.equal(storeReads, 0);
+});
+
+test('computeProviderUsableByName: 查询 provider 归一为空串 → 账本路不误命中（empty-id 守卫，对齐 computeConfiguredProviders）', () => {
+	// resolveProviderIdForAuth 把 whitespace-only provider 归一到 ''；
+	// 即便账本里有个同样归一到 '' 的 cred，empty-id 守卫也不该误判 usable
+	const deps = makeCredDeps({
+		resolveProviderIdForAuth: (p) => (p.trim() === '' ? '' : p),
+		ensureAuthProfileStore: () => ({ profiles: { p: { provider: '   ', type: 'oauth' } } }),
+	});
+	assert.equal(computeProviderUsableByName('  ', {}, deps), false);
+});
+
 // computeProviderUsable 委托 ByName（取 provider 段）
 test('computeProviderUsable: 委托 ByName —— 含斜杠取段后判定', () => {
 	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'volcengine-plan' });
@@ -466,6 +573,30 @@ test('enumerateUsableModels: 空 / 非数组 entries → 空 byProvider', () => 
 	assert.deepEqual(enumerateUsableModels([], {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
 	assert.deepEqual(enumerateUsableModels(undefined, {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
 	assert.deepEqual(enumerateUsableModels('nope', {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
+});
+
+test('enumerateUsableModels: oauth-only provider（账本 oauth、无 key）的模型组进入 byProvider（回归修复）', () => {
+	// 复刻本机实测场景：codex 只有 oauth、deepseek 有 api-key，anthropic 无凭据
+	const entries = [
+		{ id: 'gpt-5.3-codex', provider: 'openai-codex' },
+		{ id: 'gpt-5.5-codex', provider: 'openai-codex' },
+		{ id: 'deepseek-chat', provider: 'deepseek' },
+		{ id: 'claude', provider: 'anthropic' }, // 无凭据 → 丢
+	];
+	const deps = makeCredDeps({
+		isProviderApiKeyConfigured: ({ provider }) => provider === 'deepseek',
+		ensureAuthProfileStore: () => ({
+			profiles: {
+				'openai-codex:default': { provider: 'openai-codex', type: 'oauth' },
+				'deepseek:default': { provider: 'deepseek', type: 'api_key' },
+			},
+		}),
+	});
+	const { byProvider } = enumerateUsableModels(entries, {}, deps);
+	assert.deepEqual(byProvider, {
+		'openai-codex': ['gpt-5.3-codex', 'gpt-5.5-codex'],
+		deepseek: ['deepseek-chat'],
+	});
 });
 
 test('enumerateUsableModels: 跳过坏条目（null / 缺 id / 缺 provider / 空串）', () => {
