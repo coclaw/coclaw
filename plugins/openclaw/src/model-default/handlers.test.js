@@ -779,7 +779,8 @@ test('listAvailable: cfg 返回 null → IO_FAILED', async () => {
 	assert.match(r.calls[0].error.message, /runtime config not available/);
 });
 
-test('listAvailable: loadModelCatalog 抛错 → 降级不崩（byProvider 空、ok:true）', async () => {
+test('listAvailable: loadModelCatalog 抛错 → IO_FAILED（不吞成权威空清单，避免前端误报 primary 失效）', async () => {
+	// byProvider 同时驱动 primary 有效性；加载失败如实 IO_FAILED → UI 维持 available=null="先不下结论"，不误报。
 	const sdk = makeSdk({
 		loadModelCatalog: async () => { throw new Error('catalog gone'); },
 		hasConfiguredSecretInput: (v) => v === 'sk-volc',
@@ -788,8 +789,8 @@ test('listAvailable: loadModelCatalog 抛错 → 降级不崩（byProvider 空�
 	const { handlers } = makeHandlers({ sdk, cfg });
 	const r = makeRespond();
 	await handlers.listAvailable({ params: {}, respond: r.respond });
-	assert.equal(r.calls[0].ok, true);
-	assert.deepEqual(r.calls[0].payload, { byProvider: {} });
+	assert.equal(r.calls[0].ok, false);
+	assert.equal(r.calls[0].error.code, 'IO_FAILED');
 });
 
 test('listAvailable: store 读失败（ensureAuthProfileStore 抛错）→ IO_FAILED', async () => {

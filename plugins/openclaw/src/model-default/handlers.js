@@ -239,15 +239,10 @@ export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) 
 
 			// 目录源 loadModelCatalog({readOnly:false})：含 manifest 合并，才有 openai-codex/* 这类 manifest-only provider
 			// （readOnly:true 只读落盘缺它们 → oauth 已授权却选不出，本次回归根因）。
-			// 整体抛错（罕见，如 runtime config 取不到）→ 兜空 entries：byProvider 退化为空、handler 不崩。
-			// UI 加 provider 排除已不依赖本出参（改吃 providerAuth.catalog 的 hasCred），故降级只影响可选模型清单。
-			let entries;
-			try {
-				entries = await sdk.loadModelCatalog({ readOnly: false });
-			}
-			catch {
-				entries = [];
-			}
+			// 抛错（罕见，如 runtime config 取不到）→ 走外层 catch 映射 IO_FAILED，不吞成空 entries：
+			// byProvider 同时驱动前端 primary 有效性（计算属性），把"清单没加载出来"伪装成"权威空清单"会让前端
+			// 误报主模型失效。如实暴露失败 → UI 维持 available=null="先不下结论"，与"真空（无凭据）"区分开。
+			const entries = await sdk.loadModelCatalog({ readOnly: false });
 
 			respond(true, enumerateUsableModels(entries, cfg, deps));
 		}
