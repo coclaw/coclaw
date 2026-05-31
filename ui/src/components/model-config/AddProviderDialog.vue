@@ -183,7 +183,7 @@
 		</template>
 
 		<!-- 统一 footer：configure 步的所有动作都右下角对齐（select 步无 footer）。
-		     单按钮场景（返回/取消）用实心 primary（同 prompt 对话框"确认"按钮，暗色下不发白）；
+		     返回用实心 primary（同 prompt 对话框"确认"按钮，暗色下不发白）；取消用实心 error（abort 语义）；
 		     双按钮保持 ghost neutral + primary。 -->
 		<template v-if="footerMode" #footer>
 			<div class="flex w-full justify-end gap-2">
@@ -207,11 +207,11 @@
 					{{ $t('modelConfig.providerAuth.add.back') }}
 				</UButton>
 
-				<!-- 账号授权 starting/pending：单个取消 → 实心 primary -->
+				<!-- 账号授权 starting/pending：单个取消 → 实心 error（abort 语义，同撤销凭据对话框"仍然撤销"） -->
 				<UButton
 					v-else-if="footerMode === 'oauth-cancel'"
 					data-testid="oauth-cancel"
-					color="primary"
+					color="error"
 					@click="onOauthCancel"
 				>
 					{{ $t('common.cancel') }}
