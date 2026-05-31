@@ -34,6 +34,7 @@ declare module 'vue' {
     PrimaryModelPickerDialog: typeof import('./src/components/model-config/PrimaryModelPickerDialog.vue')['default']
     ProgressRing: typeof import('./src/components/ProgressRing.vue')['default']
     ProviderAuthRow: typeof import('./src/components/model-config/ProviderAuthRow.vue')['default']
+    ProviderOAuthLoginStep: typeof import('./src/components/model-config/ProviderOAuthLoginStep.vue')['default']
     RemoveProviderConfirmDialog: typeof import('./src/components/model-config/RemoveProviderConfirmDialog.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
