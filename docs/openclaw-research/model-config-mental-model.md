@@ -714,7 +714,9 @@ manifest 里和 provider 相关的字段（按用途）：
 - **`models.providers` 顶层字段在主配置文件里默认不存在**，所以 `api.config.models?.providers` 在用户没显式配 provider 时是 undefined，不能作为 provider 清单的来源
 - **`getCurrentPluginMetadataSnapshot()` 是 OpenClaw 内部模块的私有状态**（不挂全局 Symbol），插件直接 import 受 exports map 阻挡，且文件路径在 dist 中带 hash 后缀，不要直接依赖
 
-### D.4 当前一期决策（2026-05-13 / CoClaw v0.21.x）
+### D.4 一期决策（2026-05-13 / CoClaw v0.21.x）——已被 D.5 取代
+
+> **已被 D.5 取代（2026-05-31）**：provider 选择 UI 改用 `coclaw.providerAuth.catalog`（setup 模式 provider 解析、全集），**不再**用 `models.list view:"all"` 去重。下文保留作历史背景。
 
 一期 provider 选择 UI **不做扫盘 manifest**，直接用 `models.list view:"all"` + `models.authStatus`：
 
@@ -723,6 +725,32 @@ manifest 里和 provider 相关的字段（按用途）：
 - displayName 缺失（覆盖率 ~3%）的暂时不修，缺的 ~36 个 provider 在 UI 端建本地英文映射表（不进 i18n 包，OpenClaw 自家也都英文）
 
 未来需要扩展时（如要把"被动激活"的 provider 也呈现给用户选），按 D.2 的扫盘做法加上即可，本附录是契约速查。
+
+### D.5 provider 全集 + 认证方式：CoClaw `providerAuth.catalog` 口径（2026-05-31）
+
+> 取代 D.4 的"用 `models.list view:"all"` 去重"旧决策——前端列 provider 不再拉重型全量 models。CoClaw 插件 RPC `coclaw.providerAuth.catalog` 改用 setup 模式 provider 解析一次拿全集，契约见 plugin `model-config-api.md` § 2.7。本节记口径与边角排除规则（**心智模型层**）。
+
+**数据源 = setup 全集**：`resolvePluginProviders({ mode:'setup', activate:false, cache:true })` 返回**全部 provider（含从没配过的）**，每项带 `auth[]`（元素含 `kind`）。setup 全集口径 = **bundled provider + 受信/已激活的 workspace owner**（未受信 workspace 插件被过滤）；对每个 bundled 插件无条件 eligible，与 config / auto-enable 无关 → **零配置新机也成立**。比 D.1 的 `view:"all"`（仅"已加载"provider、原始拼写、不带认证方式）更全、更贴前端所需维度。
+
+**只露三种认证方式（一条规则，零特判）**：按 `auth[].kind`（`oauth | api_key | token | device_code | custom`）映射——
+
+| kind | 露出 | 边角口径 |
+|---|---|---|
+| `api_key` | `api-key`（输 key） | |
+| `device_code` | `oauth-device-code`（设备码登录） | `minimax-portal` 即此类 |
+| `oauth` | `oauth-login`（列出但"暂不支持"，回环 localhost 远端 UX 太重） | |
+| `token` | **不露** | **anthropic 的"贴 token"刻意不露**（避免诱导第三方 OAuth 封号风险）；anthropic 的 `api-key` 正常露 |
+| `custom` | **不露** | **本地 / 代理 / CLI**（ollama / lmstudio / vllm / 各 proxy / anthropic cli）无需凭据录入面 |
+
+**provider 仅在露出的 authMethods 非空时进列表**，于是这几类**自然被排除、无需特判**：
+
+- **custom（本地 / 代理 / CLI）排除**：它们无需凭据、理论上本应自动出现在可用清单里；是否放开"列出"留作后续次要项。
+- **纯 env（空 `auth[]`，如 groq 只认环境变量）暂不列、暂不处理**（将来或简化处理，记一笔）。它的模型照样进可用清单可选可用（OpenClaw 认 env、CoClaw 读其清单），只是不进"加 provider"列表——加不进对（已配过），不在凭据管理列表显示也对（CoClaw 本就不管 env 凭据），三处行为全对。
+- **token-only**：同上自然排除。
+
+**`hasCred`（是否已配，供加 provider 排除）= 账本 / 内联 / env 三源任一有凭据、别名感知归一基座 id**（同 § 4.10 的凭据判定原语；服务端算，UI 拿不到 `resolveProviderIdForAuth`）。
+
+**oauth 范围（实测三家 + 边角）**：minimax-portal（device_code）+ github-copilot（device_code）+ openai-codex（device_code）露 `oauth-device-code`；google-gemini-cli（oauth-only）/ openai-codex 的 oauth 方法 / xai 的 oauth 方法露 `oauth-login`（"暂不支持"，回环-PKCE 远端要贴回 redirect URL）。anthropic OAuth 出局（上游封禁第三方）→ 只剩 api-key。
 
 ## 附录 E：API key 配置流程（CoClaw 视角端到端 SOP，实测 2026-05-14）
 
