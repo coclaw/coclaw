@@ -530,7 +530,6 @@ export const frMessages = {
 				dashboardLink: 'Ouvrir le tableau de bord {provider} →',
 				submitButton: 'Soumettre',
 				submitFailed: 'Échec de l\'enregistrement de la clé API. Veuillez réessayer.',
-				chooseMethod: 'Choisissez comment connecter {provider}.',
 				methodApiKey: 'Clé API',
 				methodDeviceCode: 'Se connecter avec un code',
 				methodOauthLogin: 'Connexion OAuth',

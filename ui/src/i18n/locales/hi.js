@@ -530,7 +530,6 @@ export const hiMessages = {
 				dashboardLink: '{provider} डैशबोर्ड खोलें →',
 				submitButton: 'जमा करें',
 				submitFailed: 'API कुंजी सहेजने में विफल। कृपया पुनः प्रयास करें।',
-				chooseMethod: '{provider} को कैसे कनेक्ट करें चुनें।',
 				methodApiKey: 'API कुंजी',
 				methodDeviceCode: 'कोड से साइन इन करें',
 				methodOauthLogin: 'OAuth साइन-इन',

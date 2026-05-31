@@ -530,7 +530,6 @@ export const jaMessages = {
 				dashboardLink: '{provider} ダッシュボードを開く →',
 				submitButton: '送信',
 				submitFailed: 'API キーの保存に失敗しました。もう一度お試しください。',
-				chooseMethod: '{provider} の接続方法を選択してください。',
 				methodApiKey: 'API キー',
 				methodDeviceCode: 'コードでサインイン',
 				methodOauthLogin: 'OAuth サインイン',

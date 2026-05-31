@@ -530,7 +530,6 @@ export const ptMessages = {
 				dashboardLink: 'Abrir painel do {provider} →',
 				submitButton: 'Enviar',
 				submitFailed: 'Falha ao salvar a chave de API. Tente novamente.',
-				chooseMethod: 'Escolha como conectar {provider}.',
 				methodApiKey: 'Chave de API',
 				methodDeviceCode: 'Entrar com um código',
 				methodOauthLogin: 'Login com OAuth',

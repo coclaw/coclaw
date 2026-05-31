@@ -530,7 +530,6 @@ export const esMessages = {
 				dashboardLink: 'Abrir el panel de {provider} →',
 				submitButton: 'Enviar',
 				submitFailed: 'No se pudo guardar la clave de API. Inténtalo de nuevo.',
-				chooseMethod: 'Elige cómo conectar {provider}.',
 				methodApiKey: 'Clave de API',
 				methodDeviceCode: 'Iniciar sesión con un código',
 				methodOauthLogin: 'Inicio de sesión con OAuth',

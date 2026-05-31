@@ -530,7 +530,6 @@ export const ruMessages = {
 				dashboardLink: 'Открыть панель {provider} →',
 				submitButton: 'Отправить',
 				submitFailed: 'Не удалось сохранить API-ключ. Попробуйте ещё раз.',
-				chooseMethod: 'Выберите способ подключения {provider}.',
 				methodApiKey: 'API-ключ',
 				methodDeviceCode: 'Войти с помощью кода',
 				methodOauthLogin: 'Вход через OAuth',

@@ -94,10 +94,7 @@
 				<!-- Step 2: 配置（按 catalog authMethods 多入口；零特判，OpenClaw 给什么列什么） -->
 				<div v-else class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
 					<!-- 多方式时先选入口（单方式 onPickProvider 已直接进对应入口，不显示 chooser） -->
-					<div v-if="!selectedMethod" data-testid="add-method-chooser" class="flex flex-col gap-2">
-						<p class="text-sm text-muted">
-							{{ $t('modelConfig.providerAuth.add.chooseMethod', { provider: selectedProvider }) }}
-						</p>
+					<div v-if="!selectedMethod" data-testid="add-method-chooser" class="flex flex-col gap-3">
 						<button
 							v-for="m in selectedProviderMethods"
 							:key="m"
@@ -385,7 +382,9 @@ export default {
 		 * Step 1（选 provider 列表）保持默认更宽的弹窗，承载列表
 		 */
 		modalUi() {
-			return this.step === 'configure' ? promptModalUi : undefined;
+			if (this.step !== 'configure') return undefined;
+			// 局部收紧 body 纵向 padding（py-2），不改全局 promptModalUi
+			return { ...promptModalUi, body: 'px-4 py-2 sm:px-5 sm:py-2' };
 		},
 		/**
 		 * 仅 Step 1 列表在移动端全屏铺开；Step 2 走 confirm 小卡片，移动端也居中显示不全屏

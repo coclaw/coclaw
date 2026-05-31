@@ -530,7 +530,6 @@ export const deMessages = {
 				dashboardLink: '{provider}-Dashboard öffnen →',
 				submitButton: 'Senden',
 				submitFailed: 'API-Schlüssel konnte nicht gespeichert werden. Bitte erneut versuchen.',
-				chooseMethod: 'Wähle, wie du {provider} verbinden möchtest.',
 				methodApiKey: 'API-Schlüssel',
 				methodDeviceCode: 'Mit Code anmelden',
 				methodOauthLogin: 'OAuth-Anmeldung',

@@ -530,7 +530,6 @@ export const zhTWMessages = {
 				dashboardLink: '前往 {provider} 官網建立 →',
 				submitButton: '送出',
 				submitFailed: 'API key 儲存失敗，請重試',
-				chooseMethod: '選擇如何連接 {provider}。',
 				methodApiKey: 'API key',
 				methodDeviceCode: '用裝置碼登入',
 				methodOauthLogin: 'OAuth 登入',

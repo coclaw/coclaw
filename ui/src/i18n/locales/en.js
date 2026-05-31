@@ -530,7 +530,6 @@ export const enMessages = {
 				dashboardLink: 'Open {provider} dashboard →',
 				submitButton: 'Submit',
 				submitFailed: 'Failed to save the API key. Please retry.',
-				chooseMethod: 'Choose how to connect {provider}.',
 				methodApiKey: 'API key',
 				methodDeviceCode: 'Sign in with a code',
 				methodOauthLogin: 'OAuth sign-in',

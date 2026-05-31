@@ -530,7 +530,6 @@ export const zhCNMessages = {
 				dashboardLink: '去 {provider} 官网创建 →',
 				submitButton: '提交',
 				submitFailed: 'API key 保存失败，请重试',
-				chooseMethod: '选择如何连接 {provider}。',
 				methodApiKey: 'API key',
 				methodDeviceCode: '用设备码登录',
 				methodOauthLogin: 'OAuth 登录',

@@ -530,7 +530,6 @@ export const koMessages = {
 				dashboardLink: '{provider} 대시보드 열기 →',
 				submitButton: '제출',
 				submitFailed: 'API 키 저장에 실패했습니다. 다시 시도해 주세요.',
-				chooseMethod: '{provider} 연결 방법을 선택하세요.',
 				methodApiKey: 'API 키',
 				methodDeviceCode: '코드로 로그인',
 				methodOauthLogin: 'OAuth 로그인',
