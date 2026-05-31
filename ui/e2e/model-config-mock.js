@@ -5,21 +5,21 @@ import { evalStore } from './helpers.js';
  * model-config E2E 的 RPC 边界 mock 工具。
  *
  * 为什么 mock 而不打真实 plugin：
- * - model-config 的 RPC（coclaw.providerAuth.* / coclaw.model.* / models.list view:all）
- *   走 WebRTC DataChannel 直达 plugin，page.route() 这类 HTTP 拦截碰不到。
+ * - model-config 的 RPC（coclaw.providerAuth.* / coclaw.model.*）走 WebRTC DataChannel 直达
+ *   plugin，page.route() 这类 HTTP 拦截碰不到。
  * - 场景 S1 需要"零 provider"起始态、S2 需要"撤掉一个真实 provider"，二者用真实 RPC 都会
  *   破坏测试 claw 真实且不可恢复的 API key（连带毁掉其它 chat E2E）。
  * - mock 把 auth-profiles.json 完全留白：跑完不残留任何真实 claw 改动，teardown 天然干净。
  *
  * 实现：在 document_start 把 `/src/services/claw-connection.js`（与 app 同一份 Vite 缓存
  * 模块）里 ClawConnection.prototype.request 包一层，按 method 返回有状态的合成响应；
- * 其余 RPC（status / agents / sessions / models.list 非 all view 等）原样透传真实链路。
+ * 其余 RPC（status / agents / sessions 等）原样透传真实链路。
  * 状态存 sessionStorage，跨整页刷新（page.goto）持久；每个 test 独立 context → 起始态干净。
  */
 
 /**
- * 固定的 models.list view:"all" catalog（仅含 E2E 用到的 provider/model）。
- * 供子页 picker / add-dialog / "模型下架"校验用（/claws 已不再拉全量目录，§7.4）。
+ * 固定的可用模型集（仅含 E2E 用到的 provider/model）。供 coclaw.model.listAvailable 的 byProvider
+ * 合成（子页 picker / "模型下架"校验）。"加 provider"列表（catalog）独立由 catalogProviders 描述。
  */
 export const MOCK_CATALOG = [
 	{ id: 'llama-3.3-70b-versatile', provider: 'groq', name: 'Llama 3.3 70B' },
@@ -51,21 +51,40 @@ export function mockProfile(provider) {
 }
 
 /**
+ * 构造一条 oauth 来源的 profile（providerAuth.list 出参形态，触发 oauth 徽章渲染）
+ * @param {string} provider
+ * @returns {{ profileId: string, provider: string, type: string, email: string, source: string, removable: boolean }}
+ */
+export function mockOauthProfile(provider) {
+	return {
+		profileId: `${provider}:default`,
+		provider,
+		type: 'oauth',
+		email: `${provider}@oauth`,
+		source: 'profile',
+		removable: true,
+	};
+}
+
+/**
  * 安装 RPC 边界 mock。必须在任何导航（含 login 的 goto）之前调用——
  * addInitScript 对该 page 后续所有页面加载生效。
  *
  * @param {import('@playwright/test').Page} page
- * @param {{ profiles?: object[], inlineProviders?: string[], envProviders?: string[], primary?: string|null, catalog?: object[], legacy?: boolean }} initialState
+ * @param {{ profiles?: object[], inlineProviders?: string[], envProviders?: string[], primary?: string|null, catalog?: object[], catalogProviders?: object[], legacy?: boolean }} initialState
  *   - inlineProviders: provider id 列表，模拟写在 openclaw.json 的内联 key（source='inline'，可撤）
  *   - envProviders: provider id 列表，模拟环境变量 key（source='env'，只读；仅 sole-source 才列）
+ *   - catalogProviders: [{ provider, authMethods }] 列表，描述 coclaw.providerAuth.catalog 的 provider
+ *     全集与认证方式（多入口渲染用）。缺省 → 从 catalog 的 distinct provider 派生（authMethods=['api-key']）。
+ *     hasCred 由 mock 经三源 + 别名归一基座算出（不由测试传）。
  *   - legacy: true → 模拟旧插件：coclaw.model.list 出参不带凭据信号字段
- *     （default.providerUsable / 顶层 hasAnyUsableCredential）；且 coclaw.model.listUsable 整方法不存在
- *     （reject code=INVALID_REQUEST，镜像网关 unknown-method），用于验证"不再特判旧插件、该弹就弹"
- *     + "选模型器回退到旧交集派生不空白"
+ *     （default.providerUsable / 顶层 hasAnyUsableCredential），用于验证"不再特判旧插件、该弹就弹"。
+ *     （决策1：不再为旧插件做 listUsable/catalog 缺失兜底，legacy 只影响 model.list 信号。）
  *
- * coclaw.model.listUsable（修订 6）：非 legacy 时按"干净目录(catalog) ∩ 三源已配 provider（含别名变体）"
- * 合成 { byProvider, configuredProviders }。内置别名映射 volcengine→volcengine-plan：持 volcengine 基座 key
- * 时 byProvider 同时含基座与变体条目，configuredProviders 仅含基座（归一）。
+ * coclaw.model.listAvailable（决策4）：按"干净目录(catalog) ∩ 三源已配 provider（含别名变体）"合成
+ * { byProvider }（去掉 configuredProviders）。coclaw.providerAuth.catalog 出 { providers:[{provider,
+ * authMethods,hasCred}] }，hasCred 经同口径基座归一。内置别名映射 volcengine→volcengine-plan：持
+ * volcengine 基座 key 时 byProvider 同含基座与变体条目，hasCred 仅认基座（归一）。
  */
 export function setupModelConfigMock(page, initialState) {
 	const initial = {
@@ -74,6 +93,7 @@ export function setupModelConfigMock(page, initialState) {
 		envProviders: Array.isArray(initialState?.envProviders) ? initialState.envProviders : [],
 		primary: initialState?.primary ?? null,
 		catalog: Array.isArray(initialState?.catalog) ? initialState.catalog : MOCK_CATALOG,
+		catalogProviders: Array.isArray(initialState?.catalogProviders) ? initialState.catalogProviders : null,
 		legacy: initialState?.legacy === true,
 	};
 	return page.addInitScript((init) => {
@@ -192,37 +212,82 @@ export function setupModelConfigMock(page, initialState) {
 						hasAnyUsableCredential: provs.length > 0,
 					});
 				}
-				if (method === 'coclaw.model.listUsable') {
-					// 旧插件：网关对未注册 method 回 INVALID_REQUEST（unknown method）→ UI 回退到旧交集派生
-					if (st.legacy) {
-						return Promise.reject(Object.assign(new Error('unknown method: coclaw.model.listUsable'), { code: 'INVALID_REQUEST' }));
+				// 三源已配 provider（账本∪内联∪env），归一到别名基座 id（镜像 resolveProviderIdForAuth）。
+				// catalog（hasCred）与 listAvailable（usableSet）共用，避免两处口径漂移。
+				const baseConfigured = [];
+				const seenCfg = new Set();
+				const addCfg = (p) => {
+					if (!p || typeof p !== 'string') return;
+					const base = aliasBaseOf(p);
+					if (!seenCfg.has(base)) { seenCfg.add(base); baseConfigured.push(base); }
+				};
+				for (const p of st.profiles) addCfg(p && p.provider);
+				for (const p of st.inlineProviders) addCfg(p);
+				for (const p of st.envProviders) addCfg(p);
+				const baseConfiguredSet = new Set(baseConfigured);
+
+				if (method === 'coclaw.providerAuth.catalog') {
+					// provider 目录：显式 catalogProviders 优先；否则从 model catalog 的 distinct provider
+					// 派生（authMethods=['api-key']）。hasCred 经三源 + 别名归一基座算（决策4 排除口径权威）。
+					let entries = Array.isArray(st.catalogProviders) && st.catalogProviders.length
+						? st.catalogProviders
+						: null;
+					if (!entries) {
+						const seen = new Set();
+						entries = [];
+						for (const m of st.catalog) {
+							if (m && typeof m.provider === 'string' && !seen.has(m.provider)) {
+								seen.add(m.provider);
+								entries.push({ provider: m.provider, authMethods: ['api-key'] });
+							}
+						}
 					}
-					// 三源已配 provider，归一到别名基座 id（镜像真插件 resolveProviderIdForAuth：
-					// 变体凭据 volcengine-plan 归一为基座 volcengine）；账本∪内联∪env
-					const configuredProviders = [];
-					const seenCfg = new Set();
-					const addCfg = (p) => {
-						if (!p || typeof p !== 'string') return;
-						const base = aliasBaseOf(p);
-						if (!seenCfg.has(base)) { seenCfg.add(base); configuredProviders.push(base); }
-					};
-					for (const p of st.profiles) addCfg(p && p.provider);
-					for (const p of st.inlineProviders) addCfg(p);
-					for (const p of st.envProviders) addCfg(p);
-					configuredProviders.sort();
+					const providers = entries
+						.filter((e) => e && typeof e.provider === 'string' && e.provider)
+						.map((e) => ({
+							provider: e.provider,
+							authMethods: Array.isArray(e.authMethods) && e.authMethods.length ? e.authMethods : ['api-key'],
+							hasCred: baseConfiguredSet.has(aliasBaseOf(e.provider)),
+						}));
+					return Promise.resolve({ providers });
+				}
+				if (method === 'coclaw.model.listAvailable') {
 					// 可用 provider 集 = 已配基座 ∪ 其别名变体（基座 key 点亮变体）
-					const usableSet = new Set(configuredProviders);
-					for (const base of configuredProviders) {
+					const usableSet = new Set(baseConfigured);
+					for (const base of baseConfigured) {
 						for (const v of (ALIAS_VARIANTS[base] || [])) usableSet.add(v);
 					}
-					// byProvider = 干净目录(catalog) 里属于可用 provider 的条目（含变体一等公民）
+					// byProvider = 干净目录(catalog) 里属于可用 provider 的条目（含变体一等公民）。
+					// 决策4：出参只剩 byProvider，"已配排除"改由 providerAuth.catalog 的 hasCred 承担。
 					const byProvider = {};
 					for (const m of st.catalog) {
 						if (!m || typeof m.provider !== 'string' || typeof m.id !== 'string') continue;
 						if (!usableSet.has(m.provider)) continue;
 						(byProvider[m.provider] = byProvider[m.provider] || []).push(m.id);
 					}
-					return Promise.resolve({ byProvider, configuredProviders });
+					return Promise.resolve({ byProvider });
+				}
+				if (method === 'coclaw.providerAuth.loginOauth') {
+					// 两阶段设备码：phase-1 受理帧经 onAccepted 异步推（展示授权链接 + 码 + rawText）；
+					// phase-2 终态本 mock 不自动到达（只验展示流），返回永不 resolve 的 promise，
+					// 组件取消/卸载会 abort 本地 waiter（mock 不需处理 signal）。
+					const provider = (params && params.provider) || '';
+					if (typeof options.onAccepted === 'function') {
+						setTimeout(() => {
+							options.onAccepted({
+								status: 'accepted',
+								loginId: 'e2e-login-1',
+								provider,
+								verificationUri: 'https://github.com/login/device',
+								userCode: 'E2E-CODE',
+								rawText: 'Open https://github.com/login/device and enter code E2E-CODE',
+							});
+						}, 0);
+					}
+					return new Promise(() => {});
+				}
+				if (method === 'coclaw.providerAuth.cancelOauth') {
+					return Promise.resolve({});
 				}
 				if (method === 'coclaw.model.set') {
 					const pr = params && params.primary;
@@ -233,9 +298,6 @@ export function setupModelConfigMock(page, initialState) {
 					st.primary = pr;
 					write(st);
 					return Promise.resolve({});
-				}
-				if (method === 'models.list' && params && params.view === 'all') {
-					return Promise.resolve({ models: st.catalog.slice() });
 				}
 				if (method === 'status') {
 					// 合成 status，model/provider = 当前 primary 拆分，供 dashboard 的 instance.model/provider。

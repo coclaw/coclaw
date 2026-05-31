@@ -1,5 +1,6 @@
 /**
- * model-default 注册入口 —— 把 coclaw.model.set / list / listUsable 接到 gateway。
+ * model-default 注册入口 —— 把 coclaw.model.set / list / listAvailable 接到 gateway
+ *（listAvailable 即原 listUsable 改名；listUsable 作过渡别名继续注册、映到同一 handler）。
  *
  * 设计（同 provider-auth/index.js）：
  * - 三个 SDK 子入口（config-mutation / provider-auth / agent-runtime）懒加载，
@@ -34,7 +35,7 @@ function defaultLoadProviderAuth() {
 }
 function defaultLoadAgentRuntime() {
 	// agent-runtime barrel 同时给：resolveProviderIdForAuth（别名归一）+ loadModelCatalog（干净目录，
-	// set 存在性 / listUsable 选模型器枚举同源）。barrel re-export provider-auth-aliases.js + model-catalog.js。
+	// set 存在性 / listAvailable 选模型器枚举同源）。barrel re-export provider-auth-aliases.js + model-catalog.js。
 	_agentRuntimeP ??= import('openclaw/plugin-sdk/agent-runtime');
 	return _agentRuntimeP;
 }
@@ -49,7 +50,8 @@ export function __resetSdkCaches() {
 }
 
 /**
- * 在 gateway api 上注册 `coclaw.model.set` / `coclaw.model.list` / `coclaw.model.listUsable`。
+ * 在 gateway api 上注册 `coclaw.model.set` / `coclaw.model.list` / `coclaw.model.listAvailable`
+ *（外加过渡别名 `coclaw.model.listUsable`，与 listAvailable 映同一 handler）。
  *
  * 仅 `register(api)` 的 `if (api.registrationMode === 'full')` 分支调；
  * 其它 mode 注册副作用违规（参 plugins/openclaw/CLAUDE.md "Service / register 副作用边界"）。
@@ -80,13 +82,13 @@ export function registerModelDefaultHandlers(api, opts = {}) {
 				]);
 				const sdk = {
 					mutateConfigFile: configMutation.mutateConfigFile,
-					// 干净目录（set 存在性 + listUsable 枚举同源）：agent-runtime barrel re-export model-catalog.js
+					// 干净目录（set 存在性 + listAvailable 枚举同源）：agent-runtime barrel re-export model-catalog.js
 					loadModelCatalog: agentRuntime.loadModelCatalog,
-					// 凭据信号（providerUsable / hasAnyUsableCredential / 凭据门 / configuredProviders）
+					// 凭据信号（providerUsable / hasAnyUsableCredential / 凭据门）
 					isProviderApiKeyConfigured: providerAuth.isProviderApiKeyConfigured,
 					hasConfiguredSecretInput: providerAuth.hasConfiguredSecretInput,
 					ensureAuthProfileStore: providerAuth.ensureAuthProfileStore,
-					// 别名归一（内联凭据信号 + 选模型器枚举 + configuredProviders）
+					// 别名归一（内联凭据信号 + 选模型器枚举）
 					resolveProviderIdForAuth: agentRuntime.resolveProviderIdForAuth,
 				};
 				return buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir });
@@ -114,5 +116,7 @@ export function registerModelDefaultHandlers(api, opts = {}) {
 
 	api.registerGatewayMethod('coclaw.model.set', wrap('set'));
 	api.registerGatewayMethod('coclaw.model.list', wrap('list'));
-	api.registerGatewayMethod('coclaw.model.listUsable', wrap('listUsable'));
+	api.registerGatewayMethod('coclaw.model.listAvailable', wrap('listAvailable'));
+	// 过渡别名：旧 UI 仍调 listUsable，映到同一 handler（决策1：纯过渡，不加任何额外兜底）
+	api.registerGatewayMethod('coclaw.model.listUsable', wrap('listAvailable'));
 }

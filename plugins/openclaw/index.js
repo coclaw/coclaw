@@ -810,11 +810,14 @@ const plugin = {
 			loadSdk: () => import('openclaw/plugin-sdk/provider-auth'),
 			loadConfigMutation: () => import('openclaw/plugin-sdk/config-mutation'),
 			// provider-catalog-runtime 供通用 device-code 扫码登录（B1）拿 resolvePluginProviders，
-			// 驱动 provider 自带的 device_code 登录方法（codex/copilot 及以后任意 device_code provider）
+			// 驱动 provider 自带的 device_code 登录方法（codex/copilot 及以后任意 device_code provider）；
+			// 同时供 providerAuth.catalog 拿 setup 全集（mode:'setup'）
 			loadProviderCatalogRuntime: () => import('openclaw/plugin-sdk/provider-catalog-runtime'),
+			// agent-runtime 供 providerAuth.catalog 的 hasCred 别名归一基座 id（resolveProviderIdForAuth）
+			loadAgentRuntime: () => import('openclaw/plugin-sdk/agent-runtime'),
 		});
 
-		// 模型默认配置 RPC（coclaw.model.set / list / listUsable）。三个 SDK 子入口的字面量
+		// 模型默认配置 RPC（coclaw.model.set / list / listAvailable + listUsable 过渡别名）。三个 SDK 子入口的字面量
 		// dynamic import 必须留在本入口源码——OpenClaw plugin loader 只扫入口源码
 		// 命中 `openclaw/plugin-sdk/*` 字面量并触发 jiti 重写；藏在子模块的字面量
 		// loader 看不到 → 原生 Node 解析必败。

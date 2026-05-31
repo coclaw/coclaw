@@ -5,6 +5,7 @@ import { registerProviderAuthHandlers, __resetSdkCache } from './index.js';
 
 const ALL_METHODS = [
 	'coclaw.providerAuth.cancelOauth',
+	'coclaw.providerAuth.catalog',
 	'coclaw.providerAuth.list',
 	'coclaw.providerAuth.loginOauth',
 	'coclaw.providerAuth.remove',
@@ -59,7 +60,7 @@ function registerWithStubs(api, opts = {}) {
 	});
 }
 
-test('registerProviderAuthHandlers registers all five coclaw.providerAuth.* methods', () => {
+test('registerProviderAuthHandlers registers all six coclaw.providerAuth.* methods', () => {
 	const { api, methods } = createMockApi();
 	registerWithStubs(api);
 	assert.deepEqual([...methods.keys()].sort(), ALL_METHODS);
@@ -239,7 +240,7 @@ test('default loader: registerProviderAuthHandlers without opts wires five metho
 	__resetSdkCache();
 	const { api, methods } = createMockApi();
 	registerProviderAuthHandlers(api);
-	assert.equal(methods.size, 5);
+	assert.equal(methods.size, 6);
 	const remove = methods.get('coclaw.providerAuth.remove');
 	const { respond, calls } = respondCollector();
 	await remove({ params: { provider: 'groq' }, respond });
@@ -324,4 +325,86 @@ test('__resetSdkCache: after reset, default loader is invoked again on next regi
 	});
 	await m2.get('coclaw.providerAuth.list')({ params: {}, respond: () => {} });
 	assert.equal(loads, 2);
+});
+
+// === catalog 的 index 接线（setup 全集 + agent-runtime 算 hasCred） ===
+
+test('catalog via index: setup 全集 + hasCred —— resolvePluginProviders(mode:setup, activate:false, cache:true)', async () => {
+	__resetSdkCache();
+	const { api, methods } = createMockApi();
+	let setupArgs;
+	registerProviderAuthHandlers(api, {
+		loadSdk: async () => ({
+			...fakeSdk(),
+			// 账本里 minimax-portal 有 oauth 凭据 → hasCred 命中
+			ensureAuthProfileStore: () => ({ version: 1, profiles: { 'minimax-portal:default': { provider: 'minimax-portal', type: 'oauth' } } }),
+			isProviderApiKeyConfigured: () => false,
+			hasConfiguredSecretInput: () => false,
+		}),
+		loadConfigMutation: async () => fakeConfigMutation(),
+		loadProviderCatalogRuntime: async () => ({
+			resolvePluginProviders: (args) => {
+				setupArgs = args;
+				return [
+					{ id: 'openai-codex', auth: [{ kind: 'oauth' }, { kind: 'device_code' }] },
+					{ id: 'minimax-portal', auth: [{ kind: 'device_code' }] },
+					{ id: 'anthropic', auth: [{ kind: 'custom' }, { kind: 'token' }, { kind: 'api_key' }] },
+					{ id: 'ollama', auth: [{ kind: 'custom' }] }, // custom-only → 排除
+				];
+			},
+		}),
+		loadAgentRuntime: async () => ({ resolveProviderIdForAuth: (p) => p }),
+		resolveAgentDir: () => '/tmp/agent',
+	});
+	const catalog = methods.get('coclaw.providerAuth.catalog');
+	const { respond, calls } = respondCollector();
+	await catalog({ params: {}, respond });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].ok, true);
+	assert.deepEqual(setupArgs, { config: {}, activate: false, cache: true, mode: 'setup' });
+	assert.deepEqual(calls[0].data, {
+		providers: [
+			{ provider: 'openai-codex', authMethods: ['oauth-login', 'oauth-device-code'], hasCred: false },
+			{ provider: 'minimax-portal', authMethods: ['oauth-device-code'], hasCred: true },
+			{ provider: 'anthropic', authMethods: ['api-key'], hasCred: false },
+		],
+	});
+	__resetSdkCache();
+});
+
+test('catalog via index 默认 loadAgentRuntime: 无 openclaw 包 → 单帧 IO_FAILED', async () => {
+	__resetSdkCache();
+	const { api, methods } = createMockApi();
+	registerProviderAuthHandlers(api, {
+		loadSdk: async () => fakeSdk(),
+		loadConfigMutation: async () => fakeConfigMutation(),
+		// 注入 catalog-runtime 让 setup 解析先成功，从而走到默认 loadAgentRuntime（真包 import → 测试环境无包 reject）
+		loadProviderCatalogRuntime: async () => ({ resolvePluginProviders: () => [] }),
+		resolveAgentDir: () => '/tmp/agent',
+	});
+	const catalog = methods.get('coclaw.providerAuth.catalog');
+	const { respond, calls } = respondCollector();
+	await catalog({ params: {}, respond });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].ok, false);
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	__resetSdkCache();
+});
+
+test('catalog via index 默认 loadProviderCatalogRuntime: 无 openclaw 包 → 单帧 IO_FAILED（setup 解析阶段）', async () => {
+	__resetSdkCache();
+	const { api, methods } = createMockApi();
+	registerProviderAuthHandlers(api, {
+		loadSdk: async () => fakeSdk(),
+		loadConfigMutation: async () => fakeConfigMutation(),
+		resolveAgentDir: () => '/tmp/agent',
+		// 不注入 loadProviderCatalogRuntime → setup 解析走真包 import（测试环境无包 → reject）
+	});
+	const catalog = methods.get('coclaw.providerAuth.catalog');
+	const { respond, calls } = respondCollector();
+	await catalog({ params: {}, respond });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].ok, false);
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	__resetSdkCache();
 });

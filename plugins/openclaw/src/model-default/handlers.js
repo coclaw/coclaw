@@ -1,18 +1,19 @@
 /**
- * model-default/handlers.js —— coclaw.model.set / list / listUsable 三个 RPC 的纯函数实现
+ * model-default/handlers.js —— coclaw.model.set / list / listAvailable 三个 RPC 的纯函数实现
+ *   （listAvailable 即原 listUsable 改名；index.js 把 listUsable 留作过渡别名映到同一 handler）
  *
  * 设计要点（详见 docs/model-config-api.md § 3）：
  * - DI 注入 sdk（mutateConfigFile / loadModelCatalog / provider-auth 凭据探针 / resolveProviderIdForAuth）
  *   + loadConfig + resolveAgentDir，便于单测；产线注入在 ./index.js
  * - **出参不加 status wrap**（gateway-method-design skill 约定）：set → {}；list → { default, agents }；
- *   listUsable → { byProvider, configuredProviders }
+ *   listAvailable → { byProvider }（configuredProviders 已迁出，UI 加 provider 排除改吃 catalog.hasCred）
  * - 错误码只用 INVALID_ARGS / IO_FAILED，参考 provider-auth/handlers.js
  *   既有 plugin 的 respondError 用 INTERNAL_ERROR 与本节契约不一致，所以本模块自带局部 helper
  * - set 校验 fail-fast 顺序：params shape → 拒未知字段 → agentId → primary 类型 → primary 形态
  *   （纯字符串：含 '/'、'/' 不在端点；不依赖 cfg）→ loadConfig → 凭据门 → 存在性
  *   形态校验**前置在 loadConfig 之前**，cfg 不可读时非法形态仍是 INVALID_ARGS 而非 IO_FAILED
  * - 凭据门 + 选模型器枚举 + list 信号全部走统一别名感知原语（resolve.js），杜绝跨界面口径分叉（§ 3.2.1）
- * - set 存在性 + listUsable 枚举走同一目录源 loadModelCatalog({readOnly:false})：选得到 ⇒ 设得上（红线天然成立）。
+ * - set 存在性 + listAvailable 枚举走同一目录源 loadModelCatalog({readOnly:false})：选得到 ⇒ 设得上（红线天然成立）。
  *   用 readOnly:false（含 manifest 合并）才带进 openai-codex/* 等 manifest-only provider；readOnly:true 只读落盘，
  *   这类从不落盘的 provider 缺失（oauth 已授权却选不出，本次回归根因）。
  */
@@ -21,7 +22,7 @@ import { listAllPrimariesWithCredentials, computeProviderUsable, enumerateUsable
 import { writePrimary } from './persist.js';
 
 const SET_ALLOWED_KEYS = new Set(['agentId', 'primary']);
-const LISTUSABLE_ALLOWED_KEYS = new Set(['agentId']);
+const LISTAVAILABLE_ALLOWED_KEYS = new Set(['agentId']);
 
 function respondInvalid(respond, message) {
 	respond(false, undefined, { code: 'INVALID_ARGS', message });
@@ -52,7 +53,7 @@ function parseProviderModel(primary) {
 }
 
 /**
- * 构造 set / listUsable 用的统一别名感知凭据 deps。
+ * 构造 set / listAvailable 用的统一别名感知凭据 deps。
  * @param {object} sdk
  * @param {string} agentDir
  * @returns {object}
@@ -95,19 +96,19 @@ async function validateProviderCredAndCatalog({ provider, model, primary, cfg, s
 }
 
 /**
- * 构造 set / list / listUsable 三个 handler。
+ * 构造 set / list / listAvailable 三个 handler。
  *
  * @param {object} opts
  * @param {object} opts.sdk
  * @param {Function} opts.sdk.mutateConfigFile - openclaw/plugin-sdk/config-mutation（set 写盘）
- * @param {Function} opts.sdk.loadModelCatalog - openclaw/plugin-sdk/agent-runtime（set 存在性 + listUsable 枚举的目录源）
+ * @param {Function} opts.sdk.loadModelCatalog - openclaw/plugin-sdk/agent-runtime（set 存在性 + listAvailable 枚举的目录源）
  * @param {Function} opts.sdk.isProviderApiKeyConfigured - openclaw/plugin-sdk/provider-auth（env+账本凭据信号，别名感知）
  * @param {Function} opts.sdk.hasConfiguredSecretInput - openclaw/plugin-sdk/provider-auth（内联 key 判定）
- * @param {Function} opts.sdk.ensureAuthProfileStore - openclaw/plugin-sdk/provider-auth（账本非空 / configuredProviders）
+ * @param {Function} opts.sdk.ensureAuthProfileStore - openclaw/plugin-sdk/provider-auth（账本非空判定）
  * @param {Function} opts.sdk.resolveProviderIdForAuth - openclaw/plugin-sdk/agent-runtime（别名归一）
  * @param {Function} opts.loadConfig - 返回当前 cfg snapshot；缺失时返回 null
  * @param {Function} opts.resolveAgentDir - 返回 agent /agent 子目录全路径（默认 main agent；agentId 贯穿）
- * @returns {{ set: Function, list: Function, listUsable: Function }}
+ * @returns {{ set: Function, list: Function, listAvailable: Function }}
  */
 export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) {
 	async function set({ params, respond }) {
@@ -207,14 +208,14 @@ export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) 
 		}
 	}
 
-	async function listUsable({ params, respond }) {
+	async function listAvailable({ params, respond }) {
 		try {
 			if (!params || typeof params !== 'object' || Array.isArray(params)) {
 				respondInvalid(respond, 'params must be an object');
 				return;
 			}
 			for (const key of Object.keys(params)) {
-				if (!LISTUSABLE_ALLOWED_KEYS.has(key)) {
+				if (!LISTAVAILABLE_ALLOWED_KEYS.has(key)) {
 					respondInvalid(respond, `unknown field: ${key}`);
 					return;
 				}
@@ -238,15 +239,10 @@ export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) 
 
 			// 目录源 loadModelCatalog({readOnly:false})：含 manifest 合并，才有 openai-codex/* 这类 manifest-only provider
 			// （readOnly:true 只读落盘缺它们 → oauth 已授权却选不出，本次回归根因）。
-			// 整体抛错（罕见，如 runtime config 取不到）→ 兜空 entries：byProvider 退化为空，
-			// 但 configuredProviders 不依赖目录仍可算 → 「不空白」，UI 加 provider 排除照常工作（§ 3.2.1 降级）。
-			let entries;
-			try {
-				entries = await sdk.loadModelCatalog({ readOnly: false });
-			}
-			catch {
-				entries = [];
-			}
+			// 抛错（罕见，如 runtime config 取不到）→ 走外层 catch 映射 IO_FAILED，不吞成空 entries：
+			// byProvider 同时驱动前端 primary 有效性（计算属性），把"清单没加载出来"伪装成"权威空清单"会让前端
+			// 误报主模型失效。如实暴露失败 → UI 维持 available=null="先不下结论"，与"真空（无凭据）"区分开。
+			const entries = await sdk.loadModelCatalog({ readOnly: false });
 
 			respond(true, enumerateUsableModels(entries, cfg, deps));
 		}
@@ -255,5 +251,5 @@ export function buildModelDefaultHandlers({ sdk, loadConfig, resolveAgentDir }) 
 		}
 	}
 
-	return { set, list, listUsable };
+	return { set, list, listAvailable };
 }

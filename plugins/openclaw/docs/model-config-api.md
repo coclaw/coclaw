@@ -15,7 +15,7 @@
 
 | 子话题 | 状态 | 章节 |
 |---|---|---|
-| provider 清单获取 | 已定（用上游 `models.list view:"all"`） | § 1 |
+| provider 清单获取 | 已定（`coclaw.providerAuth.catalog`，§ 2.7） | § 1 |
 | Provider 认证管理（API key / OAuth / 列表 / 撤销） | **API key + list + remove + OAuth（MiniMax device-code）已实施** | § 2 |
 | 默认模型设置 | **本期实施**（default + per-agent primary） | § 3 |
 | 白名单 + 模型附加设置 | 待设计 | § 4 |
@@ -33,22 +33,19 @@
 
 ## § 1. provider 清单获取
 
-**结论**：不加新 RPC，直接用上游 `models.list` + `models.authStatus`。
+**结论（2026-05-31 修订）**：用新增的 **`coclaw.providerAuth.catalog`**（§ 2.7）一次拿全 provider + 每家认证方式 + 是否已配凭据。**废弃旧结论"用上游 `models.list {view:"all"}` 的 provider 字段去重"**。
 
-### 1.1 调用方约定
+### 1.1 为什么不再用 `models.list view:"all"` 枚举 provider
 
-UI / server 直接通过 OpenClaw gateway 调上游 RPC：
+前端列 provider 只需"provider 维度 + 认证方式 + 是否已配"三件，不需要知道每家有哪些模型：
 
-| RPC | 用途 | 注意 |
-|---|---|---|
-| `models.list` | 拿模型清单（含 provider 字段） | 默认按"已登录"过滤；要全量必须传 `{view:"all"}`（mental-model § 5.4） |
-| `models.authStatus` | 拿 OAuth/refreshable provider 的健康状态（含 expiry / usage / plan） | **不列纯 api_key provider**（mental-model 陷阱 #16）；强刷传 `{refresh:true}` |
+- `models.list {view:"all"}` 给的是**模型维度**的重型全集（>200KB / ~1076 条），纯为枚举 provider 太重；前端本就**没有"拉全量 models"这个概念**。
+- view:all 的 `provider` 字段是**原始拼写、不归一**（mental-model 陷阱 #19），且只覆盖"已加载"provider（漏被动激活的），不带认证方式。
+- catalog 的数据源 `resolvePluginProviders({mode:'setup'})` 是**全集**（含从没配过的 provider，零配置新机也成立），每家自带认证方式 `auth[]`——正是前端要的维度（mental-model 附录 D.5）。
 
-api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.list`。
+### 1.2 OAuth/refreshable provider 的健康状态
 
-### 1.2 一期决策（mental-model 附录 D）
-
-不做扫盘 manifest 拿全量 provider 清单——`models.list view:"all"` 的 37 个对一期够用。displayName 缺失的在 UI 端建本地英文映射表。
+`models.authStatus`（上游 RPC）仍用于拿 OAuth/refreshable provider 的 expiry / usage / plan；**不列纯 api_key provider**（mental-model 陷阱 #16），强刷传 `{refresh:true}`。api_key provider 的"已绑/未绑"走 § 2.2 的 `coclaw.providerAuth.list`（凭据管理列表）或 § 2.7 catalog 的 `hasCred`（加 provider 排除）。
 
 ---
 
@@ -66,6 +63,7 @@ api_key provider 的"已绑/未绑"状态走 § 2.2 的 `coclaw.providerAuth.lis
 | `coclaw.providerAuth.cancelOauth` | 取消进行中的 OAuth 登录（单发，镜像 `agent.abort`） | **已实施** |
 | `coclaw.providerAuth.list` | 列出已绑定的所有 profile（**跨认证类型**，含 api_key / oauth / token） | **已实施** |
 | `coclaw.providerAuth.remove` | 撤销某 provider 的所有 profile（**跨认证类型，一锅端**） | **已实施** |
+| `coclaw.providerAuth.catalog` | 列出全部 provider + 每家认证方式 + 是否已配凭据（加 provider 用） | **已实施** |
 
 均归 `operator.admin` scope（同 [`gateway-method-conventions.md`](gateway-method-conventions.md) 默认）。
 
@@ -233,7 +231,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 **列出所有可见凭据，跨认证类型（api_key / oauth / token）且跨来源（账本 / 内联 / 环境变量）。** 弥补两个坑：① `models.authStatus` 只列 OAuth/refreshable provider（mental-model 陷阱 #16）；② 早期只读账本，漏了用户手写在 `openclaw.json` 的内联 key 与环境变量 key，导致"模型能用却显示没配 key"的列表/引导不一致（陷阱 #22，三源详见 mental-model「provider key 三源」）。
 
-> **与选模型器解耦（2026-05-28 修订）**：本 RPC 仅服务"凭据管理 UI"（展示 + 撤销）与"加 provider 时排除已配"。**不再**被选模型器借作"哪些 provider 可用"的闸——那已改由 `coclaw.model.catalog` 的能用集承担（§ 3.2.1）。下方实现要点 #3 的"env 列出范围"退化为**纯展示口径**问题（模型可选性已由能用集解决、env 那根刺已拔；列不列 env 行待定，见 dump）。
+> **回归纯凭据管理（2026-05-31 修订）**：本 RPC 仅服务"凭据管理 UI"——**展示**（全认证类型 api_key / oauth / token + 三源；oauth 类型条目挂 `oauth` 徽章，由 UI 据 `type==='oauth'` 渲染）+ **撤销**。两件曾搭在它身上的职责都已搬走：① "哪些 provider 可用 / 喂选模型器"早改由 `coclaw.model.listAvailable` 的可用清单承担（§ 3.2.1）；② "加 provider 时排除已配"本轮改由 `coclaw.providerAuth.catalog` 的 `hasCred` 承担（§ 2.7，别名归一、比 list 的原始名干净）。故下方实现要点 #3 的"env 列出范围"退化为**纯展示口径**问题（模型可选性已由可用清单解决、env 那根刺已拔；列不列 env 行待定，见 dump）。
 
 #### 凭据三源（本节核心）
 
@@ -323,6 +321,59 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 - `coclaw.providerAuth.list` 走 SDK `ensureAuthProfileStore`，每次读按 mtime 失效——无需关心 cache 一致性
 - 不需要触发 `secrets.reload`——本期没有"已 running channel 立刻用新 key"的场景
 
+### 2.7 `coclaw.providerAuth.catalog`（本轮新增；provider 全集 + 认证方式 + 是否已配）
+
+**列出 OpenClaw 支持的全部 provider + 每家的认证方式 + 是否已有凭据**，供 UI"加 provider"时列出可加项并按方式渲染入口（输 key / 设备码登录 / oauth-login 暂不支持）。取代旧的"用 `models.list {view:"all"}` 的 provider 字段去重"（§ 1）。
+
+> **命名破例说明**：方法名 `catalog` 是**名词当后缀**，轻微偏离 `gateway-method-conventions.md` 的 `<resource>.<verb>` 约定。刻意保留——它与同域 `.list`（我已配的凭据）用 **list / catalog** 自然区分（catalog = 全宇宙货架，list = 我的那几条），比生造一个动词更贴切、可读。
+
+**入参**：无（provider 全集与认证方式在一次 gateway 运行内固定）。`params:{}` 与 `params:undefined` 都放行；带任何未知字段 → `INVALID_ARGS`。
+
+**出参**：
+
+```ts
+{
+  providers: Array<{
+    provider: string;                                                  // 基座 provider id（setup 模式不含 plan 变体）
+    authMethods: ('api-key' | 'oauth-device-code' | 'oauth-login')[];  // 非空
+    hasCred: boolean;                                                  // 这家是否已有凭据（供加 provider 时排除）
+  }>;
+}
+```
+
+**错误码**：`INVALID_ARGS`（未知字段）/ `IO_FAILED`（provider 解析 / 凭据探针即 store 读失败等 SDK 抛错）。
+
+#### 数据源（setup 全集口径）
+
+`resolvePluginProviders({ config, mode:'setup', activate:false, cache:true })`（`openclaw/plugin-sdk/provider-catalog-runtime`）**一次返回全部 provider（含从没配过的），每项带 `auth[]`（元素有 `kind` + `run`）**：
+
+- **setup 模式源头保证全集**——对每个 bundled 插件无条件 eligible，与 config / auto-enable 无关（零配置新机也成立）。全集口径 = **bundled provider + 受信/已激活的 workspace owner**（未受信 workspace 插件被过滤）。
+- `activate:false` 只读取、不激活 provider，零副作用、不动 gateway 活跃插件名册。
+- `cache:true` 命中后 ~1ms；冷调用 ~100–250ms。**不碰 `loadModelCatalog`**（那是模型目录维度、且会冻事件循环 ~2.5s，§ 3.2.1 caveat）、不用 per-ref 循环。
+
+#### `authMethods` 推导（一条规则，零特判）
+
+按每个 provider `auth[]` 的 `kind`（枚举 `oauth | api_key | token | device_code | custom`）映射，只露三种：
+
+| auth 方法 kind | authMethods | 前端动作 |
+|---|---|---|
+| `device_code` | `oauth-device-code` | 设备码登录步骤（本轮做） |
+| `oauth` | `oauth-login` | 列出，但点开提示"暂不支持"（回环 localhost 回调，远端 UX 太重） |
+| `api_key` | `api-key` | 输 key 步骤 |
+| `token` | （不露） | anthropic 的"贴 token"——刻意不露避免诱导封号；anthropic 的 api-key 正常 |
+| `custom` | （不露） | 本地 / 代理 / CLI（ollama / lmstudio / vllm / 各 proxy / anthropic cli），非凭据录入面 |
+
+**provider 仅在露出的 `authMethods` 非空时进出参**。于是 custom-only、token-only、空 `auth[]`（如 groq 只认 env）**自然被排除，无需任何特判**。细化口径（custom 排除 / 纯 env / token 不露）见 mental-model 附录 D.5。
+
+- 一个 provider 可多桶（实测 openai-codex / xai 同时 api-key + device-code + oauth-login）→ 前端给多个并排入口。
+- `minimax-portal` 的 kind = `device_code`（插件内部仍走自家 B2 流，对 UI 是一次设备码登录，一致）。
+
+#### `hasCred` 算法（三源 + 别名归一）
+
+`hasCred` = 该基座 provider 在**账本 / 内联 / env** 任一源有凭据，别名感知、归一到基座 id。复用与 § 3.x 同款的插件内**共享 helper** `computeConfiguredProviders`（`model-default/resolve.js`；账本 ∪ 内联 ∪ env 候选，全经 `resolveProviderIdForAuth` 归一基座）——catalog handler 经现成 import 引入它，并注入 `resolveProviderIdForAuth`（经 `openclaw/plugin-sdk/agent-runtime`）做归一。catalog 的 provider 是基座 id，与 hasCred 归一对齐 → 排除判断精确。
+
+> **为什么 hasCred 放服务端、而非让 UI 从 `providerAuth.list` 推**：`providerAuth.list` 返回**原始拼写** provider id 且 env 覆盖较窄，UI 拿它去排除基座全集会有良性缺口（变体拼写匹配不上基座、纯 env 节点覆盖不全 → "已配仍出现在可加列表"，可重复加、无误排除、无安全问题）。在 catalog 服务端用别名感知逻辑直接算干净，且 UI 本就拿不到 `resolveProviderIdForAuth`。
+
 ---
 
 ## § 3. 默认模型设置
@@ -335,7 +386,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 |---|---|---|
 | `coclaw.model.set` | 设 / 清 default 或某 agent 的 primary | **本期实施** |
 | `coclaw.model.list` | 列 default + 所有 agent 的 primary | **本期实施** |
-| `coclaw.model.listUsable` | 返回选模型器枚举集（干净目录 ∩ 别名感知凭据）+ 已配 provider 集 | **本期实施** |
+| `coclaw.model.listAvailable` | 返回可用模型清单（干净目录 ∩ 别名感知凭据）；`listUsable` 留作过渡别名 | **本期实施** |
 
 均归 `operator.admin` scope。
 
@@ -352,7 +403,7 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 ### 3.2.1 选模型器枚举：干净目录 ∩ 别名感知凭据（修订 6 定稿，2026-05-28）
 
-> **状态（修订 6，已实施）**：本小节 + § 3.3 + § 3.4 已落地——统一别名感知凭据原语（`computeProviderUsableByName` / `computeProviderUsable`）+ 选模型器枚举纯函数（`enumerateUsableModels`）在 `resolve.js`，`coclaw.model.listUsable` handler + `model.set` 换门换源在 `handlers.js`。**修订 4/5 曾走"能用集 `buildModelsProviderData`/cfgClone"路线，已放弃**（理由见下）。
+> **状态（修订 6，已实施）**：本小节 + § 3.3 + § 3.4 已落地——统一别名感知凭据原语（`computeProviderUsableByName` / `computeProviderUsable`）+ 选模型器枚举纯函数（`enumerateUsableModels`）在 `resolve.js`，`coclaw.model.listAvailable`（双名，`listUsable` 留过渡）handler + `model.set` 换门换源在 `handlers.js`。**修订 4/5 曾走"能用集 `buildModelsProviderData`/cfgClone"路线，已放弃**（理由见下）。
 
 **问题**：判"哪些模型真能选/能设"不能靠 CoClaw 自己从凭据三源拼 provider 名再**按原始名**跟目录取交集——会漏别名授权（`volcengine` 一把 key 经厂商 manifest 同时授权 `volcengine-plan`，后者在目录里是独立 provider，**套餐用户的默认模型 `volcengine-plan/ark-code-latest` 正在其中**）。**支持别名套餐是硬需求**（套餐用户多为普通用户）。
 
@@ -365,21 +416,20 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
   - **必修 B**：现有 `computeProviderUsable(primary,…)`（resolve.js:124）对入参跑 `providerSegmentOf`，**裸 provider 名（无斜杠）返回 null → 整函数 false**。必须抽出按裸 provider 名工作的 `…ByName` 核心，`computeProviderUsable(primary)` 委托它。
 - **枚举 = 目录按 provider 分组 → 留过 `…ByName` 的 provider →（文本模态过滤）**。变体经 manifest 行进目录、经别名感知凭据（基座 key）保留；幽灵 provider 无凭据被丢。
 
-**`coclaw.model.listUsable`**（动词式，遵 `gateway-method-design`；归 `coclaw.model.*`；`operator.admin` scope）：
+**`coclaw.model.listAvailable`**（由 `listUsable` 改名，对齐上游权威概念 `ModelRegistry.getAvailable()`；`listUsable` 保留作过渡别名，**同一 handler 双名注册**，UI 改调 `listAvailable`，后续 follow-up 移除 `listUsable`；遵 `gateway-method-design`；归 `coclaw.model.*`；`operator.admin` scope）：
 
 - **入参**：`{ agentId?: string }`（缺省 = default scope）；agentId 给了但非空 string 检查失败 → `INVALID_ARGS`；未知字段 → `INVALID_ARGS`。**agentId 一路贯穿**到凭据判定（与 model.set/providerUsable 同 agent 的 agentDir；产线 `mainAgentDir` 忽略入参恒 main，凭据按设计统一落 main、各 agent 层叠可见，故四消费点天然同 dir、不分叉）。
-- **出参**：`{ byProvider: Record<string, string[]>, configuredProviders: string[] }`
-  - `byProvider`：provider（含别名变体 id 如 `volcengine-plan`）→ 可用 modelId 列表（升序去重）。供 UI 选模型器**直接出可选项**，无幽灵（凭据过滤天然剔除）。
-  - `configuredProviders`：别名归一（`resolveProviderIdForAuth`）的"已配 provider"基座 id 集（账本 ∪ 内联 ∪ env 三源，升序去重）。供 UI **加 provider 时排除**（UI 拿不到 `resolveProviderIdForAuth`，必须插件给）。
+- **出参**：`{ byProvider: Record<string, string[]> }`（**本轮去掉 `configuredProviders`**——"加 provider 排除已配"已由 `coclaw.providerAuth.catalog` 的 `hasCred` 承担，§ 2.7；`byProvider` 回归纯可用清单）
+  - `byProvider`：provider（含别名变体 id 如 `volcengine-plan`）→ 可用 modelId 列表（升序去重）。供 UI 选模型器**直接出可选项**，无幽灵（凭据过滤天然剔除）；同时供前端判 **primary 有效性**（membership，§ 3.4）。
 - **错误码**：`INVALID_ARGS`（params 形状 / agentId 类型错 / 未知字段）/ `IO_FAILED`（runtime cfg 不可读 / 凭据探针即 store 读失败等 SDK 抛错）。
-- **降级**：handler try/catch 兜"整个 `loadModelCatalog({readOnly:false})` 抛错"（罕见，如 runtime config 取不到）→ 以**空 entries** 走枚举 → `{ byProvider: {}, configuredProviders }`（**不空白**：byProvider 退化为空但 `configuredProviders` 不依赖目录仍可算，UI 加 provider 排除照常）。**store 读失败**（`ensureAuthProfileStore` 抛错）走外层 catch → `IO_FAILED`（UI 回退旧派生，与既有 `coclaw.model.list` 同口径）。
-- **旧插件回退**：旧插件无此方法 → UI 必须回退到"`providerAuth.list` ∩ `models.list view:'all'`"派生（即今天 shipped 行为，升级窗口内短暂缺别名变体，可接受；见 UI doc § 7.3）。
+- **降级**：handler try/catch 兜"整个 `loadModelCatalog({readOnly:false})` 抛错"（罕见，如 runtime config 取不到）→ 以**空 entries** 走枚举 → `{ byProvider: {} }`（byProvider 退化为空，选模型器暂空；加 provider 排除已不依赖本方法、走 catalog.hasCred）。**store 读失败**（`ensureAuthProfileStore` 抛错）走外层 catch → `IO_FAILED`。
+- **不做"新 UI + 旧插件"兼容**：新 UI 直接要求新插件（claw 随插件自动升级，窗口极窄）——不为缺 `listAvailable` 的旧插件在 UI 侧留回退路径（与 § 3.4 feature-detect-suppress 移除同一立场；`listUsable` 别名只为兜"旧 UI + 新插件"反向窗口，映射同一 handler）。
 - **caveat（性能 / 事件循环 — 2026-05-31 本机实测钉死，接受现状）**：**已采用 `readOnly:false`**——更新鲜（含新装厂商扩展）+ 含 manifest（才有 `openai-codex/*` 等 manifest-only provider）。代价实测如下（用 `OPENCLAW_DEBUG_INGRESS_TIMING` + `monitorEventLoopDelay` 探针，×3 复现）：
 	- **真冻多久**：冷调用 `loadModelCatalog({readOnly:false})` 整条 ~12–13s 出结果，其中**同步冻事件循环 ~2.2–2.8s**（冻期间整个网关停摆——所有 RPC / agent 事件 / 心跳全停）。**冻点不在 `ModelRegistry` 构造**（`readFileSync`+`JSON.parse`+schema 校验那段实测仅 ~7ms，连 `discoverAuthStorage` 清 legacy auth.json 也才 ~187ms，整个同步段 ~200ms）；**真正的冻在 `ensureOpenClawModelsJson` 的厂商发现**——它同步加载 46 个厂商扩展插件来枚举模型，模块求值连冻 ~2.5s。冷调用整条 >10s，会顶穿常见超时（重启后第一次开选模型器很可能转圈/失败）。
-	- **双实例（已坐实）**：插件经 `plugin-sdk/agent-runtime` barrel 拿的 `loadModelCatalog` 与网关自家 `../agents/model-catalog.js` 是**两份独立模块实例**（jiti 用另一 URL 实例化同一 chunk），各自一份 `modelCatalogPromise`。实测：先用网关 `models.list view:all` 把网关那份目录烤热，插件 `listUsable` 仍从头冷跑 10.9s。即网关那份缓存的热/清都**够不着**插件这份。
-	- **冷的频率（推翻旧前提）**：因双实例 + 插件代码**从不 reset 自己的缓存**（只调 `{readOnly:false}`，无 `useCache:false` / 无 `resetModelCatalogCache`）→ 插件目录缓存**粘到下次网关重启**。所以冷调用 ≈ 每次网关重启后第一次 `listUsable`/`set`，**一次**，不是"每次改配置"。**旧前提"被 config reload（含 `coclaw.model.set` 写配置）置空"实测推翻**：set 之后连**网关自家**缓存都没被清（set 后 `models.list view:all` 仍 1.26s 热命中、零重扫），对插件那份独立缓存更够不着。
+	- **双实例（已坐实）**：插件经 `plugin-sdk/agent-runtime` barrel 拿的 `loadModelCatalog` 与网关自家 `../agents/model-catalog.js` 是**两份独立模块实例**（jiti 用另一 URL 实例化同一 chunk），各自一份 `modelCatalogPromise`。实测：先用网关 `models.list view:all` 把网关那份目录烤热，插件 `listAvailable` 仍从头冷跑 10.9s。即网关那份缓存的热/清都**够不着**插件这份。
+	- **冷的频率（推翻旧前提）**：因双实例 + 插件代码**从不 reset 自己的缓存**（只调 `{readOnly:false}`，无 `useCache:false` / 无 `resetModelCatalogCache`）→ 插件目录缓存**粘到下次网关重启**。所以冷调用 ≈ 每次网关重启后第一次 `listAvailable`/`set`，**一次**，不是"每次改配置"。**旧前提"被 config reload（含 `coclaw.model.set` 写配置）置空"实测推翻**：set 之后连**网关自家**缓存都没被清（set 后 `models.list view:all` 仍 1.26s 热命中、零重扫），对插件那份独立缓存更够不着。
 	- **陈旧（范围窄）**：插件目录缓存粘住会陈旧，但按凭据筛选那段（`enumerateUsableModels`）每次现读、不缓存——**加了新 key 立刻显示**。只有"目录构成本身变了"（装新厂商插件 / 某厂商要凭据才能在线拉出模型清单）才需重启网关才进选模型器。
-	- **旧 ~1.2s 的来历**：是网关自家 `models.list view:all` **热命中**（gateway 级 `loadGatewayModelCatalog` 缓存 + readOnly 路 750ms 超时兜底），代表不了插件裸路径。插件 `listUsable` 即便热命中（目录 ~0ms）整条仍 ~3.4s——那是 `enumerateUsableModels` 的凭据检查（纯异步、不冻网关）。
+	- **旧 ~1.2s 的来历**：是网关自家 `models.list view:all` **热命中**（gateway 级 `loadGatewayModelCatalog` 缓存 + readOnly 路 750ms 超时兜底），代表不了插件裸路径。插件 `listAvailable` 即便热命中（目录 ~0ms）整条仍 ~3.4s——那是 `enumerateUsableModels` 的凭据检查（纯异步、不冻网关）。
 	- **结论**：低频（≈每次重启一次）但单次代价高（~2.5s 冻 + >10s 顶穿超时）。用户 2026-05-31 实测后拍板**接受现状**（不上 stale-while-revalidate，过度设计）。已知限制见 `TODO.md` 该条 + 上游 #88392（available 信号落地后改读廉价源、绕开本路径）。`ensureOpenClawModelsJson` 指纹未变不写盘（fingerprint-gated + 原子写）成立，但**指纹计算本身仍跑厂商发现**，不省那 ~2.5s 冻。
 
 #### interim 已知缺口（readOnly:false 方案下，如实记录）
@@ -476,7 +526,9 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 **覆盖面（修订 6）**：四处统一覆盖 env+内联+账本+**别名套餐（火山/byteplus/minimax-cn/stepfun）**；统一漏 IAM/本地（`hasAuthForModelProvider` 未导出，pro 边角，接受 spurious、不阻断使用）。**不再有"信号便宜 vs 枚举完整"分层**——同一原语贯穿，选模型器↔set↔providerUsable↔noKey 全一致。
 
-**旧插件不再特判（feature-detect-suppress 已移除）**：旧插件出参无 `hasAnyUsableCredential` 字段，UI 当 false → **该弹 noKey / invalid 就弹**。取舍：主动引导小白配 key 是产品价值，且 claw 很快自动升级插件，「新前端 + 旧插件」窗口极窄——窗口内旧插件用户短暂再现误报可接受，远好过对小白沉默。注意区分：子页「写完设置后那次后台刷新失败」的反误报保护是**另一回事**（`credSignalFresh`，不拿写入前的旧凭据信号误报失效），保留至今。详见 UI 设计 `ui/docs/model-config.md` § 7.4。
+**`providerUsable` 现状（2026-05-31）**：**模型设置子页**的 primary 有效性判断**已改为前端查 `coclaw.model.listAvailable` 的 `byProvider` membership**（"该 provider 有凭据 ∧ model 在目录内"，比单看 `providerUsable` 多覆盖"模型还在不在目录"，且与去掉的最后一个 view:all 消费点解绑）。但 **`/claws` 仪表盘外层引导仍消费 `default.providerUsable`**（派生 `primaryProviderUsable`；仪表盘刻意从轻、不拉可用清单，UI doc § 7.2/§ 7.4）→ 故 `providerUsable` **仍有消费者、不是可直接删的字段**，本轮**保留**（设计稿曾设想它变"可选清理"，但实现保留了仪表盘这条轻量消费路径，以代码为准）。`hasAnyUsableCredential`（noKey 信号）**保留不动**（noKey 误报历史上修了好几轮，红线不碰）。
+
+**旧插件不再特判（feature-detect-suppress 已移除）**：旧插件出参无 `hasAnyUsableCredential` 字段，UI 当 false → **该弹 noKey / invalid 就弹**。取舍：主动引导小白配 key 是产品价值，且 claw 很快自动升级插件，「新前端 + 旧插件」窗口极窄——窗口内旧插件用户短暂再现误报可接受，远好过对小白沉默。注意区分：子页「写完设置后那次后台刷新失败」的反误报保护是**另一回事**——2026-05-31 起由 primary 有效性**计算属性**天然承担（可用清单 + primary 双就绪才判，未就绪算 null = 先不下结论、不误报），旧的 `credSignalFresh` 标记已随计算属性化**删除**。详见 UI 设计 `ui/docs/model-config.md` § 7.4。
 
 **错误码**：仅 `IO_FAILED`（runtime cfg 不可读）。
 
@@ -484,9 +536,9 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 | 文件 | 角色 |
 |---|---|
-| `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配）；**统一原语 `computeProviderUsableByName`（抽出核心、B）+ `computeProviderUsable` 委托它 + `computeHasAnyUsableCredential` 补 env（C）**；**选模型器枚举纯函数 `enumerateUsableModels(entries, cfg, deps)`（纯同步：按 provider 分组 → 留过 `…ByName` 的 → 不做模态过滤）+ `computeConfiguredProviders`**。catalog entries 由 handler 传入（loadModelCatalog 不在本文件 await） |
+| `src/model-default/resolve.js` | 从 cfg 读 default + per-agent primary 的纯函数（含 list 装配）；**统一原语 `computeProviderUsableByName`（抽出核心、B）+ `computeProviderUsable` 委托它 + `computeHasAnyUsableCredential` 补 env（C）**；**选模型器枚举纯函数 `enumerateUsableModels(entries, cfg, deps)`（纯同步：按 provider 分组 → 留过 `…ByName` 的 → 不做模态过滤；**本轮起只返回 `{ byProvider }`，去掉 configuredProviders**）+ `computeConfiguredProviders`（具名导出，被 provider-auth `catalog` 复用算 hasCred，§ 2.7）**。catalog entries 由 handler 传入（loadModelCatalog 不在本文件 await） |
 | `src/model-default/persist.js` | 字段级 set / clear 写盘（封装 `mutateConfigFile` 调用） |
-| `src/model-default/handlers.js` | set / list / **listUsable** handler（入参校验 + 副作用编排）；**set 门 + listUsable 过滤 + list 信号全部走统一原语**（§ 3.4），set 存在性 + listUsable 枚举同走 `loadModelCatalog({readOnly:false})`（含 manifest）；listUsable 降级兜底 |
+| `src/model-default/handlers.js` | set / list / **listAvailable**（含 `listUsable` 过渡别名）handler（入参校验 + 副作用编排）；**set 门 + listAvailable 过滤 + list 信号全部走统一原语**（§ 3.4），set 存在性 + listAvailable 枚举同走 `loadModelCatalog({readOnly:false})`（含 manifest）；listAvailable 降级兜底 |
 | `src/model-default/index.js` | 懒加载 SDK + 注册到 gateway api |
 | `index.js`（plugin 入口） | 注入 SDK 子入口字面量 `import('openclaw/plugin-sdk/...')`，新增 `loadModelCatalog` / `resolveProviderIdForAuth`（均经 `openclaw/plugin-sdk/agent-runtime`） |
 
@@ -663,7 +715,7 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 
 > 卸载 CoClaw 后这条 `minimax-portal` 节点会残留——无害（合法 OpenClaw 节点，与用户自己用上游 CLI 登录后果相同），不触发 schema 校验失败（区别于硬约束禁写的 `channels.coclaw` / `plugins.entries`）。
 
-**登出（logout）= 只删凭据，不删此节点**（2026-05-27 实测定案）。曾担心"只删凭据、留着此节点"会在 UI 切模型界面留下"僵尸模型"，实测证伪：UI 主模型选择器拿 `models.list view:all` 的全量 catalog **与 `providerAuth.list`（有凭据的 provider）取交集**，只列两边都有的（见 `ui/src/components/model-config/PrimaryModelPickerDialog.vue` 的 `allowed.has(m.provider)` 过滤）。删凭据后 `minimax-portal` 不在交集里，那 2 个模型即便仍在 catalog 也**不露面**；模型配置页"已配 provider"列同样源自 `providerAuth.list`，该行连同移除按钮一并消失。故现有 `coclaw.providerAuth.remove`（仅删凭据）**对 UI 已是干净登出**，无需新增 logout RPC、无需删此 cfg 节点。反向：删此节点反而越界——无法证明该节点一定是本插件写的（官方 MiniMax 插件可能自己补同名节点），删它有与官方插件来回覆盖之险（与 `reconcile.js` 按 id 子集判覆盖、不硬删别人模型同源）。
+**登出（logout）= 只删凭据，不删此节点**（2026-05-27 实测定案）。曾担心"只删凭据、留着此节点"会在 UI 切模型界面留下"僵尸模型"，实测证伪：UI 主模型选择器只列 `coclaw.model.listAvailable` 的 `byProvider`（可用清单 = 干净目录 ∩ 别名感知凭据，**server 端已按凭据过滤**）。删凭据后 `minimax-portal` 不在 `byProvider` 里，那 2 个模型即便仍在目录也**不露面**；模型配置页"已配 provider"列同样源自 `providerAuth.list`，该行连同移除按钮一并消失。故现有 `coclaw.providerAuth.remove`（仅删凭据）**对 UI 已是干净登出**，无需新增 logout RPC、无需删此 cfg 节点。（原 2026-05-27 定案时 picker 走 `view:all ∩ providerAuth.list` 交集；本轮去 view:all 后改吃 `listAvailable.byProvider`，结论不变——可用清单本就只含有凭据 provider 的模型。）反向：删此节点反而越界——无法证明该节点一定是本插件写的（官方 MiniMax 插件可能自己补同名节点），删它有与官方插件来回覆盖之险（与 `reconcile.js` 按 id 子集判覆盖、不硬删别人模型同源）。
 
 ### 6.15 写 OAuth 凭据用 `upsertAuthProfileWithLock`，不用 `writeOAuthCredentials`
 
@@ -793,7 +845,7 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 
 **MiniMax 仍走 B2**：它不在 OpenClaw 内置 provider 字典，登录后还要补写 `models.providers` 静态模型清单（上游对 portal 不做 catalog discovery），与 codex/copilot"内置、模型自带"不同——并入 B1 会因 configPatch 写空 `models:[]` 静默回归（见 [`reference_minimax_portal_oauth_model_catalog`]）。
 
-**本轮范围 = 插件后端**。UI（白名单放开撤销 + 扫码展示流 + `rawText` 兜底渲染）另起一轮——当前 UI 尚无任何扫码登录展示流。
+**本轮范围 = 插件后端**。UI（放开 oauth 撤销 + 设备码展示流 + `rawText` 兜底渲染 + 按 `coclaw.providerAuth.catalog` 的 authMethods 多入口加 provider）**已于 2026-05-31 后续一轮实施**——见 `ui/docs/model-config.md`（OAuth 设备码 UI 流）。
 
 ---
 
@@ -844,4 +896,4 @@ api-key 路径刻意"只动 secret 不碰 cfg"（§ 6.2）；OAuth **必须**额
 - [x] 抠取**充分容错**：URL/码抠不到不报错，phase-1 accepted 永远带 `rawText` 全文交前端
 - [x] 单元测试：B1 成功（accepted 结构化字段+rawText / 写凭据 / configPatch 深合并）/ 空 profiles / reject / note 前失败单帧 / 无 note 成功单帧 / 取消不写 / 无 device_code 方法 NOT_FOUND / resolveProviders 抛错 / 写凭据 null / mutateConfigFile 抛错 / config 来源 / note 过滤 + 抠不到给 null；覆盖率达门槛
 - [x] 真 gateway 实测：copilot device-code 拿到真实 `github.com/login/device` + 码、phase-1 accepted；deepseek（无 device_code）→ NOT_FOUND；`cancelOauth` 取消后不写凭据；`activate:false` 零副作用
-- [ ] UI：放开 oauth 撤销 + 扫码展示流 + `rawText` 兜底渲染（另起一轮）
+- [x] UI：放开 oauth 撤销 + 设备码展示流 + `rawText` 兜底渲染 + catalog 驱动多入口加 provider（2026-05-31 实施，见 `ui/docs/model-config.md`）

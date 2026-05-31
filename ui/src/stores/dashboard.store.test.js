@@ -1554,67 +1554,74 @@ describe('dashboard store', () => {
 // computePrimaryEffective 纯函数
 // =====================================================================
 describe('computePrimaryEffective', () => {
-	const catalog = [
-		{ id: 'm1', provider: 'groq' },
-		{ id: 'claude-sonnet-4-6', provider: 'anthropic' },
-	];
+	// 决策4 新签名：computePrimaryEffective(primary, available)
+	// available = listAvailable.byProvider；null=未就绪（不下结论→null），对象=就绪（membership）。
+	const available = {
+		groq: ['m1', 'm2'],
+		anthropic: ['claude-sonnet-4-6'],
+	};
 
-	// 新签名（§7.4）：computePrimaryEffective(primary, providerUsable, catalog)
-	// 子页用：凭据半 = 插件 providerUsable boolean；目录半 = catalog 裸比对（保留"模型下架"）
-	test('providerUsable=true + model 在 catalog → true', () => {
-		expect(computePrimaryEffective('groq/m1', true, catalog)).toBe(true);
+	test('primary 在可用清单内 → true', () => {
+		expect(computePrimaryEffective('groq/m1', available)).toBe(true);
 	});
 
-	test('providerUsable=false（主模型那家无凭据）→ false', () => {
-		expect(computePrimaryEffective('groq/m1', false, catalog)).toBe(false);
+	test('primary 的 provider 在清单但 model 不在 → false（失效）', () => {
+		expect(computePrimaryEffective('groq/unknown', available)).toBe(false);
 	});
 
-	test('providerUsable=true 但 model 不在 catalog 该 provider 下 → false（模型下架）', () => {
-		expect(computePrimaryEffective('groq/unknown', true, catalog)).toBe(false);
+	test('primary 的 provider 不在清单（无凭据）→ false（失效）', () => {
+		expect(computePrimaryEffective('openai/gpt-4', available)).toBe(false);
 	});
 
-	test('catalog 里同 model id 但 provider 不同 → false', () => {
-		expect(computePrimaryEffective('groq/claude-sonnet-4-6', true, catalog)).toBe(false);
+	test('同 model id 但 provider 不同 → false', () => {
+		expect(computePrimaryEffective('groq/claude-sonnet-4-6', available)).toBe(false);
 	});
 
-	test('primary 为 null → false', () => {
-		expect(computePrimaryEffective(null, true, catalog)).toBe(false);
+	test('可用清单就绪但为空对象（权威的"无可用模型"）→ false（失效）', () => {
+		expect(computePrimaryEffective('groq/m1', {})).toBe(false);
 	});
 
-	test('primary 为 undefined → false', () => {
-		expect(computePrimaryEffective(undefined, true, catalog)).toBe(false);
+	test('可用清单未就绪（null）→ null（先不下结论，不误报）', () => {
+		expect(computePrimaryEffective('groq/m1', null)).toBeNull();
 	});
 
-	test('primary 不含 "/" → false', () => {
-		expect(computePrimaryEffective('claude-sonnet-4-6', true, catalog)).toBe(false);
+	test('可用清单未就绪（undefined）→ null', () => {
+		expect(computePrimaryEffective('groq/m1', undefined)).toBeNull();
 	});
 
-	test('primary 以 "/" 开头（provider 端为空）→ false', () => {
-		expect(computePrimaryEffective('/m1', true, catalog)).toBe(false);
+	test('primary 为 null → null（信息不全）', () => {
+		expect(computePrimaryEffective(null, available)).toBeNull();
 	});
 
-	test('primary 以 "/" 结尾（model 端为空）→ false', () => {
-		expect(computePrimaryEffective('groq/', true, catalog)).toBe(false);
+	test('primary 为 undefined → null', () => {
+		expect(computePrimaryEffective(undefined, available)).toBeNull();
+	});
+
+	test('primary 不含 "/" → null', () => {
+		expect(computePrimaryEffective('claude-sonnet-4-6', available)).toBeNull();
+	});
+
+	test('primary 以 "/" 开头（provider 端为空）→ null', () => {
+		expect(computePrimaryEffective('/m1', available)).toBeNull();
+	});
+
+	test('primary 以 "/" 结尾（model 端为空）→ null', () => {
+		expect(computePrimaryEffective('groq/', available)).toBeNull();
 	});
 
 	test('primary 含多个 "/"：按首个 / 拆，剩余作 model id', () => {
-		const cat = [{ id: 'foo/bar', provider: 'groq' }];
-		expect(computePrimaryEffective('groq/foo/bar', true, cat)).toBe(true);
+		expect(computePrimaryEffective('groq/foo/bar', { groq: ['foo/bar'] })).toBe(true);
 	});
 
-	test('providerUsable 为假值（undefined）→ false', () => {
-		expect(computePrimaryEffective('groq/m1', undefined, catalog)).toBe(false);
+	test('primary 非字符串（数字等）→ null', () => {
+		expect(computePrimaryEffective(123, available)).toBeNull();
 	});
 
-	test('catalog 非数组 → false', () => {
-		expect(computePrimaryEffective('groq/m1', true, null)).toBe(false);
+	test('空字符串 primary → null', () => {
+		expect(computePrimaryEffective('', available)).toBeNull();
 	});
 
-	test('primary 非字符串（数字等）→ false', () => {
-		expect(computePrimaryEffective(123, true, catalog)).toBe(false);
-	});
-
-	test('空字符串 primary → false', () => {
-		expect(computePrimaryEffective('', true, catalog)).toBe(false);
+	test('available[provider] 非数组 → false（容错）', () => {
+		expect(computePrimaryEffective('groq/m1', { groq: 'not-an-array' })).toBe(false);
 	});
 });

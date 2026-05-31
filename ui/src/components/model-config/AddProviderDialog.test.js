@@ -13,6 +13,13 @@ vi.mock('../../stores/env.store.js', () => ({
 	useEnvStore: () => envState,
 }));
 
+// 子组件 ProviderOAuthLoginStep 透传 import use-notify → @nuxt/ui 桶口的 #imports 会拖炸 vitest，
+// 即便本测试 stub 了该子组件，模块 import 链仍会加载真实 use-notify。统一 mock 掉（memory
+// feedback_ui_avoid_nuxt_ui_in_stores）。
+vi.mock('../../composables/use-notify.js', () => ({
+	useNotify: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn() }),
+}));
+
 import AddProviderDialog from './AddProviderDialog.vue';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 
@@ -44,6 +51,17 @@ const UInputStub = {
 
 const UIconStub = { props: ['name'], template: '<span :data-icon="name" />' };
 
+// 设备码登录子步：stub 出来便于断言 props 透传 + 驱动 success/cancel 事件
+const ProviderOAuthLoginStepStub = {
+	name: 'ProviderOAuthLoginStep',
+	props: ['provider', 'loginOauth', 'cancelOauth', 'autoStart'],
+	emits: ['success', 'cancel'],
+	template: `<div class="oauth-step-stub" :data-provider="provider" :data-has-login="String(!!loginOauth)" :data-has-cancel="String(!!cancelOauth)">
+		<button class="oauth-stub-success" @click="$emit('success', { provider, profileId: provider + ':default' })">ok</button>
+		<button class="oauth-stub-cancel" @click="$emit('cancel')">x</button>
+	</div>`,
+};
+
 const UModalStub = {
 	props: ['open', 'fullscreen', 'ui', 'title', 'description'],
 	emits: ['update:open'],
@@ -62,12 +80,12 @@ const UModalStub = {
 	</div>`,
 };
 
+// providerAuth.catalog 出参形态：每 provider 一条 { provider, authMethods, hasCred }
 const catalog = [
-	{ id: 'gpt-4', provider: 'openai' },
-	{ id: 'gpt-3.5', provider: 'openai' },
-	{ id: 'claude-sonnet', provider: 'anthropic' },
-	{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
-	{ id: 'gpt-mystery', provider: 'mystery' }, // 未在 PROVIDER_META
+	{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+	{ provider: 'anthropic', authMethods: ['api-key'], hasCred: false },
+	{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
+	{ provider: 'mystery', authMethods: ['api-key'], hasCred: false }, // 未在 PROVIDER_META
 ];
 
 function makeWrapper(props = {}) {
@@ -77,10 +95,18 @@ function makeWrapper(props = {}) {
 			catalog,
 			existingProviders: [],
 			setApiKey: vi.fn().mockResolvedValue({ profileId: 'openai:default' }),
+			loginOauth: vi.fn(),
+			cancelOauth: vi.fn(),
 			...props,
 		},
 		global: {
-			stubs: { UButton: UButtonStub, UInput: UInputStub, UModal: UModalStub, UIcon: UIconStub },
+			stubs: {
+				UButton: UButtonStub,
+				UInput: UInputStub,
+				UModal: UModalStub,
+				UIcon: UIconStub,
+				ProviderOAuthLoginStep: ProviderOAuthLoginStepStub,
+			},
 			mocks: {
 				$t: (key, params) => params ? `${key}|${JSON.stringify(params)}` : key,
 			},
@@ -108,9 +134,11 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(false);
 	});
 
-	test('deduplicates providers (catalog has multiple models per provider)', () => {
-		const w = makeWrapper();
-		// openai 有两个 model 但只该出现一次 item
+	test('deduplicates by provider (defensive: duplicate provider entries collapse to one item)', () => {
+		const w = makeWrapper({ catalog: [
+			{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+			{ provider: 'openai', authMethods: ['oauth-device-code'], hasCred: false },
+		] });
 		const items = w.findAll('[data-testid^="add-provider-item-openai"]');
 		expect(items).toHaveLength(1);
 	});
@@ -407,36 +435,35 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 	});
 });
 
-describe('AddProviderDialog — exclusion set (alias-aware, computed by parent)', () => {
-	// catalog 含别名基座 + 变体 provider（modelsList view:'all' 把变体也列为一等 provider）
-	const aliasCatalog = [
-		{ id: 'gpt-4', provider: 'openai' },
-		{ id: 'doubao-pro', provider: 'volcengine' },
-		{ id: 'ark-code-latest', provider: 'volcengine-plan' },
+describe('AddProviderDialog — exclusion set (parent-computed from catalog.hasCred)', () => {
+	// 新 catalog：setup 全集、基座 id、每 provider 一条带 hasCred
+	const credCatalog = [
+		{ provider: 'openai', authMethods: ['api-key'], hasCred: true },
+		{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'deepseek', authMethods: ['api-key'], hasCred: false },
 	];
 
-	test('excludes both base and variant when parent passes the union {base, variant}', () => {
-		// 父组件对新插件传 configuredProviders ∪ usable.keys = {volcengine, volcengine-plan}
-		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['volcengine', 'volcengine-plan'] });
-		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(false);
-		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(false);
-		// 未配的 openai 仍可加
-		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(true);
-	});
-
-	test('exact-match only: base id alone does NOT hide the variant (documents why parent unions)', () => {
-		// 仅传基座 id → 组件按 id 精确排除，变体 id 不被覆盖（故父组件必须并入 usable.keys）
-		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['volcengine'] });
-		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(false);
-		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(true);
-	});
-
-	test('old-plugin fallback: parent passes raw providerIds, exclusion still by exact id', () => {
-		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['openai'] });
+	test('excludes providers the parent marks as already-configured (hasCred===true → existingProviders)', () => {
+		// 父组件把 hasCred===true 的集合算成 existingProviders 传入
+		const w = makeWrapper({ catalog: credCatalog, existingProviders: ['openai'] });
 		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
-		// 未排除的基座 / 变体都还在
-		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(true);
-		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(true);
+		// hasCred===false 的可加
+		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-deepseek"]').exists()).toBe(true);
+	});
+
+	test('empty exclusion → every catalog provider is addable', () => {
+		const w = makeWrapper({ catalog: credCatalog, existingProviders: [] });
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-deepseek"]').exists()).toBe(true);
+	});
+
+	test('exclusion is by exact provider id', () => {
+		const w = makeWrapper({ catalog: credCatalog, existingProviders: ['groq'] });
+		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-deepseek"]').exists()).toBe(true);
 	});
 });
 
@@ -500,5 +527,150 @@ describe('AddProviderDialog — mobile / desktop layout', () => {
 		// Step 2：注入 confirm 弹窗样式
 		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
 		expect(w.find('.u-modal-stub').attributes('data-ui-body')).toBe(promptModalUi.body);
+	});
+});
+
+describe('AddProviderDialog — multi-entry (authMethods)', () => {
+	// 多桶 provider（authMethods 故意乱序，验证固定渲染顺序）+ 单 device-code + 单 api-key
+	const multiCatalog = [
+		{ provider: 'openai-codex', authMethods: ['oauth-login', 'oauth-device-code', 'api-key'], hasCred: false },
+		{ provider: 'github-copilot', authMethods: ['oauth-device-code'], hasCred: false },
+		{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
+	];
+
+	test('single api-key provider goes straight to key input (no chooser)', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
+		expect(w.vm.selectedMethod).toBe('api-key');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-key-input"]').exists()).toBe(true);
+		// api-key 入口保留 footer Submit
+		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);
+	});
+
+	test('single device-code provider goes straight to ProviderOAuthLoginStep (no chooser, no footer)', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
+		expect(w.vm.selectedMethod).toBe('oauth-device-code');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(false);
+		const step = w.find('.oauth-step-stub');
+		expect(step.exists()).toBe(true);
+		expect(step.attributes('data-provider')).toBe('github-copilot');
+		// loginOauth / cancelOauth 透传到子步
+		expect(step.attributes('data-has-login')).toBe('true');
+		expect(step.attributes('data-has-cancel')).toBe('true');
+		// 非 api-key 入口无 footer 按钮（Submit / Cancel 都不渲染——footer slot 整体不提供）
+		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-cancel"]').exists()).toBe(false);
+	});
+
+	test('single oauth-login provider goes straight to the "not supported" view (no chooser)', async () => {
+		const w = makeWrapper({ catalog: [
+			{ provider: 'gemini-cli', authMethods: ['oauth-login'], hasCred: false },
+		] });
+		await w.find('[data-testid="add-provider-item-gemini-cli"]').trigger('click');
+		expect(w.vm.selectedMethod).toBe('oauth-login');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-oauth-login-unsupported"]').exists()).toBe(true);
+		// 单方式 oauth-login：返回直接回 provider 选择
+		await w.find('[data-testid="add-oauth-login-back"]').trigger('click');
+		expect(w.vm.step).toBe('select');
+	});
+
+	test('multi-method provider shows a chooser with methods in fixed order (api-key, device-code, oauth-login)', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		expect(w.vm.selectedMethod).toBe('');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(true);
+		// 固定顺序，与 catalog authMethods 的乱序无关
+		expect(w.vm.selectedProviderMethods).toEqual(['api-key', 'oauth-device-code', 'oauth-login']);
+		// 渲染层也按固定顺序（防模板按 catalog 插入序渲染的回归）
+		const renderedOrder = w.findAll('[data-testid^="add-method-"]')
+			.map(b => b.attributes('data-testid'))
+			.filter(t => t !== 'add-method-back' && t !== 'add-method-chooser');
+		expect(renderedOrder).toEqual([
+			'add-method-api-key',
+			'add-method-oauth-device-code',
+			'add-method-oauth-login',
+		]);
+	});
+
+	test('chooser → pick api-key opens the key form', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		await w.find('[data-testid="add-method-api-key"]').trigger('click');
+		expect(w.find('[data-testid="add-provider-key-input"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);
+	});
+
+	test('chooser → pick device-code mounts ProviderOAuthLoginStep', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		await w.find('[data-testid="add-method-oauth-device-code"]').trigger('click');
+		const step = w.find('.oauth-step-stub');
+		expect(step.exists()).toBe(true);
+		expect(step.attributes('data-provider')).toBe('openai-codex');
+	});
+
+	test('device-code success → emits added { provider, profileId } + closes', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
+		await w.find('.oauth-stub-success').trigger('click');
+		expect(w.emitted('added')?.[0]).toEqual([{ provider: 'github-copilot', profileId: 'github-copilot:default' }]);
+		const openEvents = w.emitted('update:open');
+		expect(openEvents[openEvents.length - 1]).toEqual([false]);
+	});
+
+	test('device-code cancel → returns to chooser (multi-method) without closing', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		await w.find('[data-testid="add-method-oauth-device-code"]').trigger('click');
+		await w.find('.oauth-stub-cancel').trigger('click');
+		// 回到 chooser，对话框未关闭
+		expect(w.vm.selectedMethod).toBe('');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(true);
+		expect(w.emitted('update:open')?.some(e => e[0] === false)).not.toBe(true);
+	});
+
+	test('device-code cancel for single-method provider returns to provider select', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
+		await w.find('.oauth-stub-cancel').trigger('click');
+		// 单方式：回到 provider 选择步
+		expect(w.vm.step).toBe('select');
+		expect(w.find('[data-testid="add-provider-list"]').exists()).toBe(true);
+	});
+
+	test('oauth-login entry shows "not supported" with a back button', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		await w.find('[data-testid="add-method-oauth-login"]').trigger('click');
+		const note = w.find('[data-testid="add-oauth-login-unsupported"]');
+		expect(note.exists()).toBe(true);
+		expect(note.text()).toContain('modelConfig.providerAuth.add.oauthLoginUnsupported');
+		// 返回回到 chooser
+		await w.find('[data-testid="add-oauth-login-back"]').trigger('click');
+		expect(w.vm.selectedMethod).toBe('');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(true);
+	});
+
+	test('chooser back returns to provider select', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		await w.find('[data-testid="add-method-back"]').trigger('click');
+		expect(w.vm.step).toBe('select');
+		expect(w.find('[data-testid="add-provider-list"]').exists()).toBe(true);
+	});
+
+	test('reopening resets multi-entry state (selectedMethod cleared)', async () => {
+		const w = makeWrapper({ catalog: multiCatalog, open: false });
+		await w.setProps({ open: true });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		await w.find('[data-testid="add-method-oauth-device-code"]').trigger('click');
+		expect(w.vm.selectedMethod).toBe('oauth-device-code');
+		await w.setProps({ open: false });
+		await w.setProps({ open: true });
+		expect(w.vm.step).toBe('select');
+		expect(w.vm.selectedMethod).toBe('');
 	});
 });

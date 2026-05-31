@@ -1,10 +1,10 @@
 # 模型配置（UI 侧）
 
-> 创建时间：2026-05-25
+> 创建时间：2026-05-25（2026-05-31 补 OAuth 设备码 UI 流 + catalog 驱动加 provider + 去 view:all）
 > 状态：已实施（过程稿，完结归档；当前真相以代码为准）
-> 范围：CoClaw UI 端"模型配置"功能的产品定义与 UX 设计，覆盖 API key 凭据管理 + 默认主模型设置
-> 前置依赖：`plugins/openclaw/docs/model-config-api.md`（API 契约）
-> 不含：OAuth、per-agent 主模型覆盖、白名单、多账号顺序
+> 范围：CoClaw UI 端"模型配置"功能的产品定义与 UX 设计，覆盖 API key 凭据管理 + **OAuth 设备码登录** + 默认主模型设置
+> 前置依赖：`plugins/openclaw/docs/model-config-api.md`（API 契约；provider 目录 `providerAuth.catalog` § 2.7、可用清单 `model.listAvailable` § 3.2.1）
+> 不含：oauth-login（回环-PKCE，列出但"暂不支持"）、per-agent 主模型覆盖、白名单、多账号顺序
 
 ---
 
@@ -28,7 +28,8 @@
 
 ### 不做项（明确否决）
 
-- ❌ OAuth 登录入口（后端方法占位中，UI 等后端落地再加；list 出参里若出现 OAuth 类型 profile 只展示不可编辑）
+- ✅ OAuth **设备码**登录入口（2026-05-31 落地，见 § 5.5）；oauth-login（回环-PKCE）类**列出但点开"暂不支持"**——刻意列出免得日后忘了这个坑
+- OAuth 类型 profile 在凭据列表中展示（挂 `oauth` 徽章）+ 可撤销（"有凭据即可撤销"，纯看 `removable`）
 - ❌ per-agent 主模型覆盖（后端 API 已支持，UI 本期不暴露；多数用户一台 claw 用同一偏好）
 - ❌ fallback 链维护（后端不做，UI 也不暴露）
 - ❌ 多模态模型字段（image / video / pdf 等）
@@ -119,16 +120,13 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 └────────────────────────────────────────┘
 ```
 
-"失效"定义:当前 primary 字符串对应的 provider 已被撤销,或对应 model 不在 catalog 里。判断由前端在选择器关闭后 / 子页加载时做一次一致性校验。
+"失效"定义:当前 primary 字符串对应的 provider 已被撤销,或对应 model 不在可用清单里（二者由 `listAvailable.byProvider` membership 一次判定，见下）。判断由前端计算属性在可用清单 + primary 双就绪时算出。
 
-**为什么 UI 能判"失效"（启发式判断，但有据可依）**：这不是前端自行臆测——判定标准与**插件 `coclaw.model.set` 接受一个主模型时的校验同源**。插件在写入 primary 时就会拒绝"provider 无可用凭据"或"model 不在全量 catalog"的值（见 `plugins/openclaw/docs/model-config-api.md`）。因此凡是已落库的 primary，写入时一定满足这两条；UI 只是在子页加载 / 选择器关闭后把同一套校验再跑一遍，判断它"现在是否仍成立"。两种真实失效场景及可靠性：
+**为什么 UI 能判"失效"（有据可依）**：判定标准与**插件 `coclaw.model.set` 接受一个主模型时的校验同源**——插件写入 primary 时会拒绝"provider 无可用凭据"或"model 不在干净目录"的值（见 `plugins/openclaw/docs/model-config-api.md`）。故凡已落库的 primary 写入时一定满足；UI 只是在子页加载 / 选择器关闭后判它"现在是否仍成立"。
 
-- **provider 凭据被撤**（最常见，如撤销了 primary 所在 provider 的 key）：凭据由 CoChat 侧自管，撤没撤完全可知，判定**可靠**。
-- **model 从 catalog 消失**（上游下架 / 改名）：以 `models.list view:"all"` 全量目录比对——刻意用全量而非登录态过滤版，避免把合法 model 误判失效。
+**判定数据源（2026-05-31 改）**：用 `coclaw.model.listAvailable` 的 `byProvider` membership——`primary = <provider>/<model>` 是否落在 `byProvider[provider]` 里。一次判了"provider 有没有凭据"+"模型还在不在目录"两件（可用清单 = 干净目录 ∩ 别名感知凭据），比旧的"`providerUsable` 信号 + `models.list view:"all"` 全量目录比对"更准，且**去掉最后一个 view:all 消费点**。
 
-**保守闸门**：凭据半改吃 `model.list` 的 `providerUsable` 信号（§7.4，不再数 `providerAuth.list`）。仅当 `model.list` 成功（凭据信号新鲜）与全量 catalog 都拿到时才敢判"失效"；任一未拿到（含写后刷新失败导致信号陈旧）则保守视为有效（同 § 7.2「未知态不显示橙条」），杜绝"明明配好了怎么说失效"的误报。
-
-**残余风险**：判定本质是启发式——若全量 catalog 本身不全 / 不新鲜，理论上可能误报某个其实合法的 model 失效。靠"用全量目录 + 数据不全不判"两道兜底，一期 model 范围内够用。
+**实现方式 = 计算属性（决策4，红线级偏好）**：primary 有效性做成一个计算属性，输入 = {可用清单 `listAvailable.byProvider`, 当前 primary}，**两者皆为必须项**，两者就绪才算出"是否警告 + 警告类型"；任一未就绪 → 自然算不出警告（不误报），**无需手写时序门**（不再用 `!loadOk.catalog→effective` 保守门那套 epoch/loadOk 过度保护，已删）。关键一条：membership 把"清单还没到"当成**"先不下结论"，不是"不在清单里"**——否则清单未到时会把所有 primary 误判失效。**这"双就绪才判"本身即承担了"写后刷新失败"的反误报**（清单陈旧/未到 → 算 null，不拿旧信号误报失效）；旧的 `credSignalFresh` 单独 guard 已随计算属性化**删除**（`computePrimaryEffective(primary, available)` 现只这两个入参）。
 
 ### B. API 凭据区（下方）
 
@@ -146,8 +144,9 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 - 每行：provider 名 + **来源小标签（仅 inline/env：`配置文件` / `环境变量`；账本 profile 是默认存储、不打标签）** + keyPreview(头 4 + … + 尾 4) + 撤销动作。【2026-05-28 拍板：profile 不打标签——新用户多只有 profile 源、全程看不到标签，负担最低；列表不分组】
 - **来源决定可撤性**（`removable`）：账本 / 内联可撤；**env 不可撤**（在 OpenClaw 主机进程环境里，插件改不了）——该行灰显、撤销按钮禁用，次行提示"到 OpenClaw 主机移除"
-- 同一 provider 可多来源并存（如账本 + 内联各一份），各自独立成行、撤销互不影响。**注（2026-05-28 修订）**：本列表**不再喂 picker 可选性**——picker 改吃"能用集"（`coclaw.model.catalog`，见 §7.1 / §7.4）；本列表只管展示 + 撤销 + 「加 provider」时排除已配
-- **env 行的列出范围待定（#3 挂起）**：env 是否在此成行是**纯展示口径**问题——模型可选性已由能用集解决（env 模型照样能选），env 成不成行不再影响可用性。具体口径见 dump「方案 TODO」+「方案修订」
+- 同一 provider 可多来源并存（如账本 + 内联各一份），各自独立成行、撤销互不影响。**注（2026-05-31 修订）**：本列表**回归纯凭据管理**——只管**展示 + 撤销**。两件曾搭在它身上的事都已搬走：picker 可选性吃可用清单（`coclaw.model.listAvailable`，见 §7.1 / §7.3）；「加 provider」排除已配吃 `coclaw.providerAuth.catalog` 的 `hasCred`（见 §5.2 / §7.3）
+- **OAuth 类型行挂 `oauth` 徽章**（`profile.type === 'oauth'`）：徽章字面量 `oauth` **不进 i18n**（品牌/类型词不翻译），容器用 `items-end` 让徽章底边与同行文字底边对齐。撤销纯看后端 `removable`（"有凭据即可撤销"，本地删可经 CoClaw 重登回来；**删旧 `COCLAW_OAUTH_PROVIDERS` 白名单 gate**）
+- **env 行的列出范围待定（#3 挂起）**：env 是否在此成行是**纯展示口径**问题——模型可选性已由可用清单（`coclaw.model.listAvailable`）解决（env 模型照样能选），env 成不成行不再影响可用性。具体口径见 dump「方案 TODO」+「方案修订」
 - 列表为空（账本 + 内联皆空）时显示提示:"还没配任何 provider,先添加一个 API key"
 - 「+ 添加」打开"添加 provider"流程（已配 provider——含内联/env——从可选列表剔除，避免再加一份低优先级、不生效的 key）
 
@@ -161,7 +160,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 新用户绑完 claw
   → ManageClawsPage 该 claw 卡片显示橙条「未配 API key,agent 无法对话」+「去配置」
   → 点击进入 /claws/:id/models
-  → 「+ 添加」选 provider(搜索 + 列表,37 个)
+  → 「+ 添加」选 provider(搜索 + 列表，catalog 全集中 hasCred===false 的可加项)
   → 输入 API key(密码 input)+ 可选「去 provider 官网拿 key」链接
   → 提交,凭据列表刷新
   → 上方"默认主模型区"自动检测:还没设主模型 → 提示「请继续选主模型」
@@ -194,7 +193,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 └────────────────────────────────────────┘
 ```
 
-- 列表数据源：`models.list view:"all"` 返回的 provider 字段去重
+- 列表数据源：`coclaw.providerAuth.catalog` 返回的 provider 中 **`hasCred === false`** 的那些（即"还没配过、可加"的）；不再从 `models.list view:"all"` distinct provider 取（已去 view:all）
 - **排除已配 provider 用别名归一名（修订 6，#8 闭合）**：列表里要排掉用户已有凭据的 provider，排除口径**两侧都按别名基座名归一**（`resolveProviderIdForAuth`，插件侧做——UI 拿不到该函数）。否则套餐用户持 `volcengine` 基座 key，仍被提供去重复加 `volcengine`/`volcengine-plan`。归一后的"已配 provider"集由插件随凭据信号或专门字段给 UI
 - "常用"分组的 provider 由 UI 端硬编码（一期人工维护一份"热门 provider"清单，按用户分布 + 国内外平衡选取）
 - displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**展示暂缓**：provider 选择列表 / 主模型选择器当前直接用原生 provider id 占位，displayName 映射暂未接入这两处展示；displayName 仍是最终目标，后续接入
@@ -221,6 +220,13 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - 成功 → 关闭 → 列表刷新（**成功不 notify**：新增项立即出现在凭据列表即反馈）
 - 失败 → 表单内显示错误（`INVALID_ARGS` / `IO_FAILED`），错误码映射成本地化的人话
 
+**Step 2 按 `authMethods` 多入口（2026-05-31）**：选中 provider 后，按 `coclaw.providerAuth.catalog` 给的 `authMethods` 渲染对应入口，**零特判（OpenClaw 给什么给什么）**：
+
+- `api-key` → 上面的"输 key"步骤。
+- `oauth-device-code` → **设备码登录步骤**（挂 `ProviderOAuthLoginStep` 组件，§ 5.5）。
+- `oauth-login` → 列出但点开提示**"暂不支持"**（回环-PKCE 远端要贴回 redirect URL，UX 太重）。
+- 一个 provider 多方式 → **多个入口并排**让用户选（如 openai-codex 同时给 api-key + 设备码 + oauth-login）；单方式直达对应步骤。
+
 ### 5.3 换主模型流程
 
 点「更换」/「选择主模型」打开模态：
@@ -244,7 +250,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 └────────────────────────────────────────┘
 ```
 
-- 数据源（修订 6）：吃 `coclaw.model.listUsable` 返回的枚举集（provider → 可用 modelId，插件侧已 `loadModelCatalog` 干净目录 ∩ 别名感知凭据、无幽灵），按 provider 分组直接出可选项；**不再**用"`models.list view:"all"` ∩ `providerAuth.list`"按原始名取交集（那会漏别名套餐变体，如 `volcengine-plan/ark-code-latest`）。旧插件无 listUsable 方法时回退到旧交集（§ 7.3）。
+- 数据源：吃 `coclaw.model.listAvailable`（原 `listUsable` 改名，双名过渡）返回的 `byProvider`（provider → 可用 modelId，插件侧已 `loadModelCatalog` 干净目录 ∩ 别名感知凭据、无幽灵），按 provider 分组直接出可选项；**不再**用"`models.list view:"all"` ∩ `providerAuth.list`"按原始名取交集（那会漏别名套餐变体，如 `volcengine-plan/ark-code-latest`）。**旧插件兜底已删**（决策1：新 UI 直接要求新插件，不再回退到旧交集）。
 - 点击一项即选即保存：`coclaw.model.set({ primary: '<provider>/<model>' })`（其凭据门与选模型器走同一别名感知原语，避免"选得到设不上"）
 - 保存成功 → 关闭模态 → 主模型区刷新（**成功不 notify**：主模型区立即变更即反馈）
 - 不做"二次确认"——可以再换，无破坏性
@@ -279,6 +285,21 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 **关于撤完后 primary 字段**：UI **不主动**调 `model.set({ primary: null })` 把 primary 清空——保持原字符串留在 cfg 里，让"主模型失效"橙条自然引导用户重选。理由：一是减少额外 RPC 与失败处理；二是用户重选时直接覆盖比"先清空再选"更顺。
 
+### 5.5 OAuth 设备码登录流程（2026-05-31）
+
+provider 的 `authMethods` 含 `oauth-device-code` 时，「加 provider」走设备码登录步骤——新组件 `ProviderOAuthLoginStep`（Options API，不用 `<script setup>`）承载两阶段流，**复用 `claw-connection.js` 的 `request(method, params, {onAccepted, signal})` 两阶段地基，无需新管道**。
+
+**两阶段契约**（见 plugin `model-config-api.md` § 2.3.2 / § 6.16.8）：
+
+- phase-1（`onAccepted`，仅 `status==='accepted'` 帧触发）：`coclaw.providerAuth.loginOauth({provider})` 返回 `{ loginId, verificationUri, userCode, rawText }`。展示 `verificationUri` + `userCode`（可附二维码）；结构化字段抠不到时用 `rawText` 全文**兜底渲染**。
+- phase-2（终态帧，同一请求）：成功 → 通知父级走既有 `refreshAfterWrite` 刷新；失败按 `error.code` 映 i18n——`OAUTH_FAILED` / `OAUTH_TIMEOUT` / `IO_FAILED` / `NOT_FOUND` 各有文案，未知码回退泛化"失败"文案；**`OAUTH_CANCELLED` 不映错误文案**（取消是预期终态、静默退回，不弹 toast）。
+- 取消：调 `coclaw.providerAuth.cancelOauth({loginId})`（用登录起记的 claw id 定位，避免切 claw 期间拨错；client waiter 由 `signal` abort 收掉）。
+- `loginOauth` / `cancelOauth` 走 DC 直达 plugin；**`loginOauth` 注入 `timeout:0`**（设备码授权窗口长、不设超时），`cancelOauth` 是快速 abort、用常规 `RPC_TIMEOUT`（~60s）。
+
+**oauth-login（回环-PKCE）= 列出但"暂不支持"**：catalog 给 `oauth-login` 的 provider 仍列入口，点开提示"暂不支持"——刻意列出，免得日后忘了这个坑回头纳闷某家为何没列（回环 localhost 回调远端要贴回 redirect URL，UX 太重，搁置）。
+
+notify 走组件内 `useNotify()`（store 不 import nuxt-ui，组件内可用）。
+
 ---
 
 ## 六、首次引导（ManageClawsPage 外层）
@@ -289,7 +310,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 |---|---|---|
 | 无任何可用凭据 | 未配 API key，agent 无法对话 | 去配置 → `/claws/:id/models` |
 | 凭据非空但 primary 为空 | 未配主模型，agent 无法对话 | 去配置 → `/claws/:id/models` |
-| primary 不为空但失效（provider 已撤 / model 不在 catalog） | 主模型失效，请重新选择 | 去配置 → `/claws/:id/models` |
+| primary 不为空但失效（provider 已撤 / model 不在可用清单） | 主模型失效，请重新选择 | 去配置 → `/claws/:id/models` |
 
 - 三种状态互斥，按优先级 1 > 2 > 3 选最严重的一种展示
 - 仅在该 claw 在线时显示（离线时数据本来就拿不到，不展示）
@@ -312,14 +333,15 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  plugin (per claw)                                         │
-│  ─ coclaw.providerAuth.list                                │
-│  ─ coclaw.providerAuth.setApiKey                           │
-│  ─ coclaw.providerAuth.remove                              │
-│  ─ coclaw.model.list                                       │
-│  ─ coclaw.model.set                                        │
-│  ─ coclaw.model.listUsable（干净目录∩别名感知凭据；选模型器源）│
-│  ─ models.list (upstream, view:"all")                      │
+│  plugin (per claw)                                          │
+│  ─ coclaw.providerAuth.list      （已配凭据：展示+撤销）    │
+│  ─ coclaw.providerAuth.setApiKey                            │
+│  ─ coclaw.providerAuth.remove                               │
+│  ─ coclaw.providerAuth.catalog   （全 provider+认证方式+hasCred；加 provider 源）│
+│  ─ coclaw.model.list             （各 scope 的 primary）   │
+│  ─ coclaw.model.set                                         │
+│  ─ coclaw.model.listAvailable    （干净目录∩别名感知凭据；可用清单/有效性源；listUsable 过渡别名）│
+│  （已去 models.list view:"all"）                            │
 └────────────────────────────────────────────────────────────┘
               │
               ▼
@@ -328,15 +350,15 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 │                                                             │
 │  dashboard.store（外层用：每 claw 标识级数据）              │
 │  ─ hasUsableCredential: boolean   ← model.list 凭据信号     │
-│  ─ primaryModel: string | null                              │
-│  ─ primaryProviderUsable: boolean ← 只看凭据、不查目录       │
+│  ─ primaryModel: string | null                             │
+│  ─ primaryProviderUsable: boolean ← 只看凭据、不查目录      │
 │  （仪表盘只调 model.list 取凭据信号，不拉 catalog/providerAuth）│
 │                                                             │
 │  模型设置子页（组件 state，按需即拉）                       │
-│  ─ profiles: providerAuth.list 全量（仅凭据区展示/撤销）     │
-│  ─ usable: coclaw.model.listUsable（选模型器数据源，无幽灵）  │
-│  ─ catalog: models.list view:"all"（仅"模型下架"检测+旧插件回退）│
-│  ─ default: model.list.default                              │
+│  ─ profiles: providerAuth.list 全量（凭据区展示/撤销）      │
+│  ─ catalogProviders: providerAuth.catalog（加 provider 列表：hasCred + authMethods）│
+│  ─ available: coclaw.model.listAvailable.byProvider（选模型器 + primary 有效性）│
+│  ─ default: model.list.default                             │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -346,7 +368,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 - `coclaw.model.list`：派生 `primaryModel` 字符串 + **凭据/有效性判定信号**（见 §7.4；旧插件给不出信号 → 当 false，不再压制）
 
-**仪表盘不再拉 `models.list view:"all"`（§7.4）**：橙条判定只看 model.list 凭据信号、不查目录；全量目录的唯一消费点是 agent 卡片模型名徽章，而它现因 `status.model` 常空本就不显示，故省掉每次刷新拉近千模型这一下重操作。全量目录**仅设置子页自拉**（§7.3）。
+**`models.list view:"all"` 已彻底移除（2026-05-31）**：橙条判定只看 model.list 凭据信号、不查目录；agent 卡片模型名徽章因 `status.model` 常空本就不显示，故仪表盘不拉它。设置子页原先自拉 view:all 做"模型下架"检测，本轮也改吃 `coclaw.model.listAvailable.byProvider`（§7.3），故**全前端再无 view:all 消费点**，省掉每次拉近千模型的重操作。
 凭据列表（子页凭据区）也不在仪表盘拉——子页进入时自取 `coclaw.providerAuth.list`。
 
 **失败处理沿用现有 allSettled 模式**：单条 RPC 失败不影响其它字段；失败时按"未知态"取默认值。外层在这种"未知态"下**不显示橙条**——避免数据拿不到时误报 warning。橙条显隐**与 catalog 解耦**（仪表盘本就不拉 catalog；§7.4）。
@@ -355,8 +377,8 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 
 ### 7.3 模型设置子页
 
-- 进入页面时拉：`providerAuth.list`（凭据区）+ `model.list`（current default + 信号）+ `coclaw.model.listUsable`（选模型器枚举集，干净目录∩别名感知凭据、无幽灵）+ `models.list view:"all"`（仅"模型下架"检测）【修订 6：选模型器吃 listUsable，插件侧已做干净目录∩凭据，UI 不再 `catalog ∩ providerIds`】
-- **旧插件回退**：旧插件无 `coclaw.model.listUsable` → 该调用 method-not-found。UI **必须回退**到旧派生「`providerAuth.list` 三源 ∩ `models.list view:"all"`」喂选模型器，否则升级窗口内选模型器空白、用户选不到任何模型。（插件随 claw 自动升级，窗口短，但 UI 独立发版，故须留回退；回退态短暂缺别名变体，可接受。）
+- 进入页面时**并发四路**（`Promise.allSettled`）：`providerAuth.list`（凭据区展示/撤销）+ `providerAuth.catalog`（加 provider 列表：hasCred + authMethods）+ `model.list`（current default + 凭据信号）+ `coclaw.model.listAvailable`（选模型器 `byProvider` + primary 有效性 membership，干净目录∩别名感知凭据、无幽灵）。**已去 `models.list view:"all"`**——"模型下架"检测改由 `listAvailable.byProvider` membership 承担（§4 / §7.4），不再单拉全量目录。
+- **不做旧插件回退（决策1）**：新 UI 直接要求新插件（claw 随插件自动升级，窗口极窄），不再为缺 `listAvailable`/`catalog` 的旧插件留 UI 回退路径。
 - 写完任一字段 → 局部更新 state + 触发 `dashboard.store` 重拉（**成功不 notify**：界面变化即反馈）
 - 退出页面销毁——不长期占用 store
 
@@ -366,23 +388,26 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 >
 > 修订背景（历史）：原判定只数「自管账本」一处，漏内联 key，导致老用户被误报「未配 API key」（线上实锤）。已发布修复＝三源信号。
 
+> **2026-05-31 调整（primary 有效性改计算属性 + 去 view:all）**：**primary 有效性**判断从"`model.list.providerUsable` 信号 + `models.list view:"all"` 全量目录比对"**改为前端查 `coclaw.model.listAvailable` 的 `byProvider` membership**（一次判"provider 有凭据 ∧ model 在目录内"），并落成**计算属性**（决策4，§4）。两个连带变化：① **设置子页**不再用 `providerUsable` 判 primary 有效性（改 membership）；但 **`/claws` 仪表盘外层引导仍消费 `default.providerUsable`**（`primaryProviderUsable`，仪表盘从轻、不拉可用清单，§ 7.2）→ 故该字段**保留、非可删**（设计稿曾设想它变"可选清理"，实现保留了仪表盘这条消费路径）；② **`this.catalog`（view:all）目录半保留已删**，不再单拉全量目录守"模型下架"。**`noKey` 信号 `hasAnyUsableCredential` 保留不动**（红线）。
+
 **判定信号由 plugin 计算**，搭在 `coclaw.model.list` 出参回传：
 
-- 「主模型那家可用否」（驱动 invalid/失效）：`<scope>.providerUsable` = `computeProviderUsable(primary)`（别名感知、不读目录；账本里的别名套餐 key 已能正确判 `volcengine-plan` 可用）。与选模型器枚举**同口径** → 无"IAM-only 选得到却判失效"矛盾。
+- 「主模型那家可用否」：`<scope>.providerUsable` = `computeProviderUsable(primary)`（别名感知、不读目录；账本里的别名套餐 key 已能正确判 `volcengine-plan` 可用）。与选模型器枚举**同口径**。**注（2026-05-31）**：**设置子页**的 primary 有效性已改用 `listAvailable.byProvider` membership（见上方调整说明），子页不再消费本字段；但 **`/claws` 仪表盘外层引导仍消费 `default.providerUsable`**（`primaryProviderUsable`，§ 7.2）→ 字段**保留**。
 - 「这台 claw 有没有可用凭据」（驱动 noKey）：`computeHasAnyUsableCredential` = 账本非空 OR 任一内联 key **OR env key**（修订 6 补 env，与 providerUsable 口径对齐；shipped 实现漏 env，纯 env-only 用户会"选得到却被弹没 key"，故必补）。
 
 **覆盖面（修订 6）**：选模型器 / set / providerUsable / noKey 四处统一覆盖 env+内联+账本+**别名套餐（火山/byteplus/minimax-cn/stepfun）**；**统一漏 IAM/本地**（`hasAuthForModelProvider` 未导出 plugin-sdk，pro 边角 → 可能 spurious noKey/失效橙条，但**不阻断使用**，按"简单优先、可接受 pro 残留"取舍）。**不再有"信号便宜 vs 枚举完整"分层**——同一原语贯穿，四处一致。
 
 **旧插件不再特判（feature-detect-suppress 已移除）**：响应里没有凭据信号字段（旧插件）→ 前端当 false → **该弹 noKey / invalid 就弹**。取舍理由：目标是通过 CoClaw 界面配置的小白用户，主动引导提示本身是产品价值；且 claw 很快会自动升级插件，「新前端 + 旧插件」窗口极窄——这段窗口内旧插件用户短暂再现误报可接受，远好过对小白沉默。
 
-> 历史：早期版本曾按「出参无凭据信号 → 视为旧插件 → 压制 noKey/invalid」做 feature-detect-suppress（宁可少提示不可误报）。后因「宁可放过不误报」与小白引导价值冲突而废弃——见 commit 历史。子页「写完设置后那次后台刷新失败」的反误报保护是**另一回事**（不拿写入前的旧凭据信号误报失效），保留至今。
+> 历史：早期版本曾按「出参无凭据信号 → 视为旧插件 → 压制 noKey/invalid」做 feature-detect-suppress（宁可少提示不可误报）。后因「宁可放过不误报」与小白引导价值冲突而废弃——见 commit 历史。子页「写完设置后那次后台刷新失败」的反误报保护是**另一回事**（不拿写入前的旧凭据信号误报失效）——2026-05-31 起由 primary 有效性**计算属性**天然承担（可用清单 + primary 双就绪才判、未就绪算 null），旧的 `credSignalFresh` 单独标记已随之**删除**（见上 §7.4 调整说明）。
 
-**仪表盘不查目录**：主模型「灵不灵」只看凭据，不为此拉全量目录判「模型是否还在 catalog」。「模型下架」这种情形**仅在设置子页暴露**（子页持全量目录，见 §7.3）；仪表盘从轻、且**根本不拉 catalog**（§7.2）。橙条显隐与 catalog 解耦。
+**仪表盘不查目录**：主模型「灵不灵」只看凭据，不为此拉全量目录判「模型是否还在 catalog」。「模型下架」这种情形**仅在设置子页暴露**（子页用 `listAvailable.byProvider` membership 判定，见 §7.3 / §4）；仪表盘从轻、且**根本不拉 catalog**（§7.2）。橙条显隐与 catalog 解耦。
 
-**切主模型走「成功即权威、不重读确认」**：picker await `model.set` 成功后才回调，子页据此**直接**把成功值设为 `primary`、并按 set 校验门已过的事实置 `providerUsable=true / credSignalFresh=true`，写后刷新**不重拉 `model.list` 覆盖**（`refreshAfterWrite({ trustPrimary:true })`）。
+**切主模型走「成功即权威、不重读确认」**：picker await `model.set` 成功后才回调，子页据此**直接**把成功值设为 `primary`，写后刷新**不重拉 `model.list` 覆盖**（`refreshAfterWrite({ trustPrimary:true })`）。
 - 动因：写盘成功后立即读 `model.list` 可能命中 OpenClaw 运行时**写前陈旧快照**（hot reload 滞后约 1s），把刚切的新值/新 provider 凭据盖回旧值——即「切主模型后显示回跳」bug。成功即权威，不靠读回确认（与项目通则一致）。
-- **目录半保留不动**：`primaryEffective` 仍拿 `this.catalog`（`models.list view:"all"`）裸比对守「模型真被下架」。前提：**`view:all` 是选模型器可选集（`loadModelCatalog readOnly:true` ∩ 别名感知凭据）的超集**——2026-05-30 运行时核实，含 `minimax-portal` 别名套餐变体 `-highspeed`，故刚切的模型在 `this.catalog` 里天然命中、不误报失效。若将来某扩展插件打破此超集关系（选得到但 `view:all` 没有）：当时只是 `view:all` 陈旧（下次 loadAll 重新发现补上）→ 刷新即愈；若是**结构性缺口**（`view:all` 永远不含该模型）→ 每次重载仍误报失效，需给切主模型路加「信任 set、跳过目录复核」的 justSet 短路。
-- 仅切主模型一路 trust；**加/删 provider 仍走默认路径**重拉并 apply `model.list`（primary 未变，且删掉主模型那家 provider 时 `model.list` 会正确报 `providerUsable=false` → 翻失效，必须放行）。
+- **刚切的模型天然命中可用清单**：primary 有效性由计算属性吃 `listAvailable.byProvider` membership 判，而**选模型器选项正是来自同一份 `byProvider`** → 刚选的模型必在其中、membership 天然成立、不误报失效，**无需额外目录复核**。
+- **去掉旧的 view:all 目录半保留**：旧实现里 `primaryEffective` 还拿 `this.catalog`（`models.list view:"all"`）裸比对守"模型真被下架"，本轮**删除**——可用清单已是"干净目录 ∩ 别名感知凭据"，membership 一步覆盖"凭据在 ∧ 模型在目录"，且选模型器与有效性判定**同源同一份 byProvider**，不会出现"选得到却判失效"的结构性缺口（旧 view:all 超集前提那套推演随之作废）。
+- 仅切主模型一路 trust；**加/删 provider 仍走默认路径**重拉并 apply（primary 未变；删掉主模型那家 provider 后 `listAvailable.byProvider` 不再含它 → membership 翻失效，必须放行让橙条引导重选）。
 
 ---
 
@@ -391,8 +416,9 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 | 组件 | 角色 | 位置建议 |
 |---|---|---|
 | `ModelConfigPage` | 子页主组件 | `src/views/ModelConfigPage.vue` |
-| `ProviderAuthRow` | 单 provider 凭据行 | `src/components/model-config/` |
-| `AddProviderDialog` | 添加 provider 流程容器（含两步） | 同上 |
+| `ProviderAuthRow` | 单 provider 凭据行（含 oauth 徽章） | `src/components/model-config/` |
+| `AddProviderDialog` | 添加 provider 流程容器（按 `authMethods` 多入口） | 同上 |
+| `ProviderOAuthLoginStep` | OAuth 设备码登录步（两阶段流，§ 5.5） | 同上 |
 | `PrimaryModelPickerDialog` | 主模型选择器 | 同上 |
 | `RemoveProviderConfirmDialog` | 撤销确认（含强提示分支） | 同上 |
 
@@ -424,7 +450,7 @@ export const PROVIDER_META = {
 - `displayName` 用品牌官方名，**不进 i18n**（品牌不翻译）
 - `dashboardUrl` 实施时由队员核验是否仍可用；若变更则在 PR 描述中标注
 - 未在表中的 provider：`displayName` fallback 为 provider id 本身、`popular: false`、不显示"去官网"链接
-- 完整 provider 列表由 `models.list view:"all"` 运行时拿，**不在本表硬编码**——一期 37 个，未来扩展只动 PROVIDER_META，不破坏 dropdown 完整性
+- 完整 provider 列表由 `coclaw.providerAuth.catalog` 运行时拿（setup 全集，含认证方式 + hasCred），**不在本表硬编码**——未来扩展只动 PROVIDER_META，不破坏 dropdown 完整性
 
 ### 8.2 i18n key 命名规范
 
@@ -433,15 +459,15 @@ export const PROVIDER_META = {
 | 二级命名空间 | 归属 | 示例 |
 |---|---|---|
 | `modelConfig.primary.*` | 默认主模型区 + 主模型选择器 | `primary.title`、`primary.changeButton`、`primary.notSetWarning`、`primary.invalidWarning`、`primary.pickerTitle` |
-| `modelConfig.providerAuth.*` | API 凭据区 + 添加 / 撤销流程 | `providerAuth.title`、`providerAuth.addButton`、`providerAuth.removeButton`、`providerAuth.add.stepSelectTitle`、`providerAuth.add.stepConfigTitle`、`providerAuth.remove.title`、`providerAuth.remove.descAffectPrimary` |
+| `modelConfig.providerAuth.*` | API 凭据区 + 添加 / 撤销流程 + **OAuth 设备码登录步** | `providerAuth.title`、`providerAuth.addButton`、`providerAuth.removeButton`、`providerAuth.add.stepSelectTitle`、`providerAuth.add.stepConfigTitle`、`providerAuth.remove.title`、`providerAuth.remove.descAffectPrimary`；**设备码流** `providerAuth.oauth.*`：`oauth.starting`、`oauth.instructions`（含 `{provider}` 占位）、`oauth.openLink`、`oauth.linkLabel`、`oauth.codeLabel`、`oauth.rawTextLabel`、`oauth.waiting`、`oauth.failed`（泛化回退）、`oauth.errors.{OAUTH_FAILED, OAUTH_TIMEOUT, IO_FAILED, NOT_FOUND}`（**OAUTH_CANCELLED 静默、无 key**）；oauth-login"暂不支持" = `providerAuth.add.oauthLoginUnsupported`（含 `{provider}`）+ `providerAuth.add.methodOauthLogin` |
 | `modelConfig.guidance.*` | ManageClawsPage 外层引导（橙条文案 + "去配置"按钮） | `guidance.noKeyWarning`、`guidance.noPrimaryWarning`、`guidance.invalidPrimaryWarning`、`guidance.goConfigure` |
 | `modelConfig.common.*` | 通用文案（offline 提示 / 保存失败 / 连接异常等） | `common.clawOffline`、`common.saveFailed`、`common.connError` |
 
 约束：
 
-- 涉及语言：en / zh-CN / zh-TW / es / de（与现状一致）
-- 任何新 key 必须 5 个语言**同步**新增；漏一个 = deep-review 必驳
-- `displayName`（provider 品牌名）**不进** i18n
+- 涉及语言：**全 12 个 locale**（de / en / es / fr / hi / ja / ko / pt / ru / vi / zh-CN / zh-TW，与现状一致）
+- 任何新 key 必须 **12 个语言**全部**同步**新增；漏一个 = deep-review 必驳（设备码/oauth key 占位 `{provider}` 也须各语言齐）
+- `displayName`（provider 品牌名）**不进** i18n；oauth 徽章字面量 `oauth` 也**不进** i18n
 - 错误码 → 文案映射的 key 放 `modelConfig.common.*`（如 `common.errInvalidArgs`、`common.errIoFailed`），避免分散到各 component
 
 ---
@@ -511,7 +537,7 @@ export const PROVIDER_META = {
 - 错误码 → 文案映射函数
 - `utils/nav-back.js` helper
 - `constants/provider-meta.js` 映射表形态校验（每条带 displayName、popular、可选 dashboardUrl）
-- "primary 失效判定"工具函数（拆 `<provider>/<model>` + 与 providers/catalog 比对）
+- "primary 失效判定"计算属性（拆 `<provider>/<model>` + 与 `listAvailable.byProvider` membership 比对；清单未到=先不下结论、不误报）
 
 ### 按现行规范
 

@@ -38,7 +38,7 @@ import { PORTAL_PROVIDER_ID, CONFIG_DEFAULT_BASE_URL, VALID_REGIONS } from './mi
 import { getPortalModels } from './portal-model-catalog.js';
 import { remoteLog } from '../remote-log.js';
 import { getClawConfig } from '../claw-config.js';
-import { listAllPrimaries, providerSegmentOf } from '../model-default/resolve.js';
+import { listAllPrimaries, providerSegmentOf, computeConfiguredProviders } from '../model-default/resolve.js';
 import { deepMergeInto } from '../utils/deep-merge.js';
 import {
 	isVerificationNote,
@@ -49,6 +49,14 @@ import {
 
 const VALID_CRED_TYPES = new Set(['api_key', 'oauth', 'token']);
 const PORTAL_PROFILE_ID = `${PORTAL_PROVIDER_ID}:default`;
+
+// catalog 出参的 authMethods 映射（一条规则零特判）：只露这三 kind，token/custom 不进出参。
+// kind 五值见上游 types.ts（oauth|api_key|token|device_code|custom）。
+const KIND_TO_AUTH_METHOD = {
+	device_code: 'oauth-device-code',
+	oauth: 'oauth-login',
+	api_key: 'api-key',
+};
 
 function respondInvalid(respond, message) {
 	respond(false, undefined, { code: 'INVALID_ARGS', message });
@@ -84,7 +92,9 @@ function isNonEmptyString(v) {
  * @param {Function} [opts.logRemote] - (text) → void，OAuth 终态诊断推送；默认模块级 remoteLog（测试注入 spy）
  * @param {Function} [opts.resolveConfig] - () → OpenClaw runtime config 快照；通用 device-code 登录（B1）拿 config 用，默认 getClawConfig
  * @param {Function} [opts.resolveProviders] - ({ config, providerRefs }) → ProviderPlugin[]；B1 经它拿 provider 的 auth 方法（生产由入口注入，内部 activate:false），默认抛错
- * @returns {{ setApiKey, list, remove, loginOauth, cancelOauth }}
+ * @param {Function} [opts.resolveSetupProviders] - ({ config }) → ProviderPlugin[]；catalog 经它拿 setup 全集（mode:'setup', activate:false, cache:true，生产由入口注入），默认抛错
+ * @param {Function} [opts.loadProviderIdResolver] - () → Promise<resolveProviderIdForAuth>；catalog 算 hasCred 时别名归一基座 id（生产由入口惰性加载 agent-runtime），默认抛错
+ * @returns {{ setApiKey, list, remove, loginOauth, cancelOauth, catalog }}
  */
 export function buildProviderAuthHandlers({
 	sdk,
@@ -96,6 +106,8 @@ export function buildProviderAuthHandlers({
 	logRemote = remoteLog,
 	resolveConfig = getClawConfig,
 	resolveProviders = () => { throw new Error('provider catalog runtime not injected'); },
+	resolveSetupProviders = () => { throw new Error('provider catalog runtime not injected'); },
+	loadProviderIdResolver = () => { throw new Error('agent runtime not injected'); },
 }) {
 	// TODO: 将来若要支持"设默认模型 / 多账号顺序"等需要写 cfg 的操作，会撞上
 	// gateway 重启窗口的 UX 问题——参 docs/model-config-api.md § 3 / § 5（占位章节）。
@@ -553,7 +565,79 @@ export function buildProviderAuthHandlers({
 		}
 	}
 
-	return { setApiKey, list, remove, loginOauth, cancelOauth };
+	// --- provider 目录（能力 1）：枚举全集 provider + 各自认证方式 + 是否已配凭据 ---
+
+	// 无参；出参 { providers: [{ provider, authMethods, hasCred }] }（命名对象、不 wrap、不 undefined）。
+	// 数据源 = resolvePluginProviders(setup) 全集（含未配 provider）；authMethods 一条规则零特判
+	// （device_code/oauth/api_key 三 kind 露出，token/custom 不露，authMethods 空则该 provider 不进出参）；
+	// hasCred 复用 computeConfiguredProviders 三源（账本/内联/env）别名归一基座 id。
+	// 错误码：未知字段 → INVALID_ARGS（params:{} / undefined / null 都放行）；解析/凭据探针/store 读抛错 → IO_FAILED。
+	async function catalog({ params, respond }) {
+		try {
+			// 无参方法：params 缺省（undefined / null）或空对象都放行；带任何字段即未知字段。
+			if (params !== undefined && params !== null) {
+				if (typeof params !== 'object' || Array.isArray(params)) {
+					respondInvalid(respond, 'params must be an object');
+					return;
+				}
+				const keys = Object.keys(params);
+				if (keys.length > 0) {
+					respondInvalid(respond, `unknown field: ${keys[0]}`);
+					return;
+				}
+			}
+
+			const config = resolveConfig() ?? {};
+			// setup 全集（含未配）：activate:false 零副作用、cache:true 复用进程内发现缓存。生产由入口注入。
+			const providers = await resolveSetupProviders({ config });
+			// 别名归一基座 id（hasCred 计算用）：agent-runtime 惰性加载，失败走 IO_FAILED。
+			const resolveProviderIdForAuth = await loadProviderIdResolver();
+			// 三源 hasCred（账本/内联/env），全过 resolveProviderIdForAuth 归一基座 id。
+			const configuredSet = new Set(computeConfiguredProviders(config, {
+				agentDir: resolveAgentDir(),
+				isProviderApiKeyConfigured: sdk.isProviderApiKeyConfigured,
+				hasConfiguredSecretInput: sdk.hasConfiguredSecretInput,
+				ensureAuthProfileStore: sdk.ensureAuthProfileStore,
+				resolveProviderIdForAuth,
+			}));
+
+			const out = [];
+			for (const p of providers ?? []) {
+				const provider = p?.id;
+				if (typeof provider !== 'string' || provider.length === 0) continue;
+				const authMethods = mapAuthMethods(p.auth);
+				if (authMethods.length === 0) continue; // custom-only / token-only / 空 auth[] 自然排除
+				out.push({ provider, authMethods, hasCred: configuredSet.has(provider) });
+			}
+			respond(true, { providers: out });
+		}
+		catch (err) {
+			respondIoFailed(respond, err);
+		}
+	}
+
+	return { setApiKey, list, remove, loginOauth, cancelOauth, catalog };
+}
+
+/**
+ * 把 provider 的 auth[] 映射成对外的 authMethods（catalog 用，一条规则零特判）：
+ * device_code→oauth-device-code、oauth→oauth-login、api_key→api-key；token/custom 不露。
+ * 保留 auth[] 出现顺序，按方法名去重（一 provider 可多入口、同 kind 多条只算一次）。
+ * @param {Array<{kind?:string}>} authArr - resolvePluginProviders 返回项的 auth 数组
+ * @returns {string[]}
+ */
+function mapAuthMethods(authArr) {
+	const out = [];
+	const seen = new Set();
+	if (!Array.isArray(authArr)) return out;
+	for (const a of authArr) {
+		const method = KIND_TO_AUTH_METHOD[a?.kind];
+		if (method && !seen.has(method)) {
+			seen.add(method);
+			out.push(method);
+		}
+	}
+	return out;
 }
 
 /**

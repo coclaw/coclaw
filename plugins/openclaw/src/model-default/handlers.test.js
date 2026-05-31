@@ -21,7 +21,7 @@ function makeSdk(overrides = {}) {
 			sdk.__cfg = draft;
 			return { result: undefined };
 		},
-		// 干净目录（set 存在性 + listUsable 枚举同源）：默认含 openai-codex / anthropic 两家若干模型
+		// 干净目录（set 存在性 + listAvailable 枚举同源）：默认含 openai-codex / anthropic 两家若干模型
 		loadModelCatalog: async () => ([
 			{ id: 'gpt-5.5', provider: 'openai-codex' },
 			{ id: 'gpt-4o', provider: 'openai-codex' },
@@ -479,7 +479,7 @@ test('set: 存在性校验调 loadModelCatalog 时传 readOnly:false（含 manif
 	assert.deepEqual(calls[0], { readOnly: false });
 });
 
-test('listUsable: 枚举目录源调 loadModelCatalog 时传 readOnly:false（含 manifest）', async () => {
+test('listAvailable: 枚举目录源调 loadModelCatalog 时传 readOnly:false（含 manifest）', async () => {
 	const calls = [];
 	const sdk = makeSdk({
 		loadModelCatalog: async (opts) => {
@@ -489,15 +489,15 @@ test('listUsable: 枚举目录源调 loadModelCatalog 时传 readOnly:false（�
 	});
 	const { handlers } = makeHandlers({ sdk, cfg: { agents: {} } });
 	const r = makeRespond();
-	await handlers.listUsable({ params: {}, respond: r.respond });
+	await handlers.listAvailable({ params: {}, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
 	assert.equal(calls.length, 1);
 	assert.deepEqual(calls[0], { readOnly: false });
 });
 
-// 不变量：listUsable 枚举 + set 存在性校验都以 { readOnly: false } 调 loadModelCatalog
+// 不变量：listAvailable 枚举 + set 存在性校验都以 { readOnly: false } 调 loadModelCatalog
 // → 同目录源 → 「选得到 ⇒ 设得上」红线。防止将来有人只改一处破坏一致性。
-test('invariant: listUsable 枚举与 set 存在性校验同走 readOnly:false（选得到⇒设得上）', async () => {
+test('invariant: listAvailable 枚举与 set 存在性校验同走 readOnly:false（选得到⇒设得上）', async () => {
 	const optsSeen = [];
 	const sdk = makeSetSdk({
 		loadModelCatalog: async (opts) => {
@@ -508,14 +508,14 @@ test('invariant: listUsable 枚举与 set 存在性校验同走 readOnly:false�
 	const { handlers } = makeHandlers({ sdk, cfg: { agents: {} } });
 
 	const rList = makeRespond();
-	await handlers.listUsable({ params: {}, respond: rList.respond });
+	await handlers.listAvailable({ params: {}, respond: rList.respond });
 	assert.equal(rList.calls[0].ok, true);
 
 	const rSet = makeRespond();
 	await handlers.set({ params: { primary: 'openai-codex/gpt-5.5' }, respond: rSet.respond });
 	assert.equal(rSet.calls[0].ok, true);
 
-	// 两次调用（先 listUsable 后 set）必须都传 readOnly:false，且只用这一个 opts 形态
+	// 两次调用（先 listAvailable 后 set）必须都传 readOnly:false，且只用这一个 opts 形态
 	assert.equal(optsSeen.length, 2);
 	for (const opts of optsSeen) {
 		assert.deepEqual(opts, { readOnly: false });
@@ -702,9 +702,9 @@ test('list: ensureAuthProfileStore 抛错 → IO_FAILED（与 providerAuth.list 
 	assert.equal(r.calls[0].error.code, 'IO_FAILED');
 });
 
-// ============ listUsable ============
+// ============ listAvailable ============
 
-test('listUsable: 成功 — byProvider 含别名变体、无幽灵、configuredProviders 别名归一', async () => {
+test('listAvailable: 成功 — byProvider 含别名变体、无幽灵；出参不含 configuredProviders', async () => {
 	const sdk = makeSdk({
 		loadModelCatalog: async () => ([
 			{ id: 'gpt-5.5', provider: 'openai-codex' },          // 无凭据 → 剔除
@@ -722,65 +722,65 @@ test('listUsable: 成功 — byProvider 含别名变体、无幽灵、configured
 	};
 	const { handlers } = makeHandlers({ sdk, cfg });
 	const r = makeRespond();
-	await handlers.listUsable({ params: {}, respond: r.respond });
+	await handlers.listAvailable({ params: {}, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
-	assert.deepEqual(r.calls[0].payload.byProvider, { 'volcengine-plan': ['ark-code-latest', 'ark-pro'] });
-	assert.deepEqual(r.calls[0].payload.configuredProviders, ['volcengine']);
+	assert.deepEqual(r.calls[0].payload, { byProvider: { 'volcengine-plan': ['ark-code-latest', 'ark-pro'] } });
+	assert.equal(Object.hasOwn(r.calls[0].payload, 'configuredProviders'), false);
 });
 
-test('listUsable: 无凭据 → byProvider 空 + configuredProviders 空', async () => {
+test('listAvailable: 无凭据 → byProvider 空（无 configuredProviders）', async () => {
 	const { handlers } = makeHandlers({ cfg: { agents: {} } });
 	const r = makeRespond();
-	await handlers.listUsable({ params: {}, respond: r.respond });
+	await handlers.listAvailable({ params: {}, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
-	assert.deepEqual(r.calls[0].payload.byProvider, {});
-	assert.deepEqual(r.calls[0].payload.configuredProviders, []);
+	assert.deepEqual(r.calls[0].payload, { byProvider: {} });
 });
 
-test('listUsable: params 非 object → INVALID_ARGS', async () => {
+test('listAvailable: params 非 object → INVALID_ARGS', async () => {
 	const { handlers } = makeHandlers({});
 	const r = makeRespond();
-	await handlers.listUsable({ params: null, respond: r.respond });
+	await handlers.listAvailable({ params: null, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
 	assert.match(r.calls[0].error.message, /params must be an object/);
 });
 
-test('listUsable: 未知字段 → INVALID_ARGS', async () => {
+test('listAvailable: 未知字段 → INVALID_ARGS', async () => {
 	const { handlers } = makeHandlers({});
 	const r = makeRespond();
-	await handlers.listUsable({ params: { agentId: 'r', extra: 1 }, respond: r.respond });
+	await handlers.listAvailable({ params: { agentId: 'r', extra: 1 }, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
 	assert.match(r.calls[0].error.message, /unknown field: extra/);
 });
 
-test('listUsable: agentId 空字符串 → INVALID_ARGS', async () => {
+test('listAvailable: agentId 空字符串 → INVALID_ARGS', async () => {
 	const { handlers } = makeHandlers({});
 	const r = makeRespond();
-	await handlers.listUsable({ params: { agentId: '' }, respond: r.respond });
+	await handlers.listAvailable({ params: { agentId: '' }, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
 	assert.match(r.calls[0].error.message, /agentId/);
 });
 
-test('listUsable: agentId 类型错 → INVALID_ARGS', async () => {
+test('listAvailable: agentId 类型错 → INVALID_ARGS', async () => {
 	const { handlers } = makeHandlers({});
 	const r = makeRespond();
-	await handlers.listUsable({ params: { agentId: 123 }, respond: r.respond });
+	await handlers.listAvailable({ params: { agentId: 123 }, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'INVALID_ARGS');
 });
 
-test('listUsable: cfg 返回 null → IO_FAILED', async () => {
+test('listAvailable: cfg 返回 null → IO_FAILED', async () => {
 	const handlers = buildModelDefaultHandlers({
 		sdk: makeSdk(),
 		loadConfig: () => null,
 		resolveAgentDir: () => '/x',
 	});
 	const r = makeRespond();
-	await handlers.listUsable({ params: {}, respond: r.respond });
+	await handlers.listAvailable({ params: {}, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'IO_FAILED');
 	assert.match(r.calls[0].error.message, /runtime config not available/);
 });
 
-test('listUsable: loadModelCatalog 抛错 → 降级不空白（byProvider 空、configuredProviders 仍算）', async () => {
+test('listAvailable: loadModelCatalog 抛错 → IO_FAILED（不吞成权威空清单，避免前端误报 primary 失效）', async () => {
+	// byProvider 同时驱动 primary 有效性；加载失败如实 IO_FAILED → UI 维持 available=null="先不下结论"，不误报。
 	const sdk = makeSdk({
 		loadModelCatalog: async () => { throw new Error('catalog gone'); },
 		hasConfiguredSecretInput: (v) => v === 'sk-volc',
@@ -788,27 +788,27 @@ test('listUsable: loadModelCatalog 抛错 → 降级不空白（byProvider 空�
 	const cfg = { agents: {}, models: { providers: { volcengine: { apiKey: 'sk-volc' } } } };
 	const { handlers } = makeHandlers({ sdk, cfg });
 	const r = makeRespond();
-	await handlers.listUsable({ params: {}, respond: r.respond });
-	assert.equal(r.calls[0].ok, true);
-	assert.deepEqual(r.calls[0].payload.byProvider, {});
-	assert.deepEqual(r.calls[0].payload.configuredProviders, ['volcengine']);
+	await handlers.listAvailable({ params: {}, respond: r.respond });
+	assert.equal(r.calls[0].ok, false);
+	assert.equal(r.calls[0].error.code, 'IO_FAILED');
 });
 
-test('listUsable: store 读失败（ensureAuthProfileStore 抛错）→ IO_FAILED', async () => {
+test('listAvailable: store 读失败（ensureAuthProfileStore 抛错）→ IO_FAILED', async () => {
 	const sdk = makeSdk({
 		ensureAuthProfileStore: () => { throw new Error('store read failed'); },
 	});
 	const cfg = { agents: { defaults: { model: 'openai-codex/gpt-5.5' } } };
 	const { handlers } = makeHandlers({ sdk, cfg });
 	const r = makeRespond();
-	await handlers.listUsable({ params: {}, respond: r.respond });
+	await handlers.listAvailable({ params: {}, respond: r.respond });
 	assert.equal(r.calls[0].error.code, 'IO_FAILED');
 });
 
-test('listUsable: agentId 一路贯穿到 agentDir', async () => {
+test('listAvailable: agentId 一路贯穿到 agentDir', async () => {
 	const seen = [];
 	const sdk = makeSdk({
-		loadModelCatalog: async () => [],
+		// 至少一条目录条目，让 byProvider 循环跑到凭据探针（hasLedgerCred 经 agentDir 读账本）
+		loadModelCatalog: async () => [{ id: 'm', provider: 'somep' }],
 		ensureAuthProfileStore: (dir) => { seen.push(dir); return { profiles: {} }; },
 	});
 	const handlers = buildModelDefaultHandlers({
@@ -817,16 +817,16 @@ test('listUsable: agentId 一路贯穿到 agentDir', async () => {
 		resolveAgentDir: (agentId) => (agentId ? `/agents/${agentId}/agent` : '/agents/main/agent'),
 	});
 	const r = makeRespond();
-	await handlers.listUsable({ params: { agentId: 'r' }, respond: r.respond });
+	await handlers.listAvailable({ params: { agentId: 'r' }, respond: r.respond });
 	assert.equal(r.calls[0].ok, true);
 	assert.ok(seen.includes('/agents/r/agent'));
 });
 
-test('listUsable: 出参不带 status wrap', async () => {
+test('listAvailable: 出参不带 status wrap', async () => {
 	const { handlers } = makeHandlers({ cfg: { agents: {} } });
 	const r = makeRespond();
-	await handlers.listUsable({ params: {}, respond: r.respond });
+	await handlers.listAvailable({ params: {}, respond: r.respond });
 	assert.equal(Object.hasOwn(r.calls[0].payload, 'status'), false);
 	assert.equal(Object.hasOwn(r.calls[0].payload, 'byProvider'), true);
-	assert.equal(Object.hasOwn(r.calls[0].payload, 'configuredProviders'), true);
+	assert.equal(Object.hasOwn(r.calls[0].payload, 'configuredProviders'), false);
 });

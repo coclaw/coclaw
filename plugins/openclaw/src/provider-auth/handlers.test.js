@@ -53,6 +53,9 @@ function build(sdkOverrides = {}, opts = {}) {
 		// 默认 cfg=null：list 不枚举内联/env，行为等同旧版（仅账本），保证既有用例确定性。
 		// 三源用例显式注入 resolveConfig。
 		resolveConfig: opts.resolveConfig ?? (() => null),
+		// catalog 专用注入：未传时为 undefined → 工厂默认（抛错）生效，非 catalog 用例不受影响。
+		resolveSetupProviders: opts.resolveSetupProviders,
+		loadProviderIdResolver: opts.loadProviderIdResolver,
 	});
 }
 
@@ -1833,4 +1836,179 @@ test('B1 验证 note 抠不到结构化字段: accepted 带 null + rawText 全�
 		userCode: null,
 		rawText: note,
 	});
+});
+
+// === catalog（能力 1：provider 目录） ===
+
+// catalog 专用 build：注入 setup 全集解析 + agent-runtime 的 resolveProviderIdForAuth。
+// createStubSdk 不含 isProviderApiKeyConfigured，这里补一个默认（env 探针）。
+function buildCatalog({
+	providers = [],
+	config = {},
+	sdk = {},
+	resolveProviderIdForAuth = (p) => p,
+	resolveSetup,
+	loadResolver,
+} = {}) {
+	return buildProviderAuthHandlers({
+		sdk: createStubSdk({ isProviderApiKeyConfigured: () => false, ...sdk }),
+		resolveAgentDir: () => AGENT_DIR,
+		resolveConfig: () => config,
+		resolveSetupProviders: resolveSetup ?? (async () => providers),
+		loadProviderIdResolver: loadResolver ?? (async () => resolveProviderIdForAuth),
+	});
+}
+
+test('catalog: authMethods 一条规则映射 + token/custom 不露 + 空/纯不露 kind 排除 + 多桶顺序去重', async () => {
+	const providers = [
+		{ id: 'codex', auth: [{ kind: 'oauth' }, { kind: 'device_code' }, { kind: 'oauth' }] }, // 多桶 + 同 kind 去重
+		{ id: 'copilot', auth: [{ kind: 'device_code' }] },
+		{ id: 'apikey-only', auth: [{ kind: 'api_key' }] },
+		{ id: 'anthropic', auth: [{ kind: 'custom' }, { kind: 'token' }, { kind: 'api_key' }] }, // custom/token 不露，只剩 api-key
+		{ id: 'ollama', auth: [{ kind: 'custom' }] }, // custom-only → 排除
+		{ id: 'tokenonly', auth: [{ kind: 'token' }] }, // token-only → 排除
+		{ id: 'emptyauth', auth: [] }, // 空 auth[] → 排除
+		{ id: 'noauth' }, // 无 auth 字段 → 排除
+	];
+	const handlers = buildCatalog({ providers });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].ok, true);
+	assert.deepEqual(calls[0].data.providers, [
+		{ provider: 'codex', authMethods: ['oauth-login', 'oauth-device-code'], hasCred: false },
+		{ provider: 'copilot', authMethods: ['oauth-device-code'], hasCred: false },
+		{ provider: 'apikey-only', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'anthropic', authMethods: ['api-key'], hasCred: false },
+	]);
+});
+
+test('catalog: minimax-portal 的 device_code → oauth-device-code', async () => {
+	const handlers = buildCatalog({ providers: [{ id: 'minimax-portal', auth: [{ kind: 'device_code' }] }] });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.deepEqual(calls[0].data.providers, [
+		{ provider: 'minimax-portal', authMethods: ['oauth-device-code'], hasCred: false },
+	]);
+});
+
+test('catalog: hasCred 三源（账本/内联/env）+ 别名归一基座 id', async () => {
+	const providers = [
+		{ id: 'minimax-portal', auth: [{ kind: 'device_code' }] }, // 账本 oauth 凭据 → hasCred
+		{ id: 'volcengine', auth: [{ kind: 'api_key' }] },          // 内联 volcengine-plan 归一 volcengine → hasCred
+		{ id: 'openai', auth: [{ kind: 'api_key' }] },              // env 探针 → hasCred
+		{ id: 'cohere', auth: [{ kind: 'api_key' }] },              // 无任何源 → false
+	];
+	const config = {
+		agents: { defaults: { model: 'openai/gpt-5.5' } },          // env 候选含 openai
+		models: { providers: { 'volcengine-plan': { apiKey: 'sk' } } }, // 内联，归一为基座 volcengine
+	};
+	const handlers = buildCatalog({
+		providers,
+		config,
+		sdk: {
+			ensureAuthProfileStore: () => ({ profiles: { 'minimax-portal:default': { provider: 'minimax-portal', type: 'oauth' } } }),
+			hasConfiguredSecretInput: (v) => v === 'sk',
+			isProviderApiKeyConfigured: ({ provider }) => provider === 'openai',
+		},
+		resolveProviderIdForAuth: (p) => (p === 'volcengine-plan' ? 'volcengine' : p),
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls[0].ok, true);
+	const byId = Object.fromEntries(calls[0].data.providers.map((p) => [p.provider, p.hasCred]));
+	assert.deepEqual(byId, { 'minimax-portal': true, volcengine: true, openai: true, cohere: false });
+});
+
+test('catalog: params undefined / null / {} 都放行（无参，出参命名对象不 wrap）', async () => {
+	const handlers = buildCatalog({ providers: [] });
+	for (const params of [undefined, null, {}]) {
+		const { respond, calls } = makeRespond();
+		await handlers.catalog({ params, respond });
+		assert.equal(calls[0].ok, true);
+		assert.deepEqual(calls[0].data, { providers: [] });
+		assert.equal(calls[0].err, undefined);
+	}
+});
+
+test('catalog: 未知字段 → INVALID_ARGS', async () => {
+	const handlers = buildCatalog({ providers: [] });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: { foo: 1 }, respond });
+	assert.equal(calls[0].err.code, 'INVALID_ARGS');
+	assert.match(calls[0].err.message, /unknown field: foo/);
+});
+
+test('catalog: params 非对象（数组 / 串 / 数字）→ INVALID_ARGS', async () => {
+	const handlers = buildCatalog({ providers: [] });
+	for (const params of [[], 'x', 5]) {
+		const { respond, calls } = makeRespond();
+		await handlers.catalog({ params, respond });
+		assert.equal(calls[0].err.code, 'INVALID_ARGS');
+		assert.match(calls[0].err.message, /params must be an object/);
+	}
+});
+
+test('catalog: resolveSetupProviders 抛错 → IO_FAILED（透 message）', async () => {
+	const handlers = buildCatalog({ resolveSetup: async () => { throw new Error('catalog runtime missing'); } });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.match(calls[0].err.message, /catalog runtime missing/);
+});
+
+test('catalog: loadProviderIdResolver 抛错（agent-runtime 缺失）→ IO_FAILED', async () => {
+	const handlers = buildCatalog({ providers: [], loadResolver: async () => { throw new Error('agent runtime missing'); } });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.match(calls[0].err.message, /agent runtime missing/);
+});
+
+test('catalog: 凭据探针 store 读抛错 → IO_FAILED', async () => {
+	const handlers = buildCatalog({
+		providers: [{ id: 'openai', auth: [{ kind: 'api_key' }] }],
+		sdk: { ensureAuthProfileStore: () => { throw new Error('store read failed'); } },
+	});
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+	assert.match(calls[0].err.message, /store read failed/);
+});
+
+test('catalog: provider id 缺失 / 非串 / 空串跳过', async () => {
+	const providers = [
+		null,
+		{ auth: [{ kind: 'api_key' }] }, // 无 id
+		{ id: '', auth: [{ kind: 'api_key' }] }, // 空串 id
+		{ id: 123, auth: [{ kind: 'api_key' }] }, // 非串 id
+		{ id: 'ok', auth: [{ kind: 'api_key' }] },
+	];
+	const handlers = buildCatalog({ providers });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.deepEqual(calls[0].data.providers, [{ provider: 'ok', authMethods: ['api-key'], hasCred: false }]);
+});
+
+test('catalog: 未注入 resolveSetupProviders（工厂默认）→ IO_FAILED', async () => {
+	const handlers = build(); // 不注入 catalog 依赖 → 默认 resolveSetupProviders 抛错
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+});
+
+test('catalog: 未注入 loadProviderIdResolver（工厂默认）→ IO_FAILED', async () => {
+	// setup 解析成功、但 loadProviderIdResolver 默认抛错
+	const handlers = build({}, { resolveSetupProviders: async () => [] });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls[0].err.code, 'IO_FAILED');
+});
+
+test('catalog: resolveSetupProviders 返回 undefined → 空 providers（不崩）', async () => {
+	const handlers = buildCatalog({ resolveSetup: async () => undefined });
+	const { respond, calls } = makeRespond();
+	await handlers.catalog({ params: {}, respond });
+	assert.equal(calls[0].ok, true);
+	assert.deepEqual(calls[0].data, { providers: [] });
 });
