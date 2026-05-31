@@ -107,6 +107,7 @@
 | 改 WebRTC 实现选择 / 看 ndc-preloader 的命名困惑 / 评估清理死代码 | [`docs/webrtc-impl-strategy.md`](docs/webrtc-impl-strategy.md) |
 | 升级 `@coclaw/pion-node` / 调试 pion-ipc 问题 | [`docs/pion-integration.md`](docs/pion-integration.md) |
 | 本地开发安装 / link↔npm 切换 / 安装坑 | [`docs/local-plugin-update-sop.md`](docs/local-plugin-update-sop.md) |
+| worktree 里改插件验不出来（活网关只认主检出）/ 隔离网关 `pnpm wt:*` 流程 | [`docs/worktree-plugin-dev.md`](docs/worktree-plugin-dev.md) |
 | 自动升级机制 / 锁文件 / worker 行为 | [`docs/auto-upgrade.md`](docs/auto-upgrade.md) |
 | 文件 I/O atomic write 设计 | [`docs/atomic-file-ops.md`](docs/atomic-file-ops.md) |
 | OpenClaw plugin 安装/卸载机制 | [`docs/openclaw-plugin-management.md`](docs/openclaw-plugin-management.md) |

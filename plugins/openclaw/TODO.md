@@ -1,5 +1,20 @@
 # Plugin TODO
 
+## worktree 重构建并跑时主网关偶发被 SIGTERM 重启（隔离网关基础设施落地时发现）
+
+**发现日期**：2026-05-31（worktree 插件验证基础设施 `scripts/worktree-gateway.sh` 落地实测时发现）
+**关联**：主网关 systemd user service（`Restart=always`）；现象与 `docs/worktree-plugin-dev.md`「已知偶发」同条
+
+**现象**：在 worktree 里跑 `pnpm wt:up`（`pnpm install` ~3.7s + `pnpm deploy` ~18s，合计约 22s 高 CPU/IO）期间，主网关**偶发**收到外部 SIGTERM、干净关闭（~467ms），systemd 立即自愈重启（pid 变、`openclaw.json` md5 不变）。3 次同类操作中复现 1 次（另两次主网关 pid 全程不变）。
+
+**已排除**：对照探针证明**隔离 profile 网关本身不扰主网关**——distinct 端口 + `gateway run --force` 只杀目标端口，起独立网关时主网关 pid 不变。所以不是方案 B 的隔离泄漏。
+
+**根因初判（未钉死）**：SIGTERM（而非 SIGABRT/SIGKILL）指向"显式 stop/restart"而非 OOM/看门狗超时（systemd 看门狗默认发 SIGABRT）。leading 假说：①重构建饥饿主网关事件循环 → 某健康检查判不健康触发 restart；②某条命令使主 `openclaw.json` 被同内容重写（md5 不变但 mtime 变）→ chokidar `plugins.*` reload。两者都未坐实。本机 WSL2 11.7GB、8 核，资源紧时更易触发。
+
+**为什么暂不立刻修**：①severity 低——主网关 `Restart=always` 秒级自愈，无数据损失；②偶发、根因未钉死，需先稳定复现（重构建并跑 + 抓 SIGTERM 来源 / 健康检查日志 / config mtime）才谈得上修；③与方案 B 的隔离正确性无关（已证伪泄漏）。落生产对应"重构建期间主网关抖一下"，可观测、可自愈。已在 `docs/worktree-plugin-dev.md` 提示重构建期间别对主网关做敏感操作。
+
+---
+
 ## 选模型器目录读取裸调 loadModelCatalog，缺网关的 stale-while-revalidate / 超时保护
 
 **发现日期**：2026-05-31（8ea6d41b `readOnly:true→false` 修复的 deep-review 时识别）
