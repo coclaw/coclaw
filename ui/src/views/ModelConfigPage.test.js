@@ -30,10 +30,10 @@ vi.mock('../components/model-config/RemoveProviderConfirmDialog.vue', () => ({
 vi.mock('../components/model-config/AddProviderDialog.vue', () => ({
 	default: {
 		name: 'AddProviderDialog',
-		props: ['open', 'catalog', 'existingProviders', 'setApiKey'],
+		props: ['open', 'catalog', 'existingProviders', 'setApiKey', 'loginOauth', 'cancelOauth'],
 		emits: ['update:open', 'added'],
 		template: `
-			<div v-if="open" class="add-dialog" :data-existing="(existingProviders||[]).join(',')">
+			<div v-if="open" class="add-dialog" :data-existing="(existingProviders||[]).join(',')" :data-has-login="String(!!loginOauth)" :data-has-cancel="String(!!cancelOauth)">
 				<span class="ad-catalog-len">{{ (catalog||[]).length }}</span>
 				<button class="ad-fire-added" @click="$emit('added', { provider: 'groq', profileId: 'groq:default' }); $emit('update:open', false)">added</button>
 				<button class="ad-cancel" @click="$emit('update:open', false)">cancel</button>
@@ -589,6 +589,87 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 			caught = err;
 		}
 		expect(caught?.code).toBe('DC_CLOSED');
+		w.unmount();
+	});
+
+	test('AddProviderDialog loginOauth / cancelOauth props are wired to the OAuth RPCs on current claw conn', async () => {
+		primed();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		// 两阶段登录函数透传到 dialog
+		expect(w.find('.add-dialog').attributes('data-has-login')).toBe('true');
+		expect(w.find('.add-dialog').attributes('data-has-cancel')).toBe('true');
+		const dialog = w.findComponent({ name: 'AddProviderDialog' });
+		const loginOauth = dialog.props('loginOauth');
+		const cancelOauth = dialog.props('cancelOauth');
+		const onAccepted = vi.fn();
+		const signal = new AbortController().signal;
+		mockRequest.mockClear();
+		mockRequest.mockResolvedValue({ status: 'ok', profileIds: ['github-copilot:default'] });
+		await loginOauth({ provider: 'github-copilot', onAccepted, signal });
+		const loginCall = mockRequest.mock.calls.find(c => c[0] === 'coclaw.providerAuth.loginOauth');
+		expect(loginCall).toBeTruthy();
+		expect(loginCall[1]).toEqual({ provider: 'github-copilot' });
+		expect(loginCall[2].onAccepted).toBe(onAccepted);
+		expect(loginCall[2].signal).toBe(signal);
+		// 设备码登录要等用户授权，不设 RPC 超时
+		expect(loginCall[2].timeout).toBe(0);
+
+		await cancelOauth({ loginId: 'L1' });
+		const cancelCall = mockRequest.mock.calls.find(c => c[0] === 'coclaw.providerAuth.cancelOauth');
+		expect(cancelCall).toBeTruthy();
+		expect(cancelCall[1]).toEqual({ loginId: 'L1' });
+		w.unmount();
+	});
+
+	test('AddProviderDialog loginOauth: no conn → rejects DC_CLOSED; cancelOauth: no conn → resolves (best-effort)', async () => {
+		primed();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		mockClawConnGet.mockReturnValue(undefined);
+		const dialog = w.findComponent({ name: 'AddProviderDialog' });
+		const loginOauth = dialog.props('loginOauth');
+		const cancelOauth = dialog.props('cancelOauth');
+		let caught;
+		try {
+			await loginOauth({ provider: 'x', onAccepted: () => {}, signal: undefined });
+		}
+		catch (err) {
+			caught = err;
+		}
+		expect(caught?.code).toBe('DC_CLOSED');
+		// 取消 best-effort：无连接静默 resolve（不抛），保证组件清理路径不崩
+		await expect(cancelOauth({ loginId: 'L1' })).resolves.toBeDefined();
+		w.unmount();
+	});
+
+	test('cancelOauth targets the claw the login STARTED on (not the current claw after a switch)', async () => {
+		primed();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-add-provider"]').trigger('click');
+		await w.vm.$nextTick();
+		const dialog = w.findComponent({ name: 'AddProviderDialog' });
+		const loginOauth = dialog.props('loginOauth');
+		const cancelOauth = dialog.props('cancelOauth');
+		// 在 claw1 发起登录 → 记下 __oauthClawId=claw1
+		mockRequest.mockResolvedValue({});
+		loginOauth({ provider: 'github-copilot', onAccepted: () => {}, signal: new AbortController().signal });
+		// 切到 claw2（路由变 → 子页清状态、关 dialog）；__oauthClawId 不随之清，仍指 claw1
+		clawsStoreState.byId.claw2 = { id: 'claw2', name: 'Other', online: true, dcReady: true };
+		w.vm.$route.params.clawId = 'claw2';
+		w.vm.$options.watch.clawId.handler.call(w.vm);
+		await flushPromises();
+		// 卸载清理触发 cancelOauth：必须定位登录时那台 claw1，否则原 claw 后台轮询成孤儿
+		mockClawConnGet.mockClear();
+		await cancelOauth({ loginId: 'L1' });
+		expect(mockClawConnGet).toHaveBeenCalledWith('claw1');
+		expect(mockClawConnGet).not.toHaveBeenCalledWith('claw2');
+		delete clawsStoreState.byId.claw2;
 		w.unmount();
 	});
 

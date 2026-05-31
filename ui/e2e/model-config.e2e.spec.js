@@ -5,6 +5,7 @@ import {
 	GROQ_PRIMARY,
 	GROQ_PRIMARY_ALT,
 	mockProfile,
+	mockOauthProfile,
 	setupModelConfigMock,
 	ensureMockReady,
 	getOnlineClawId,
@@ -15,9 +16,9 @@ import {
 /**
  * 模型配置（model-config）E2E —— 设计 § 11 的 4 条必测场景。
  *
- * 数据保真度：model-config 的 6 个 RPC（providerAuth.list/setApiKey/remove、model.list/set、
- * models.list view:"all"）+ `status` 在 RPC 边界（ClawConnection.request）被 mock 成有状态合成响应
- * （详见 model-config-mock.js）；真实 claw 的连接 / 在线态 / dcReady / agents / sessions 仍走真实
+ * 数据保真度：model-config 的 RPC（providerAuth.list/setApiKey/remove/catalog/loginOauth/cancelOauth、
+ * model.list/set/listAvailable）+ `status` 在 RPC 边界（ClawConnection.request）被 mock 成有状态合成
+ * 响应（详见 model-config-mock.js）；真实 claw 的连接 / 在线态 / dcReady / agents / sessions 仍走真实
  * WebRTC 链路。mock 不触碰 plugin 的 auth-profiles.json，跑完无任何真实 claw 残留。
  *
  * `status` 为何也合成：真实 status RPC 受 OpenClaw manifest-cache mismatch 影响每次卡 ~10s，会把
@@ -401,13 +402,13 @@ test('模型配置 S6：内联 key 列出可撤（强提示）、env 行只读�
 });
 
 // ================================================================
-// S7：选模型器吃 listUsable 的 byProvider——能选到别名套餐变体（修订 6）
+// S7：选模型器吃 listAvailable 的 byProvider——能选到别名套餐变体（决策4）
 // ================================================================
-test('模型配置 S7：选模型器来自 listUsable，能选中别名套餐变体模型 @ui', async ({ page }) => {
+test('模型配置 S7：选模型器来自 listAvailable，能选中别名套餐变体模型 @ui', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
 	// 持基座 volcengine key；catalog 含基座 doubao-pro + 变体 ark-code-latest（manifest 变体一等公民）。
-	// listUsable mock：基座 key 同时点亮 volcengine + volcengine-plan → byProvider 两者都出。
+	// listAvailable mock：基座 key 同时点亮 volcengine + volcengine-plan → byProvider 两者都出。
 	const VARIANT_CATALOG = [
 		{ id: 'doubao-pro', provider: 'volcengine', name: 'Doubao Pro' },
 		{ id: 'ark-code-latest', provider: 'volcengine-plan', name: 'Ark Code' },
@@ -433,7 +434,7 @@ test('模型配置 S7：选模型器来自 listUsable，能选中别名套餐变
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 	await expect(page.getByTestId('primary-current')).toHaveText('volcengine/doubao-pro', { timeout: 30_000 });
 
-	// 打开选模型器（来自 listUsable byProvider）：变体作为一等可选项出现
+	// 打开选模型器（来自 listAvailable byProvider）：变体作为一等可选项出现
 	const changeBtn = page.getByTestId('btn-primary-change');
 	await expect(changeBtn).toBeEnabled({ timeout: 30_000 });
 	await changeBtn.click();
@@ -448,18 +449,20 @@ test('模型配置 S7：选模型器来自 listUsable，能选中别名套餐变
 });
 
 // ================================================================
-// S8：旧插件无 listUsable（method-not-found）→ 选模型器回退到 providers ∩ catalog，不空白
+// S8：加 provider——设备码登录步展示授权链接 + 用户码（两阶段 phase-1 展示流）
 // ================================================================
-test('模型配置 S8：旧插件无 listUsable → 选模型器回退到旧交集仍出模型（不空白）@ui', async ({ page }) => {
+test('模型配置 S8：加 provider 设备码入口——展示授权链接 + 码，可取消返回 @ui', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
-	// legacy=true → coclaw.model.listUsable 整方法不存在（reject INVALID_REQUEST）。
-	// 同时 model.list 无凭据信号 → 主模型按 invalid 显示（走 selectButton 打开 picker）。
+	// groq 已配（hasCred → 排除）；github-copilot 仅设备码、未配 → 出现在加 provider 列表且单方式直达设备码步
 	await setupModelConfigMock(page, {
 		profiles: [mockProfile('groq')],
 		primary: GROQ_PRIMARY,
 		catalog: MOCK_CATALOG,
-		legacy: true,
+		catalogProviders: [
+			{ provider: 'groq', authMethods: ['api-key'] },
+			{ provider: 'github-copilot', authMethods: ['oauth-device-code'] },
+		],
 	});
 	await login(page);
 	await ensureMockReady(page);
@@ -474,13 +477,57 @@ test('模型配置 S8：旧插件无 listUsable → 选模型器回退到旧交�
 	await gear.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 
-	// 旧插件无凭据信号 → 主模型区按"失效"显示（selectButton）
-	const selBtn = page.getByTestId('btn-primary-select');
-	await expect(selBtn).toBeVisible({ timeout: 30_000 });
-	await selBtn.click();
+	// 打开加 provider → 选 github-copilot（单一设备码方式 → 直达设备码登录步，无 chooser）
+	const addBtn = page.getByTestId('btn-add-provider');
+	await expect(addBtn).toBeEnabled({ timeout: 30_000 });
+	await addBtn.click();
+	await expect(page.getByTestId('add-provider-dialog')).toBeVisible({ timeout: 10_000 });
+	// groq 已配 → 不在加列表；github-copilot 未配 → 在
+	await expect(page.getByTestId('add-provider-item-groq')).toHaveCount(0);
+	await page.getByTestId('add-provider-item-github-copilot').click();
 
-	// 关键：listUsable method-not-found → 回退到 providers(三源) ∩ catalog → 选模型器仍出 groq 模型，不空白
-	await expect(page.getByTestId('primary-picker-dialog')).toBeVisible({ timeout: 10_000 });
-	await expect(page.getByTestId(`primary-picker-item-groq__${GROQ_PRIMARY.split('/')[1]}`)).toBeVisible({ timeout: 10_000 });
-	await expect(page.getByTestId(`primary-picker-item-groq__${GROQ_PRIMARY_ALT.split('/')[1]}`)).toBeVisible();
+	// 设备码步：phase-1 受理帧（mock 异步推）→ 展示授权链接 + 用户码
+	await expect(page.getByTestId('oauth-login-step')).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId('oauth-verification-link')).toContainText('github.com/login/device', { timeout: 10_000 });
+	await expect(page.getByTestId('oauth-user-code')).toHaveText('E2E-CODE');
+
+	// 取消（调 cancelOauth）→ 返回 provider 选择列表（单方式 provider 的取消回退）
+	await page.getByTestId('oauth-cancel').click();
+	await expect(page.getByTestId('add-provider-list')).toBeVisible({ timeout: 10_000 });
+});
+
+// ================================================================
+// S9：oauth 凭据行显示 oauth 徽章（撤销纯看 removable，不再有白名单门）
+// ================================================================
+test('模型配置 S9：oauth 凭据显示 oauth 徽章且可撤销 @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// minimax-portal 走 oauth 凭据（type='oauth'）+ groq api_key 承载 primary（避免 notSet 噪音）
+	await setupModelConfigMock(page, {
+		profiles: [mockProfile('groq'), mockOauthProfile('minimax-portal')],
+		primary: GROQ_PRIMARY,
+		catalog: MOCK_CATALOG,
+	});
+	await login(page);
+	await ensureMockReady(page);
+
+	await gotoClawsCold(page);
+	const clawId = await getOnlineClawId(page);
+	await waitDashReady(page, clawId);
+
+	// 齿轮进子页
+	const gear = page.getByTestId(`btn-model-config-${clawId}`);
+	await expect(gear).toBeEnabled({ timeout: 30_000 });
+	await gear.click();
+	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
+
+	// oauth 行带 oauth 徽章（字面量 oauth，不进 i18n）
+	const oauthTag = page.getByTestId('provider-oauth-tag');
+	await expect(oauthTag).toBeVisible({ timeout: 30_000 });
+	await expect(oauthTag).toHaveText('oauth');
+	// 撤销按钮：removable=true → 两行各一个、均可点（oauth 撤销纯看 removable）
+	const removeButtons = page.getByTestId('btn-remove-provider');
+	await expect(removeButtons).toHaveCount(2);
+	await expect(removeButtons.nth(0)).toBeEnabled();
+	await expect(removeButtons.nth(1)).toBeEnabled();
 });
