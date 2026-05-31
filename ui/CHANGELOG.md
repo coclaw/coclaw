@@ -1,5 +1,19 @@
 # @coclaw/ui
 
+## 0.31.0
+
+### Minor Changes
+
+- ee5158b: Polish model-config provider badges: show an `oauth` capability badge on OAuth-capable providers in the add-provider list (api-key-only providers stay unbadged to reduce noise), and bump all model-config badges (oauth tag, source tag, add-list oauth tag) from `xs` to `sm` for legibility.
+
+### Patch Changes
+
+- b980a0d: Polish add-provider method chooser: drop the redundant "choose how to connect" hint line, widen button gap to gap-3, and locally tighten the dialog body vertical padding to pt-3 pb-2 (without touching the shared promptModalUi).
+- 5058f97: Move all action buttons in the add-provider dialog into the modal footer for consistent layout. Previously the method chooser, the "OAuth login not supported" notice, and the device-code login step rendered their back/cancel/retry buttons inline in the body while only the API-key step used a footer. Now every configure sub-state drives a single unified footer (the device-code step signals its phase up via `update:phase`, and the dialog hosts its cancel/back/retry). Single-button footers (back / cancel) use a solid button so the lone action has proper visual weight and right-aligns cleanly.
+- 40c5007: Use solid primary color for single-button footers in the add-provider dialog (back/cancel), matching the prompt dialog confirm button so the lone action does not appear washed-out white in dark mode.
+- f8d728c: Rename the add-provider OAuth wording to action-based terms: the device code is now surfaced as a "verification code", and the two OAuth methods are named by what the user does ("authorize with a code" / "authorize in browser") instead of the asymmetric "code sign-in" vs "OAuth sign-in". Applied across all 12 locales.
+- 9b77a8b: Loosen the header top spacing of the shared lightweight prompt/confirm dialog style (`promptModalUi`) from the compact global default (`py-1 min-h-13`) to `pt-2 pb-1 min-h-14`, giving the title more breathing room from the top edge. Only dialogs using this shared style are affected; larger dialogs (settings, pickers) keep the global header.
+
 ## 0.30.0
 
 ### Minor Changes
