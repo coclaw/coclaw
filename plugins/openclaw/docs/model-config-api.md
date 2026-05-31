@@ -374,6 +374,8 @@ UI 用 **payload.status** 做机器判定（成功失败看协议层标志位 + 
 
 > **为什么 hasCred 放服务端、而非让 UI 从 `providerAuth.list` 推**：`providerAuth.list` 返回**原始拼写** provider id 且 env 覆盖较窄，UI 拿它去排除基座全集会有良性缺口（变体拼写匹配不上基座、纯 env 节点覆盖不全 → "已配仍出现在可加列表"，可重复加、无误排除、无安全问题）。在 catalog 服务端用别名感知逻辑直接算干净，且 UI 本就拿不到 `resolveProviderIdForAuth`。
 
+> **TODO（留待后续，非阻断）**：`hasCred` 现复用 `computeConfiguredProviders` 的 env 候选集（账本 ∪ 内联 ∪ 已配主模型段），故"纯 env-only、又不在配置/账本里"的 provider 仍可能漏判 `hasCred=false`、出现在可加列表（良性：可重复加、无误排除、无安全问题，与 :278 / :375 同一定调）。catalog 手握**全量 provider 清单**，可对每个 catalog provider 直接探 env（而非只探候选集）彻底闭掉这个缺口；当前刻意沿用共享 helper 保持跨界面口径一致 + 守边界，待后续评估收益再做。
+
 ---
 
 ## § 3. 默认模型设置
