@@ -207,9 +207,9 @@
 					{{ $t('modelConfig.providerAuth.add.back') }}
 				</UButton>
 
-				<!-- 账号授权 pending：单个取消 → 实心 primary -->
+				<!-- 账号授权 starting/pending：单个取消 → 实心 primary -->
 				<UButton
-					v-else-if="footerMode === 'oauth-pending'"
+					v-else-if="footerMode === 'oauth-cancel'"
 					data-testid="oauth-cancel"
 					color="primary"
 					@click="onOauthCancel"
@@ -470,9 +470,10 @@ export default {
 		},
 		/**
 		 * 当前 footer 渲染模式（'' = 不渲染 footer）。统一各 configure 子态的动作落点：
-		 *   chooser/oauth-unsupported = 单返回；oauth-pending = 单取消；
+		 *   chooser/oauth-unsupported = 单返回；oauth-cancel（账号授权 starting/pending）= 单取消；
 		 *   oauth-error = 返回+重试；api-key = 取消+提交。
-		 * 账号授权 starting 态无动作 → 不渲染 footer。
+		 * 账号授权 starting 态也渲染取消：①否则提示文案下无动作、标题区显得很重；
+		 * ②phase-1 受理可能因网络阻障迟迟不回，用户需能随时取消（取消的本地容错见 ProviderOAuthLoginStep.onCancel）。
 		 *
 		 * @returns {string}
 		 */
@@ -482,9 +483,9 @@ export default {
 			if (this.selectedMethod === 'api-key') return 'api-key';
 			if (this.selectedMethod === 'oauth-login') return 'oauth-unsupported';
 			if (this.selectedMethod === 'oauth-device-code') {
-				if (this.oauthPhase === 'pending') return 'oauth-pending';
 				if (this.oauthPhase === 'error') return 'oauth-error';
-				return '';
+				// starting + pending 都可取消
+				return 'oauth-cancel';
 			}
 			return '';
 		},

@@ -2,6 +2,32 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## 账号授权 starting 态取消后"在飞 login"治理：晚到 accepted 主动拨后端 + 新 login 竞态（增强，待评审）
+
+**发现日期**：2026-06-01
+**来源**：给 device-code 账号授权 starting 态加"取消"按钮的延伸评估；用户提出"晚到 accepted 应主动取消对应 login"，并标注此增强需仔细评估、先评审再做
+
+本次已落地的安全部分：
+- device-code 账号授权 starting 态也渲染"取消"按钮（footer 不再为空、标题区不发虚 + 慢 phase-1 可取消）。starting 态点取消走 `ProviderOAuthLoginStep.onCancel → __teardown`：bump token 作废回调 + abort 本地 waiter；因 starting 态 `loginId` 仍为空，`cancelOauth` 被 `if (loginId && cancelOauth)` 守卫跳过——即只本地放弃、不通知插件。
+- 后果（良性但不理想）：插件那次 `loginOauthDeviceCode` 的 `method.run` 仍在后台跑（`scheduleBackground`），稍后吐验证 note → `registry.registerLogin` + respond accepted；但 UI 的 waiter 已被 abort 删除 → claw-connection 记一条 "unmatched rpc response" warn 后忽略，loginId 永远到不了 UI。该 login 在插件侧轮询到自然超时才 settle（孤儿）。因用户在 starting 态就取消、根本没去 provider 站点授权，run 最终空 profiles → 失败、不写凭据，故无可见副作用。
+
+预存设计局限（根因，非本次引入）：
+- 取消句柄绑 `loginId` 而非 RPC `reqId`：`loginId` 只在 accepted 帧下发，`registry.registerLogin` 也只在 accepted 时执行（`plugins/openclaw/src/provider-auth/handlers.js` `loginOauthDeviceCode` 的 onNote 内）。故 accepted 之前 UI 无句柄、插件册子里也没记录，取消通道在该窗口物理上不通。
+- 更深一层：插件 `method.run(ctx)` 没接 `abortController.signal`（ctx 由 `makeDeviceCodeCtx` 造，仅 config/agentDir/onNote）。`cancelOauth` 只能 abort 信号，让 run 到期 settle 时识别 aborted、回 cancelled、不写凭据——**停不住在途轮询**。要真正中止在途工作须等 OpenClaw 上游 run 支持 AbortSignal。
+
+增强方向（用户提的"理想"，需评审后再实施——属敏感 token/abort 状态机改造）：
+- 目标：starting 态取消后，若该次请求的 accepted 仍晚到，用 payload 里的 loginId 主动调 `cancelOauth(loginId)`，把"孤儿轮询 login"转成"已取消 login"（防止极端竞态下用户取消后又去授权导致后台成功写凭据；属防御性正确性）。
+- 关键约束（前提已核实）：`loginOauth` 的 conn.request 用 `timeout:0`（账号授权可分钟级），故"保留 waiter 等晚到 accepted"不能靠通道超时收尾，须自带有界 fallback 定时器（phase-1 取设备码通常亚秒级，给约 10–15s 足够；超时则 abort 收尾、放弃抓 loginId）。
+- 设计（每 run 独立生命周期对象，规避新 login 竞态）：把现在散在组件实例上的单份 `loginId/__aborter/__runToken` 收敛为 per-run 对象 `{ token, aborter, loginId, retired, settled }`，`onAccepted/then/catch` 闭包各自捕获自己的 run；新增统一 `__retire(run)`：
+  - 已知 loginId（pending 态取消 / accepted 已到）→ 立即 `cancelOauth` + abort；
+  - starting 态、loginId 未知、请求仍在飞 → **不 abort**（一旦 abort 就收不到 accepted），保留 waiter + arm fallback 定时器；其 onAccepted 命中后判 `run.retired` → `cancelOauth(payload.loginId)` + abort；
+  - 请求已 settle 且从未 accepted（starting 即失败）→ 无事可做。
+  - 新 login（retry / 重新发起）即对旧 run 调 `__retire`，故旧 run 的晚到 accepted 只拨它自己的 loginId、绝不动当前 run 的展示（用 run 身份判，而非 token 比较；token 留作双保险）。
+- 测试需覆盖：starting 取消→晚到 accepted 触发 `cancelOauth(该 loginId)`；starting 取消→立刻发起新 login→旧 run 晚到 accepted 只拨旧 loginId、不污染新 run；fallback 定时器到点 abort 收尾；卸载/切 claw 期间同路径。
+- 范围：`ui/src/components/model-config/ProviderOAuthLoginStep.vue`（核心，敏感）；`claw-connection.js` 大概率无需动。插件侧若要"取消句柄改 reqId / 提前 registerLogin"一并治本，另涉 plugin + 协议字段，更大，单列。
+
+为什么本轮不直接做：用户明确"需仔细评估、先想清楚"，且属反复被标注"别碰"的敏感 token/abort 逻辑，按项目"方案→评审→实施"红线应先评审设计再落地。本次只落安全的 footer 取消。
+
 ## ModelConfigPage 切主模型后极罕见残留竞态：写后 ~800ms 内新发起的 loadAll 仍可能把 primary 覆盖回旧值
 
 **发现日期**：2026-05-30

@@ -593,7 +593,7 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);
 	});
 
-	test('single device-code provider goes straight to ProviderOAuthLoginStep (no chooser; starting → no footer)', async () => {
+	test('single device-code provider goes straight to ProviderOAuthLoginStep (no chooser; starting shows a single Cancel)', async () => {
 		const w = makeWrapper({ catalog: multiCatalog });
 		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
 		expect(w.vm.selectedMethod).toBe('oauth-device-code');
@@ -604,10 +604,13 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		// loginOauth / cancelOauth 透传到子步
 		expect(step.attributes('data-has-login')).toBe('true');
 		expect(step.attributes('data-has-cancel')).toBe('true');
-		// starting 阶段无动作 → footer 不渲染（api-key 的 Submit/Cancel 自然不在）
-		expect(w.vm.footerMode).toBe('');
+		// starting 阶段也渲染单个取消（footer 不再为空、标题区不发虚）；api-key 的 Submit 自然不在
+		expect(w.vm.footerMode).toBe('oauth-cancel');
+		expect(w.find('[data-testid="oauth-cancel"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(false);
-		expect(w.find('[data-testid="add-provider-cancel"]').exists()).toBe(false);
+		// starting 态点取消 → 委托子步 onCancel（stub emit cancel）→ 单方式回到 provider 选择
+		await w.find('[data-testid="oauth-cancel"]').trigger('click');
+		expect(w.vm.step).toBe('select');
 	});
 
 	test('device-code pending → footer shows a single solid Cancel; clicking it returns', async () => {
@@ -615,7 +618,7 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		// 单方式 → 直接进账号授权步；驱动子步进入 pending
 		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
 		await w.find('.oauth-stub-pending').trigger('click');
-		expect(w.vm.footerMode).toBe('oauth-pending');
+		expect(w.vm.footerMode).toBe('oauth-cancel');
 		expect(w.find('[data-testid="oauth-cancel"]').exists()).toBe(true);
 		// footer Cancel → 委托子步 onCancel（stub emit cancel）→ 单方式回到 provider 选择
 		await w.find('[data-testid="oauth-cancel"]').trigger('click');
@@ -629,10 +632,10 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(w.vm.footerMode).toBe('oauth-error');
 		expect(w.find('[data-testid="oauth-back"]').exists()).toBe(true);
 		expect(w.find('[data-testid="oauth-retry"]').exists()).toBe(true);
-		// Retry → 委托子步 start（stub emit update:phase 'starting'）→ footer 回到无动作态
+		// Retry → 委托子步 start（stub emit update:phase 'starting'）→ footer 回到 starting 取消态
 		await w.find('[data-testid="oauth-retry"]').trigger('click');
 		expect(w.vm.oauthPhase).toBe('starting');
-		expect(w.vm.footerMode).toBe('');
+		expect(w.vm.footerMode).toBe('oauth-cancel');
 		// 重新驱动到 error 再点 Back → 单方式回 provider 选择
 		await w.find('.oauth-stub-error').trigger('click');
 		await w.find('[data-testid="oauth-back"]').trigger('click');
