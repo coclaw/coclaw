@@ -1862,8 +1862,10 @@ test('register full mode: all expected side effects fire with exact RPC method s
 		'coclaw.providerAuth.remove',
 		'coclaw.providerAuth.loginOauth',
 		'coclaw.providerAuth.cancelOauth',
+		'coclaw.providerAuth.catalog',
 		'coclaw.model.set',
 		'coclaw.model.list',
+		'coclaw.model.listAvailable',
 		'coclaw.model.listUsable',
 	];
 	for (const m of expectedMethods) {

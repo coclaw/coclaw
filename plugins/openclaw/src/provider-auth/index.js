@@ -25,6 +25,7 @@ import { mainAgentDir } from '../claw-paths.js';
 let _sdkPromise;
 let _configMutationPromise;
 let _catalogRuntimePromise;
+let _agentRuntimePromise;
 
 // 默认 loader 仅作 fallback：生产路径必须由入口（plugins/openclaw/index.js）注入，
 // 因为 OpenClaw plugin loader 只扫入口源码识别 `openclaw/plugin-sdk/*` 字面量并触发 jiti 重写；
@@ -45,6 +46,12 @@ function defaultLoadProviderCatalogRuntime() {
 	return _catalogRuntimePromise;
 }
 
+function defaultLoadAgentRuntime() {
+	// agent-runtime barrel 提供 resolveProviderIdForAuth（别名归一基座 id）——catalog 算 hasCred 用。
+	_agentRuntimePromise ??= import('openclaw/plugin-sdk/agent-runtime');
+	return _agentRuntimePromise;
+}
+
 /**
  * 测试辅助：清掉懒加载 SDK 缓存。
  */
@@ -52,6 +59,7 @@ export function __resetSdkCache() {
 	_sdkPromise = undefined;
 	_configMutationPromise = undefined;
 	_catalogRuntimePromise = undefined;
+	_agentRuntimePromise = undefined;
 }
 
 /**
@@ -65,7 +73,8 @@ export function __resetSdkCache() {
  * @param {Function} [opts.resolveAgentDir] - 覆盖 agentDir 解析（默认 mainAgentDir）
  * @param {Function} [opts.loadSdk] - 必传（生产由入口注入字面量 dynamic import）；缺省回退仅为测试兜底
  * @param {Function} [opts.loadConfigMutation] - 必传（同上，OAuth 写 cfg 用）
- * @param {Function} [opts.loadProviderCatalogRuntime] - 必传（同上，通用 device-code 登录 B1 拿 resolvePluginProviders 用）
+ * @param {Function} [opts.loadProviderCatalogRuntime] - 必传（同上，通用 device-code 登录 B1 + catalog setup 全集拿 resolvePluginProviders 用）
+ * @param {Function} [opts.loadAgentRuntime] - 必传（同上，catalog 算 hasCred 拿 resolveProviderIdForAuth 用）
  * @param {object} [opts.registry] - 覆盖 oauth-registry（默认模块级单例）
  */
 export function registerProviderAuthHandlers(api, opts = {}) {
@@ -73,9 +82,10 @@ export function registerProviderAuthHandlers(api, opts = {}) {
 	const loadSdk = opts.loadSdk ?? defaultLoadSdk;
 	const loadConfigMutation = opts.loadConfigMutation ?? defaultLoadConfigMutation;
 	const loadProviderCatalogRuntime = opts.loadProviderCatalogRuntime ?? defaultLoadProviderCatalogRuntime;
+	const loadAgentRuntime = opts.loadAgentRuntime ?? defaultLoadAgentRuntime;
 	const registry = opts.registry ?? { registerLogin, getLogin, removeLogin };
 
-	// catalog-runtime 仅通用 device-code 登录（B1）才需要，独立惰性加载——不耦合进 getHandlers
+	// catalog-runtime 仅通用 device-code 登录（B1）与 catalog 才需要，独立惰性加载——不耦合进 getHandlers
 	// 的 Promise.all，避免 setApiKey / list / remove / minimax-oauth 因这个 SDK 子入口缺失而连带失败。
 	let catalogRuntimePromise;
 	const resolveProviders = async ({ config, providerRefs }) => {
@@ -88,6 +98,25 @@ export function registerProviderAuthHandlers(api, opts = {}) {
 			activate: false,
 			mode: 'runtime',
 		});
+	};
+	// catalog 用的 setup 全集解析（独立于上面的 runtime 闭包——B1 登录仍走 runtime）：
+	// mode:'setup' 无条件返回全部 provider（含未配过的），activate:false 零副作用、cache:true 复用发现缓存。
+	const resolveSetupProviders = async ({ config }) => {
+		catalogRuntimePromise ??= loadProviderCatalogRuntime();
+		const catalogRuntime = await catalogRuntimePromise;
+		return catalogRuntime.resolvePluginProviders({
+			config,
+			activate: false,
+			cache: true,
+			mode: 'setup',
+		});
+	};
+	// agent-runtime 同样独立惰性加载（仅 catalog 的 hasCred 别名归一才需要），不耦合进 getHandlers。
+	let agentRuntimePromise;
+	const loadProviderIdResolver = async () => {
+		agentRuntimePromise ??= loadAgentRuntime();
+		const agentRuntime = await agentRuntimePromise;
+		return agentRuntime.resolveProviderIdForAuth;
 	};
 
 	let handlersPromise;
@@ -107,7 +136,15 @@ export function registerProviderAuthHandlers(api, opts = {}) {
 					generatePkce: providerAuthSdk.generatePkceVerifierChallenge,
 					toForm: providerAuthSdk.toFormUrlEncoded,
 				});
-				return buildProviderAuthHandlers({ sdk, resolveAgentDir, oauth, registry, resolveProviders });
+				return buildProviderAuthHandlers({
+					sdk,
+					resolveAgentDir,
+					oauth,
+					registry,
+					resolveProviders,
+					resolveSetupProviders,
+					loadProviderIdResolver,
+				});
 			})();
 		}
 		return handlersPromise;
@@ -136,4 +173,5 @@ export function registerProviderAuthHandlers(api, opts = {}) {
 	api.registerGatewayMethod('coclaw.providerAuth.remove', wrap('remove'));
 	api.registerGatewayMethod('coclaw.providerAuth.loginOauth', wrap('loginOauth'));
 	api.registerGatewayMethod('coclaw.providerAuth.cancelOauth', wrap('cancelOauth'));
+	api.registerGatewayMethod('coclaw.providerAuth.catalog', wrap('catalog'));
 }

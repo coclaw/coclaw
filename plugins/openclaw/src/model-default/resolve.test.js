@@ -560,19 +560,19 @@ test('enumerateUsableModels: 按 provider 分组、留有凭据的、含变体�
 	});
 });
 
-test('enumerateUsableModels: 同时返回 configuredProviders（候选含主模型段）', () => {
+test('enumerateUsableModels: 出参只含 byProvider（configuredProviders 已迁出）', () => {
 	const entries = [{ id: 'm', provider: 'openai' }];
 	const cfg = { agents: { defaults: { model: 'openai/m' } } };
 	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'openai' });
 	const out = enumerateUsableModels(entries, cfg, deps);
-	assert.deepEqual(out.byProvider, { openai: ['m'] });
-	assert.deepEqual(out.configuredProviders, ['openai']);
+	assert.deepEqual(out, { byProvider: { openai: ['m'] } });
+	assert.equal(Object.hasOwn(out, 'configuredProviders'), false);
 });
 
 test('enumerateUsableModels: 空 / 非数组 entries → 空 byProvider', () => {
-	assert.deepEqual(enumerateUsableModels([], {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
-	assert.deepEqual(enumerateUsableModels(undefined, {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
-	assert.deepEqual(enumerateUsableModels('nope', {}, makeCredDeps()), { byProvider: {}, configuredProviders: [] });
+	assert.deepEqual(enumerateUsableModels([], {}, makeCredDeps()), { byProvider: {} });
+	assert.deepEqual(enumerateUsableModels(undefined, {}, makeCredDeps()), { byProvider: {} });
+	assert.deepEqual(enumerateUsableModels('nope', {}, makeCredDeps()), { byProvider: {} });
 });
 
 test('enumerateUsableModels: oauth-only provider（账本 oauth、无 key）的模型组进入 byProvider（回归修复）', () => {

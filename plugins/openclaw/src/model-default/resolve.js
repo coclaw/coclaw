@@ -285,7 +285,7 @@ export function computeConfiguredProviders(cfg, deps) {
  * @param {object[]} catalogEntries - loadModelCatalog({readOnly:false}) 的结果（ModelCatalogEntry[]）
  * @param {object} cfg
  * @param {object} deps - { agentDir, isProviderApiKeyConfigured, hasConfiguredSecretInput, resolveProviderIdForAuth, ensureAuthProfileStore }
- * @returns {{ byProvider: Record<string, string[]>, configuredProviders: string[] }}
+ * @returns {{ byProvider: Record<string, string[]> }}
  */
 export function enumerateUsableModels(catalogEntries, cfg, deps) {
 	const grouped = new Map(); // provider -> Set<modelId>
@@ -307,7 +307,9 @@ export function enumerateUsableModels(catalogEntries, cfg, deps) {
 			byProvider[provider] = [...ids].sort();
 		}
 	}
-	return { byProvider, configuredProviders: computeConfiguredProviders(cfg, deps) };
+	// 只返回 byProvider；configuredProviders 已迁出（catalog 经 computeConfiguredProviders 单独算 hasCred，
+	// UI 加 provider 排除改吃 catalog.hasCred）。computeConfiguredProviders 仍具名导出供 catalog 复用。
+	return { byProvider };
 }
 
 /**

@@ -50,7 +50,7 @@ function makeRespond() {
 	};
 }
 
-test('registerModelDefaultHandlers 注册三个 RPC method', () => {
+test('registerModelDefaultHandlers 注册 set/list/listAvailable + listUsable 过渡别名', () => {
 	const api = makeApi();
 	const mods = makeSdkModules();
 	registerModelDefaultHandlers(api, {
@@ -62,6 +62,8 @@ test('registerModelDefaultHandlers 注册三个 RPC method', () => {
 	});
 	assert.equal(api.__registered.has('coclaw.model.set'), true);
 	assert.equal(api.__registered.has('coclaw.model.list'), true);
+	assert.equal(api.__registered.has('coclaw.model.listAvailable'), true);
+	// listUsable 仍注册（过渡别名），与 listAvailable 映同一 handler
 	assert.equal(api.__registered.has('coclaw.model.listUsable'), true);
 });
 
@@ -113,7 +115,7 @@ test('list 出参带凭据信号：内联 key 让 providerUsable / hasAnyUsableC
 	assert.equal(r.calls[0].payload.hasAnyUsableCredential, true);
 });
 
-test('listUsable 调用走到 handler 并返回 byProvider + configuredProviders', async () => {
+test('listAvailable + listUsable 别名都走到同一 handler 并返回纯 byProvider（无 configuredProviders）', async () => {
 	// 钉住 index.js 把 loadModelCatalog（agent-runtime）+ 凭据探针接进 sdk bundle：
 	// 漏接任一 → 调用抛 → IO_FAILED，下面断言失败。
 	const api = makeApi();
@@ -127,11 +129,13 @@ test('listUsable 调用走到 handler 并返回 byProvider + configuredProviders
 		loadConfig: () => ({ agents: { defaults: { model: 'openai-codex/gpt-5.5' } } }),
 		resolveAgentDir: () => '/fake',
 	});
-	const r = makeRespond();
-	await api.__call('coclaw.model.listUsable', { params: {}, respond: r.respond });
-	assert.equal(r.calls[0].ok, true);
-	assert.deepEqual(r.calls[0].payload.byProvider, { 'openai-codex': ['gpt-5.5'] });
-	assert.deepEqual(r.calls[0].payload.configuredProviders, ['openai-codex']);
+	// 两个 RPC 名都解析到同一 handler、出参一致（纯 byProvider，无 configuredProviders）
+	for (const method of ['coclaw.model.listAvailable', 'coclaw.model.listUsable']) {
+		const r = makeRespond();
+		await api.__call(method, { params: {}, respond: r.respond });
+		assert.equal(r.calls[0].ok, true);
+		assert.deepEqual(r.calls[0].payload, { byProvider: { 'openai-codex': ['gpt-5.5'] } });
+	}
 });
 
 test('set 调用走到 handler 并写盘', async () => {
@@ -268,7 +272,8 @@ test('opts 缺省时回退到默认 (mainAgentDir / getClawConfig)', () => {
 		loadProviderAuth: async () => ({ isProviderApiKeyConfigured: () => false }),
 		loadAgentRuntime: async () => ({ resolveProviderIdForAuth: (p) => p, loadModelCatalog: async () => [] }),
 	});
-	assert.equal(api.__registered.size, 3);
+	// set + list + listAvailable + listUsable（过渡别名）= 4
+	assert.equal(api.__registered.size, 4);
 });
 
 test('default loader: 不传任何 opts → fallback path 跑通（测试环境无 openclaw 包 → IO_FAILED）', async () => {
