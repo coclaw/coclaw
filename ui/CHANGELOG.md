@@ -1,5 +1,12 @@
 # @coclaw/ui
 
+## 0.31.1
+
+### Patch Changes
+
+- 1440b0a: Unify add-provider OAuth wording to "account authorization" and hide the unsupported callback method. When a provider offers both device-code and callback (oauth-login) auth, the callback entry is now hidden (we don't support it yet), so providers like openai-codex collapse to API key + account authorization. Both OAuth entries share the same "account authorization" label (they never appear side by side), the in-flow code is now called an "authorization code", and the unsupported-method hint no longer points users to a non-existent code option.
+- 9c0d5a3: Render the add-provider account-authorization step's footer Cancel action during the initial (starting) phase too, not only once the verification code arrives. This removes the empty-footer / top-heavy look while the phase-1 request is in flight, and lets the user cancel a slow phase-1 right away. The lone Cancel button uses a solid error color (abort semantics, matching the revoke-credential dialog's confirm button) instead of solid primary.
+
 ## 0.31.0
 
 ### Minor Changes
