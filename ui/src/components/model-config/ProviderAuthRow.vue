@@ -4,17 +4,18 @@
 		:class="{ 'opacity-75': source === 'env' }"
 	>
 		<!-- 品牌名 + oauth 徽章 + 来源小标签 + 凭据预览。
-		     徽章紧挨同行文字：容器 items-end 让徽章底边对齐文字底边（视觉对齐）。 -->
+		     徽章字号提到 sm 后整体高度≈文本，items-end 底边对齐已失效；改 items-center
+		     + 文本 -mt-0.5 上浮，做纵向视觉居中。 -->
 		<div class="min-w-0 flex-1">
-			<div class="flex items-end gap-1.5">
-				<p class="truncate text-sm font-medium">{{ displayName }}</p>
+			<div class="flex items-center gap-1.5">
+				<p class="truncate text-sm font-medium -mt-0.5">{{ displayName }}</p>
 				<!-- oauth 类型徽章：字面量 oauth 不进 i18n（与 provider id 同属技术标识，不翻译） -->
 				<UBadge
 					v-if="isOauth"
 					data-testid="provider-oauth-tag"
 					color="neutral"
 					variant="subtle"
-					size="xs"
+					size="sm"
 					class="shrink-0"
 				>
 					oauth
@@ -24,7 +25,7 @@
 					data-testid="provider-source-tag"
 					color="neutral"
 					variant="subtle"
-					size="xs"
+					size="sm"
 					class="shrink-0"
 				>
 					{{ sourceLabel }}

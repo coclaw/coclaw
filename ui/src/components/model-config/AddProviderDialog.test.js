@@ -62,6 +62,12 @@ const ProviderOAuthLoginStepStub = {
 	</div>`,
 };
 
+// UBadge stub：暴露 size 便于断言字号；data-testid 经 attr fallthrough 落到 root span
+const UBadgeStub = {
+	props: { size: { type: String, default: '' }, color: String, variant: String },
+	template: '<span class="ubadge" :data-size="size"><slot /></span>',
+};
+
 const UModalStub = {
 	props: ['open', 'fullscreen', 'ui', 'title', 'description'],
 	emits: ['update:open'],
@@ -105,6 +111,7 @@ function makeWrapper(props = {}) {
 				UInput: UInputStub,
 				UModal: UModalStub,
 				UIcon: UIconStub,
+				UBadge: UBadgeStub,
 				ProviderOAuthLoginStep: ProviderOAuthLoginStepStub,
 			},
 			mocks: {
@@ -141,6 +148,28 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		] });
 		const items = w.findAll('[data-testid^="add-provider-item-openai"]');
 		expect(items).toHaveLength(1);
+	});
+
+	test('oauth-capable provider shows an oauth badge (size sm); api-key-only does not', () => {
+		const w = makeWrapper({ catalog: [
+			{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+			{ provider: 'openai-codex', authMethods: ['oauth-device-code', 'api-key'], hasCred: false },
+		] });
+		// oauth 能力 provider：贴 oauth 徽章，字面量 oauth，size=sm
+		const oauthTag = w.find('[data-testid="add-provider-oauth-tag-openai-codex"]');
+		expect(oauthTag.exists()).toBe(true);
+		expect(oauthTag.text()).toBe('oauth');
+		expect(oauthTag.attributes('data-size')).toBe('sm');
+		// 纯 api-key provider：不贴徽章（降噪）
+		expect(w.find('[data-testid="add-provider-oauth-tag-openai"]').exists()).toBe(false);
+	});
+
+	test('hasOauth merges across duplicate catalog entries (api-key + oauth → badge shown)', () => {
+		const w = makeWrapper({ catalog: [
+			{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+			{ provider: 'openai', authMethods: ['oauth-login'], hasCred: false },
+		] });
+		expect(w.find('[data-testid="add-provider-oauth-tag-openai"]').exists()).toBe(true);
 	});
 
 	test('search filters by id and displayName (case-insensitive)', async () => {

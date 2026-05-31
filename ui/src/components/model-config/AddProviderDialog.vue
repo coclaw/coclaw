@@ -38,7 +38,18 @@
 								@click="onPickProvider(p.id)"
 							>
 								<!-- 直接显示 OpenClaw 原生 provider id（映射的 displayName 不全且二者大致相同，暂不用映射） -->
-								<span class="min-w-0 flex-1 truncate">{{ p.id }}</span>
+								<span class="min-w-0 truncate -mt-0.5">{{ p.id }}</span>
+								<!-- oauth 能力徽章：authMethods 含 oauth 入口才贴（api-key 默认不贴，降噪）；样式同已配栏 -->
+								<UBadge
+									v-if="p.hasOauth"
+									:data-testid="`add-provider-oauth-tag-${p.id}`"
+									color="neutral"
+									variant="subtle"
+									size="sm"
+									class="shrink-0"
+								>
+									oauth
+								</UBadge>
 							</button>
 						</template>
 
@@ -55,7 +66,18 @@
 								@click="onPickProvider(p.id)"
 							>
 								<!-- 直接显示 OpenClaw 原生 provider id（映射的 displayName 不全且二者大致相同，暂不用映射） -->
-								<span class="min-w-0 flex-1 truncate">{{ p.id }}</span>
+								<span class="min-w-0 truncate -mt-0.5">{{ p.id }}</span>
+								<!-- oauth 能力徽章：authMethods 含 oauth 入口才贴（api-key 默认不贴，降噪）；样式同已配栏 -->
+								<UBadge
+									v-if="p.hasOauth"
+									:data-testid="`add-provider-oauth-tag-${p.id}`"
+									color="neutral"
+									variant="subtle"
+									size="sm"
+									class="shrink-0"
+								>
+									oauth
+								</UBadge>
 							</button>
 						</template>
 
@@ -347,20 +369,29 @@ export default {
 		},
 		/**
 		 * catalog 派生的可加 provider 集合：按 provider 去重、剔除已配（existingProviders）。
-		 * 返回 [{ id, displayName, popular }]，按 displayName 字典序排。
+		 * 返回 [{ id, displayName, popular, hasOauth }]，按 displayName 字典序排。
+		 * hasOauth：authMethods 含任一 oauth 入口（device-code / login）即真，驱动列表项 oauth 徽章
+		 * （api-key 默认不贴，降噪；与 selectedProviderMethods 同口径——防御性合并同 provider 多条目）。
 		 */
 		availableProviders() {
 			const existing = new Set(Array.isArray(this.existingProviders) ? this.existingProviders : []);
-			const seen = new Set();
-			const out = [];
 			const cat = Array.isArray(this.catalog) ? this.catalog : [];
+			const byId = new Map();
 			for (const m of cat) {
 				const id = m && typeof m.provider === 'string' ? m.provider : '';
-				if (!id || seen.has(id) || existing.has(id)) continue;
-				seen.add(id);
-				const meta = getProviderMeta(id);
-				out.push({ id, displayName: meta.displayName, popular: !!meta.popular });
+				if (!id || existing.has(id)) continue;
+				let entry = byId.get(id);
+				if (!entry) {
+					const meta = getProviderMeta(id);
+					entry = { id, displayName: meta.displayName, popular: !!meta.popular, hasOauth: false };
+					byId.set(id, entry);
+				}
+				if (Array.isArray(m.authMethods) &&
+					(m.authMethods.includes('oauth-device-code') || m.authMethods.includes('oauth-login'))) {
+					entry.hasOauth = true;
+				}
 			}
+			const out = Array.from(byId.values());
 			out.sort((a, b) => a.displayName.localeCompare(b.displayName));
 			return out;
 		},

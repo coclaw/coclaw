@@ -9,9 +9,11 @@ const UButtonStub = {
 	template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
 };
 
-// UBadge 非全局注册于 vitest（未挂 @nuxt/ui/vite），stub 成渲染 slot 的 span 即可断言标签文案
+// UBadge 非全局注册于 vitest（未挂 @nuxt/ui/vite），stub 成渲染 slot 的 span 即可断言标签文案；
+// 暴露 size 经 data-size 落到 root，便于断言字号
 const UBadgeStub = {
-	template: '<span class="ubadge"><slot /></span>',
+	props: { size: { type: String, default: '' } },
+	template: '<span class="ubadge" :data-size="size"><slot /></span>',
 };
 
 function makeWrapper(profile, extraProps = {}) {
@@ -48,8 +50,10 @@ describe('ProviderAuthRow', () => {
 
 	test('OAuth profile renders oauth badge + email, and is removable (whitelist gate removed)', async () => {
 		const w = makeWrapper({ provider: 'minimax', type: 'oauth', email: 'u@example.com', profileId: 'minimax:default', source: 'profile', removable: true });
-		// oauth 徽章（字面量 oauth，不进 i18n）
-		expect(w.find('[data-testid="provider-oauth-tag"]').text()).toBe('oauth');
+		// oauth 徽章（字面量 oauth，不进 i18n），size=sm
+		const oauthTag = w.find('[data-testid="provider-oauth-tag"]');
+		expect(oauthTag.text()).toBe('oauth');
+		expect(oauthTag.attributes('data-size')).toBe('sm');
 		// 撤销纯看后端 removable → 有凭据即可撤销
 		const btn = w.find('[data-testid="btn-remove-provider"]');
 		expect(btn.exists()).toBe(true);
@@ -113,7 +117,9 @@ describe('ProviderAuthRow', () => {
 
 	test('inline source: tag + emits source=inline, button enabled', async () => {
 		const w = makeWrapper({ provider: 'minimax', type: 'api_key', keyPreview: 'mm…Y', profileId: 'minimax#inline', source: 'inline', removable: true });
-		expect(w.find('[data-testid="provider-source-tag"]').text()).toBe('modelConfig.providerAuth.source.inline');
+		const sourceTag = w.find('[data-testid="provider-source-tag"]');
+		expect(sourceTag.text()).toBe('modelConfig.providerAuth.source.inline');
+		expect(sourceTag.attributes('data-size')).toBe('sm');
 		const btn = w.find('[data-testid="btn-remove-provider"]');
 		expect(btn.element.disabled).toBe(false);
 		await btn.trigger('click');
