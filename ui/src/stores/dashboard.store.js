@@ -122,28 +122,32 @@ function computeSessionStats(sessions) {
 }
 
 /**
- * 判定主模型当前是否有效（设置子页用，§7.4）：
- *   - primary 必须是 `<provider>/<model>` 形态（含 `/`，端点不为空）
- *   - providerUsable：该 provider 是否有可用凭据（插件 verdict，别名归一化在插件侧完成）
- *   - model 必须在 catalog 该 provider 下（裸比对，保留"模型下架"检测）
+ * 判定主模型是否在可用清单内（设置子页 primary 有效性，决策4）。
  *
- * 仪表盘不用本函数：仪表盘只看 `default.providerUsable`、不查目录（§7.4）。
- * catalog 输入形态：`models.list view:"all"` 返回的 `models` 数组（每条带 `id` + `provider`）。
+ * 两个必须输入：当前 primary + 可用清单（`coclaw.model.listAvailable` 的 byProvider）。
+ * 任一未就绪 → 返回 null（信息不全，先不下结论、不误报）；都就绪才判 membership。
+ * 一次 membership 同时等价于"该 provider 有凭据 ∧ model 在目录内"（listAvailable 已在插件侧
+ * 过别名感知凭据门 + 目录交集），比旧 view:all 裸比对更严、且去掉最后一个 view:all 消费点。
  *
- * @param {string|null|undefined} primary - 主模型字符串
- * @param {boolean} providerUsable - 插件给出的"主模型 provider 有无可用凭据"
- * @param {{ id: string, provider?: string }[]} catalog - models.list view:"all" 派生的目录
- * @returns {boolean}
+ * "可用清单未就绪"用 available 非对象（null）表达，而非空对象：
+ *   - listAvailable 成功但 byProvider 为空 = 权威的"无可用模型" → available={} → 不在清单 → false（失效）
+ *   - listAvailable 还没回来 / 失败 = available=null → 不下结论 → null
+ *
+ * 仪表盘不用本函数：仪表盘只看 `default.providerUsable`、不查可用清单（§7.4）。
+ *
+ * @param {string|null|undefined} primary - 主模型字符串 `<provider>/<model>`
+ * @param {Record<string, string[]>|null|undefined} available - 可用清单 byProvider；null=未就绪
+ * @returns {boolean|null} null=信息不全不下结论；true=在可用清单内；false=不在
  */
-export function computePrimaryEffective(primary, providerUsable, catalog) {
-	if (!primary || typeof primary !== 'string') return false;
+export function computePrimaryEffective(primary, available) {
+	if (!primary || typeof primary !== 'string') return null;
 	const idx = primary.indexOf('/');
-	if (idx <= 0 || idx === primary.length - 1) return false;
+	if (idx <= 0 || idx === primary.length - 1) return null;
+	if (!available || typeof available !== 'object') return null;
 	const provider = primary.slice(0, idx);
 	const model = primary.slice(idx + 1);
-	if (!providerUsable) return false;
-	if (!Array.isArray(catalog)) return false;
-	return catalog.some(m => m && m.provider === provider && m.id === model);
+	const ids = Array.isArray(available[provider]) ? available[provider] : [];
+	return ids.includes(model);
 }
 
 // =====================================================================

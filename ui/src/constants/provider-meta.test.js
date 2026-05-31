@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest';
 
-import { PROVIDER_META, getProviderMeta, COCLAW_OAUTH_PROVIDERS } from './provider-meta.js';
+import { PROVIDER_META, getProviderMeta } from './provider-meta.js';
 
 const POPULAR_IDS = ['anthropic', 'openai', 'google', 'groq', 'deepseek', 'moonshot', 'zhipuai'];
 
@@ -39,9 +39,4 @@ test('getProviderMeta 未知 id 返回 fallback', () => {
 test('getProviderMeta 对空字符串走 fallback', () => {
 	const meta = getProviderMeta('');
 	expect(meta).toEqual({ displayName: '', popular: false });
-});
-
-// 防漂移：白名单与插件端 PORTAL_PROVIDER_ID（'minimax-portal'）耦合，改名时须同步
-test('COCLAW_OAUTH_PROVIDERS 当前仅含 minimax-portal', () => {
-	expect([...COCLAW_OAUTH_PROVIDERS].sort()).toEqual(['minimax-portal']);
 });

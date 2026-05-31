@@ -47,30 +47,17 @@ const UModalStub = {
 	</div>`,
 };
 
-// listUsable.byProvider 主数据源：openai + groq 可用（anthropic 未配 → 不出现）。
+// listAvailable.byProvider 唯一数据源：openai + groq 可用（anthropic 未配 → 不出现）。
 const usableDefault = {
 	openai: ['gpt-4', 'gpt-3.5'],
 	groq: ['llama-3.3-70b-versatile'],
 };
-
-// 仅回退态用的 view:'all' catalog（含 anthropic / 一个未绑 provider，用于验证回退交集裁剪）
-const catalog = [
-	{ id: 'gpt-4', provider: 'openai' },
-	{ id: 'gpt-3.5', provider: 'openai' },
-	{ id: 'claude-sonnet', provider: 'anthropic' },
-	{ id: 'claude-opus', provider: 'anthropic' },
-	{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
-	{ id: 'orphan-model', provider: 'someUnboundProvider' },
-];
 
 function makeWrapper(props = {}) {
 	return mount(PrimaryModelPickerDialog, {
 		props: {
 			open: true,
 			usable: usableDefault,
-			fallback: false,
-			providers: ['openai', 'groq'], // 仅回退态生效
-			catalog,
 			current: 'openai/gpt-4',
 			setPrimary: vi.fn().mockResolvedValue({}),
 			...props,
@@ -89,8 +76,8 @@ beforeEach(() => {
 	envState.screen.ltMd = false;
 });
 
-describe('PrimaryModelPickerDialog — byProvider (listUsable) main path', () => {
-	test('renders models straight from usable.byProvider (not catalog)', () => {
+describe('PrimaryModelPickerDialog — byProvider (listAvailable) sole data source', () => {
+	test('renders models straight from usable.byProvider', () => {
 		const w = makeWrapper();
 		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(true);
 		expect(w.find('[data-testid="primary-picker-item-openai__gpt-3.5"]').exists()).toBe(true);
@@ -124,9 +111,8 @@ describe('PrimaryModelPickerDialog — byProvider (listUsable) main path', () =>
 		expect(setPrimary.mock.calls[0][0].primary).toBe('volcengine-plan/ark-code-latest');
 	});
 
-	test('ignores catalog/providers entirely in main path (empty providers/catalog still lists usable)', () => {
-		const w = makeWrapper({ providers: [], catalog: [] });
-		// fallback=false → 数据只来自 usable，与 providers/catalog 无关
+	test('usable is the sole data source', () => {
+		const w = makeWrapper();
 		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(true);
 		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
 	});
@@ -177,38 +163,6 @@ describe('PrimaryModelPickerDialog — byProvider (listUsable) main path', () =>
 	});
 });
 
-describe('PrimaryModelPickerDialog — old-plugin fallback (providers ∩ catalog)', () => {
-	test('fallback=true uses providers ∩ catalog, ignoring usable', () => {
-		// usable 为空，但回退态从 providers ∩ catalog 出可选项 → 不空白
-		const w = makeWrapper({ fallback: true, usable: {} });
-		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(true);
-		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
-		// anthropic 不在 providers → 被裁掉
-		expect(w.find('[data-testid="primary-picker-item-anthropic__claude-sonnet"]').exists()).toBe(false);
-		// catalog 里但不在 providers → 裁掉
-		expect(w.find('[data-testid="primary-picker-item-someUnboundProvider__orphan-model"]').exists()).toBe(false);
-	});
-
-	test('fallback=true with empty providers → empty hint', () => {
-		const w = makeWrapper({ fallback: true, providers: [], usable: {} });
-		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
-	});
-
-	test('fallback=true with empty catalog → empty hint', () => {
-		const w = makeWrapper({ fallback: true, catalog: [], usable: {} });
-		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
-	});
-
-	test('fallback path tolerates malformed catalog rows', () => {
-		const w = makeWrapper({
-			fallback: true,
-			usable: {},
-			catalog: [{ id: 'x' }, { provider: 'groq' }, null, { id: 'llama-3.3-70b-versatile', provider: 'groq' }],
-		});
-		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
-	});
-});
-
 describe('PrimaryModelPickerDialog — search', () => {
 	test('filters by model id (case-insensitive)', async () => {
 		const w = makeWrapper();
@@ -229,13 +183,6 @@ describe('PrimaryModelPickerDialog — search', () => {
 		const w = makeWrapper();
 		await w.find('[data-testid="primary-picker-search"]').setValue('zzz-nope');
 		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
-	});
-
-	test('search also applies in fallback mode', async () => {
-		const w = makeWrapper({ fallback: true, usable: {} });
-		await w.find('[data-testid="primary-picker-search"]').setValue('llama');
-		expect(w.find('[data-testid="primary-picker-item-groq__llama-3.3-70b-versatile"]').exists()).toBe(true);
-		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(false);
 	});
 });
 

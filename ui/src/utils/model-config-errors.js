@@ -47,21 +47,3 @@ export function mapModelConfigErrorKey(err, fallbackKey) {
 export function isCanceledError(err) {
 	return !!(err && typeof err === 'object' && err.code === 'ERR_CANCELED');
 }
-
-/**
- * 判定是否是"方法不存在"——网关对未注册的 RPC method 统一回 `INVALID_REQUEST`
- * （上游 gateway/server-methods.ts：`unknown method: <m>` → errorShape(INVALID_REQUEST)），
- * 经 claw-connection.js 把 payload.error.code 原样挂到 err.code 上。
- *
- * 用途：旧插件没有 `coclaw.model.listUsable` 时该调用 reject 为此码 → 选模型器回退到旧派生。
- * 仅依赖结构化 err.code，不读 message（feedback-no-string-match-control-flow）。
- *
- * 注意：listUsable 新插件自身的业务错误是 INVALID_ARGS / IO_FAILED，绝不返回 INVALID_REQUEST，
- * 故此码可唯一标识"网关层方法分发失败 = 旧插件无此方法"。
- *
- * @param {unknown} err
- * @returns {boolean}
- */
-export function isMethodNotFoundError(err) {
-	return !!(err && typeof err === 'object' && err.code === 'INVALID_REQUEST');
-}

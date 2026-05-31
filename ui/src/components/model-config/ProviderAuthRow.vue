@@ -3,10 +3,22 @@
 		class="flex min-h-12 items-center gap-3 px-3 py-2 border-b border-default last:border-b-0"
 		:class="{ 'opacity-75': source === 'env' }"
 	>
-		<!-- 品牌名 + 来源小标签 + 凭据预览 -->
+		<!-- 品牌名 + oauth 徽章 + 来源小标签 + 凭据预览。
+		     徽章紧挨同行文字：容器 items-end 让徽章底边对齐文字底边（视觉对齐）。 -->
 		<div class="min-w-0 flex-1">
 			<div class="flex items-end gap-1.5">
 				<p class="truncate text-sm font-medium">{{ displayName }}</p>
+				<!-- oauth 类型徽章：字面量 oauth 不进 i18n（与 provider id 同属技术标识，不翻译） -->
+				<UBadge
+					v-if="isOauth"
+					data-testid="provider-oauth-tag"
+					color="neutral"
+					variant="subtle"
+					size="xs"
+					class="shrink-0"
+				>
+					oauth
+				</UBadge>
 				<UBadge
 					v-if="showSourceTag"
 					data-testid="provider-source-tag"
@@ -21,12 +33,9 @@
 			<p v-if="secondary" class="truncate text-xs text-muted">{{ secondary }}</p>
 		</div>
 
-		<!-- 撤销按钮：
-		     - oauth 默认只读（无 affordance）→ 不渲染，仅 CoClaw 管理的扫码服务商例外
-		     - env 来源不可撤销（在 OpenClaw 主机环境里）→ 渲染但禁用 + 次行提示去哪移除
-		     - 账本 / 内联 → 可撤 -->
+		<!-- 撤销按钮：所有凭据行都渲染（有凭据即可撤销，含 oauth——本地删可经 CoClaw 重登回来）；
+		     env 来源不可撤销（在 OpenClaw 主机环境里）→ 渲染但禁用 + 次行提示去哪移除。 -->
 		<UButton
-			v-if="showRemoveButton"
 			data-testid="btn-remove-provider"
 			variant="soft"
 			color="error"
@@ -39,7 +48,7 @@
 </template>
 
 <script>
-import { getProviderMeta, COCLAW_OAUTH_PROVIDERS } from '../../constants/provider-meta.js';
+import { getProviderMeta } from '../../constants/provider-meta.js';
 
 export default {
 	name: 'ProviderAuthRow',
@@ -75,6 +84,10 @@ export default {
 		showSourceTag() {
 			return this.source === 'inline' || this.source === 'env';
 		},
+		/** 是否为 oauth 凭据（决定是否渲染 oauth 徽章） */
+		isOauth() {
+			return this.profile?.type === 'oauth';
+		},
 		sourceLabel() {
 			return this.$t(`modelConfig.providerAuth.source.${this.source}`);
 		},
@@ -95,22 +108,9 @@ export default {
 		backendRemovable() {
 			return this.profile?.removable !== false;
 		},
-		/**
-		 * UI 侧 oauth 策略：oauth 默认只读，仅 CoClaw 管理的扫码服务商可撤
-		 * （撤后能在 CoClaw 内重登回来，构成往返闭环；否则成单向陷阱）。
-		 */
-		oauthAllowed() {
-			const p = this.profile ?? {};
-			if (p.type !== 'oauth') return true;
-			return COCLAW_OAUTH_PROVIDERS.has(p.provider);
-		},
-		/** 真正可撤 = 后端允许 且 通过 UI oauth 策略 */
+		/** 真正可撤 = 后端允许撤销（纯看 removable，不再有 UI 侧 oauth 白名单门） */
 		canRemove() {
-			return this.backendRemovable && this.oauthAllowed;
-		},
-		/** 只读 oauth 不渲染按钮（无 affordance）；env 渲染但禁用 */
-		showRemoveButton() {
-			return this.oauthAllowed;
+			return this.backendRemovable;
 		},
 		removeDisabled() {
 			return this.disabled || !this.backendRemovable;

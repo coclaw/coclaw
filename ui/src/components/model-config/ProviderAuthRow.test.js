@@ -46,19 +46,37 @@ describe('ProviderAuthRow', () => {
 		expect(w.emitted('remove')[0]).toEqual([{ provider: 'anthropic', source: 'profile' }]);
 	});
 
-	test('OAuth profile is read-only (no remove button)', () => {
+	test('OAuth profile renders oauth badge + email, and is removable (whitelist gate removed)', async () => {
 		const w = makeWrapper({ provider: 'minimax', type: 'oauth', email: 'u@example.com', profileId: 'minimax:default', source: 'profile', removable: true });
-		expect(w.find('[data-testid="btn-remove-provider"]').exists()).toBe(false);
+		// oauth 徽章（字面量 oauth，不进 i18n）
+		expect(w.find('[data-testid="provider-oauth-tag"]').text()).toBe('oauth');
+		// 撤销纯看后端 removable → 有凭据即可撤销
+		const btn = w.find('[data-testid="btn-remove-provider"]');
+		expect(btn.exists()).toBe(true);
+		await btn.trigger('click');
+		expect(w.emitted('remove')[0]).toEqual([{ provider: 'minimax', source: 'profile' }]);
 		// 仍渲染 email
 		expect(w.text()).toContain('u@example.com');
 	});
 
-	test('CoClaw-managed scan-login oauth (minimax-portal) is removable', async () => {
-		const w = makeWrapper({ provider: 'minimax-portal', type: 'oauth', email: 'u@example.com', profileId: 'minimax-portal:default', source: 'profile', removable: true });
+	test('non-CoClaw oauth (e.g. openai-codex) is now removable too — no provider whitelist', async () => {
+		const w = makeWrapper({ provider: 'openai-codex', type: 'oauth', email: 'd@example.com', profileId: 'openai-codex:default', source: 'profile', removable: true });
 		const btn = w.find('[data-testid="btn-remove-provider"]');
 		expect(btn.exists()).toBe(true);
 		await btn.trigger('click');
-		expect(w.emitted('remove')[0]).toEqual([{ provider: 'minimax-portal', source: 'profile' }]);
+		expect(w.emitted('remove')[0]).toEqual([{ provider: 'openai-codex', source: 'profile' }]);
+	});
+
+	test('oauth with backend removable=false → button rendered but disabled (backend authoritative)', () => {
+		const w = makeWrapper({ provider: 'openai-codex', type: 'oauth', email: 'd@example.com', profileId: 'openai-codex:default', source: 'profile', removable: false });
+		const btn = w.find('[data-testid="btn-remove-provider"]');
+		expect(btn.exists()).toBe(true);
+		expect(btn.element.disabled).toBe(true);
+	});
+
+	test('api_key profile renders NO oauth badge', () => {
+		const w = makeWrapper({ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default', source: 'profile', removable: true });
+		expect(w.find('[data-testid="provider-oauth-tag"]').exists()).toBe(false);
 	});
 
 	test('token-type profile is removable (treated like api_key)', () => {

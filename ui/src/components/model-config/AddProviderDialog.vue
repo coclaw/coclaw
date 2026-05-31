@@ -160,21 +160,20 @@ export default {
 			default: false,
 		},
 		/**
-		 * models.list view:"all" 派生：所有 catalog 内出现过的 provider id 列表（去重前由调用方计算）
-		 * 也可直接传整个 catalog 数组，组件自行 dedupe——选后者，让上层更省事
+		 * provider 目录（`coclaw.providerAuth.catalog` 出参 providers）：每项
+		 * `{ provider, authMethods, hasCred }`（setup 全集，基座 id、每 provider 一条）。
+		 * 本组件按 `provider` 字段去重出可选项；hasCred 维度的"已配排除"由父组件经
+		 * `existingProviders` 传入（口径全在父组件）。authMethods 留待 T3 多入口渲染用。
 		 *
-		 * @type {{ id: string, provider?: string }[]}
+		 * @type {{ provider: string, authMethods?: string[], hasCred?: boolean }[]}
 		 */
 		catalog: {
 			type: Array,
 			default: () => [],
 		},
 		/**
-		 * 要从"可加 provider"列表里排除的 provider id 集（Step 1）。由父组件预先算好后传入：
-		 *   - 新插件：listUsable 的别名归一 configuredProviders ∪ usable（byProvider）的 key
-		 *     （后者含别名变体如 `volcengine-plan`，从而"持基座 key ⇒ 基座+变体都不出现"）
-		 *   - 旧插件回退：providerAuth.list 三源原始 providerIds
-		 * 本组件只做按 id 精确排除，不关心来源——口径选择全在父组件。
+		 * 要从"可加 provider"列表里排除的 provider id 集（Step 1）。由父组件按 catalog 的
+		 * `hasCred === true`（已配）算好传入；本组件只做按 id 精确排除，不关心来源。
 		 *
 		 * @type {string[]}
 		 */
@@ -251,8 +250,8 @@ export default {
 			return PROVIDER_META[this.selectedProvider]?.dashboardUrl ?? '';
 		},
 		/**
-		 * catalog 派生的 provider id 集合，剔除已绑的
-		 * 返回 [{ id, displayName, popular }]，按 displayName 字典序排
+		 * catalog 派生的可加 provider 集合：按 provider 去重、剔除已配（existingProviders）。
+		 * 返回 [{ id, displayName, popular }]，按 displayName 字典序排。
 		 */
 		availableProviders() {
 			const existing = new Set(Array.isArray(this.existingProviders) ? this.existingProviders : []);

@@ -62,12 +62,12 @@ const UModalStub = {
 	</div>`,
 };
 
+// providerAuth.catalog 出参形态：每 provider 一条 { provider, authMethods, hasCred }
 const catalog = [
-	{ id: 'gpt-4', provider: 'openai' },
-	{ id: 'gpt-3.5', provider: 'openai' },
-	{ id: 'claude-sonnet', provider: 'anthropic' },
-	{ id: 'llama-3.3-70b-versatile', provider: 'groq' },
-	{ id: 'gpt-mystery', provider: 'mystery' }, // 未在 PROVIDER_META
+	{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+	{ provider: 'anthropic', authMethods: ['api-key'], hasCred: false },
+	{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
+	{ provider: 'mystery', authMethods: ['api-key'], hasCred: false }, // 未在 PROVIDER_META
 ];
 
 function makeWrapper(props = {}) {
@@ -108,9 +108,11 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(false);
 	});
 
-	test('deduplicates providers (catalog has multiple models per provider)', () => {
-		const w = makeWrapper();
-		// openai 有两个 model 但只该出现一次 item
+	test('deduplicates by provider (defensive: duplicate provider entries collapse to one item)', () => {
+		const w = makeWrapper({ catalog: [
+			{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+			{ provider: 'openai', authMethods: ['oauth-device-code'], hasCred: false },
+		] });
 		const items = w.findAll('[data-testid^="add-provider-item-openai"]');
 		expect(items).toHaveLength(1);
 	});
@@ -407,36 +409,35 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 	});
 });
 
-describe('AddProviderDialog — exclusion set (alias-aware, computed by parent)', () => {
-	// catalog 含别名基座 + 变体 provider（modelsList view:'all' 把变体也列为一等 provider）
-	const aliasCatalog = [
-		{ id: 'gpt-4', provider: 'openai' },
-		{ id: 'doubao-pro', provider: 'volcengine' },
-		{ id: 'ark-code-latest', provider: 'volcengine-plan' },
+describe('AddProviderDialog — exclusion set (parent-computed from catalog.hasCred)', () => {
+	// 新 catalog：setup 全集、基座 id、每 provider 一条带 hasCred
+	const credCatalog = [
+		{ provider: 'openai', authMethods: ['api-key'], hasCred: true },
+		{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'deepseek', authMethods: ['api-key'], hasCred: false },
 	];
 
-	test('excludes both base and variant when parent passes the union {base, variant}', () => {
-		// 父组件对新插件传 configuredProviders ∪ usable.keys = {volcengine, volcengine-plan}
-		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['volcengine', 'volcengine-plan'] });
-		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(false);
-		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(false);
-		// 未配的 openai 仍可加
-		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(true);
-	});
-
-	test('exact-match only: base id alone does NOT hide the variant (documents why parent unions)', () => {
-		// 仅传基座 id → 组件按 id 精确排除，变体 id 不被覆盖（故父组件必须并入 usable.keys）
-		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['volcengine'] });
-		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(false);
-		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(true);
-	});
-
-	test('old-plugin fallback: parent passes raw providerIds, exclusion still by exact id', () => {
-		const w = makeWrapper({ catalog: aliasCatalog, existingProviders: ['openai'] });
+	test('excludes providers the parent marks as already-configured (hasCred===true → existingProviders)', () => {
+		// 父组件把 hasCred===true 的集合算成 existingProviders 传入
+		const w = makeWrapper({ catalog: credCatalog, existingProviders: ['openai'] });
 		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
-		// 未排除的基座 / 变体都还在
-		expect(w.find('[data-testid="add-provider-item-volcengine"]').exists()).toBe(true);
-		expect(w.find('[data-testid="add-provider-item-volcengine-plan"]').exists()).toBe(true);
+		// hasCred===false 的可加
+		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-deepseek"]').exists()).toBe(true);
+	});
+
+	test('empty exclusion → every catalog provider is addable', () => {
+		const w = makeWrapper({ catalog: credCatalog, existingProviders: [] });
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-deepseek"]').exists()).toBe(true);
+	});
+
+	test('exclusion is by exact provider id', () => {
+		const w = makeWrapper({ catalog: credCatalog, existingProviders: ['groq'] });
+		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-deepseek"]').exists()).toBe(true);
 	});
 });
 
