@@ -535,8 +535,8 @@ export default {
 		},
 
 		/**
-		 * 给 AddProviderDialog / ProviderOAuthLoginStep 注入的两阶段验证码授权函数。
-		 * timeout:0——验证码授权要等用户去授权（可能分钟级），不设 RPC 超时；终态由 plugin 后端
+		 * 给 AddProviderDialog / ProviderOAuthLoginStep 注入的两阶段账号授权函数。
+		 * timeout:0——账号授权要等用户去授权（可能分钟级），不设 RPC 超时；终态由 plugin 后端
 		 * phase-2 帧驱动（成功 / OAUTH_*），断连兜底由组件层 signal abort 清理。
 		 *
 		 * @param {{ provider: string, onAccepted: Function, signal: AbortSignal }} args
@@ -544,8 +544,8 @@ export default {
 		addProviderLoginOauth({ provider, onAccepted, signal }) {
 			const id = this.clawId;
 			// 记下本次登录针对哪台 claw：取消/卸载清理时据此定位后端，而非读当时的 this.clawId。
-			// 验证码授权期间切到别的 claw 会改 this.clawId；cancelOauth 若读当前值会把取消发去错的 claw、
-			// 留原 claw 后台轮询到验证码过期才自停。client 侧 waiter 由组件 signal abort 收掉，与此独立。
+			// 账号授权期间切到别的 claw 会改 this.clawId；cancelOauth 若读当前值会把取消发去错的 claw、
+			// 留原 claw 后台轮询到授权码过期才自停。client 侧 waiter 由组件 signal abort 收掉，与此独立。
 			this.__oauthClawId = id;
 			const conn = useClawConnections().get(id);
 			if (!conn) {
@@ -559,7 +559,7 @@ export default {
 		},
 
 		/**
-		 * 取消进行中的验证码授权（拨掉后端轮询，幂等）。无连接时静默 resolve（best-effort 清理）。
+		 * 取消进行中的账号授权（拨掉后端轮询，幂等）。无连接时静默 resolve（best-effort 清理）。
 		 * 用登录时记下的 __oauthClawId 定位（见 addProviderLoginOauth），缺省回退当前 claw。
 		 *
 		 * @param {{ loginId: string }} args
@@ -738,7 +738,7 @@ export default {
 		this.__unmounted = false;
 		// 当前打开的 add/picker dialog 所针对的 claw（写操作目标），见 onProviderAdded/onPrimaryPicked
 		this.__writeClawId = '';
-		// 验证码授权针对的 claw：取消清理用它定位后端（切 claw 后 this.clawId 已变），见 addProviderLoginOauth
+		// 账号授权针对的 claw：取消清理用它定位后端（切 claw 后 this.clawId 已变），见 addProviderLoginOauth
 		this.__oauthClawId = '';
 	},
 	beforeUnmount() {

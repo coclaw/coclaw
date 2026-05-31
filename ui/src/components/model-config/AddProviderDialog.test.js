@@ -51,7 +51,7 @@ const UInputStub = {
 
 const UIconStub = { props: ['name'], template: '<span :data-icon="name" />' };
 
-// 验证码授权子步：stub 出来便于断言 props 透传 + 驱动 success/cancel/update:phase 事件。
+// 账号授权子步：stub 出来便于断言 props 透传 + 驱动 success/cancel/update:phase 事件。
 // 动作（取消/返回/重试）已上移到父 footer，footer 经 $refs 调本 stub 的 onCancel/onBack/start，
 // 故 stub 也暴露这三个方法（模拟真组件契约）。oauth-stub-pending/error 供测试驱动 footer 切换。
 const ProviderOAuthLoginStepStub = {
@@ -575,7 +575,10 @@ describe('AddProviderDialog — mobile / desktop layout', () => {
 describe('AddProviderDialog — multi-entry (authMethods)', () => {
 	// 多桶 provider（authMethods 故意乱序，验证固定渲染顺序）+ 单 device-code + 单 api-key
 	const multiCatalog = [
+		// openai-codex：api-key + code + cb → cb（oauth-login）被隐（device-code 在场），塌成 api-key + device-code
 		{ provider: 'openai-codex', authMethods: ['oauth-login', 'oauth-device-code', 'api-key'], hasCred: false },
+		// gemini：api-key + cb（无 code）→ cb 保留，chooser 列 api-key + oauth-login（点后者走"暂不支持"）
+		{ provider: 'gemini', authMethods: ['oauth-login', 'api-key'], hasCred: false },
 		{ provider: 'github-copilot', authMethods: ['oauth-device-code'], hasCred: false },
 		{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
 	];
@@ -609,7 +612,7 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 
 	test('device-code pending → footer shows a single solid Cancel; clicking it returns', async () => {
 		const w = makeWrapper({ catalog: multiCatalog });
-		// 单方式 → 直接进验证码授权步；驱动子步进入 pending
+		// 单方式 → 直接进账号授权步；驱动子步进入 pending
 		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
 		await w.find('.oauth-stub-pending').trigger('click');
 		expect(w.vm.footerMode).toBe('oauth-pending');
@@ -649,13 +652,13 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(w.vm.step).toBe('select');
 	});
 
-	test('multi-method provider shows a chooser with methods in fixed order (api-key, device-code, oauth-login)', async () => {
+	test('device-code present hides oauth-login; chooser shows api-key + device-code in fixed order', async () => {
 		const w = makeWrapper({ catalog: multiCatalog });
 		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
 		expect(w.vm.selectedMethod).toBe('');
 		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(true);
-		// 固定顺序，与 catalog authMethods 的乱序无关
-		expect(w.vm.selectedProviderMethods).toEqual(['api-key', 'oauth-device-code', 'oauth-login']);
+		// cb 被过滤（device-code 在场）；固定顺序，与 catalog authMethods 的乱序无关
+		expect(w.vm.selectedProviderMethods).toEqual(['api-key', 'oauth-device-code']);
 		// 渲染层也按固定顺序（防模板按 catalog 插入序渲染的回归）
 		const renderedOrder = w.findAll('[data-testid^="add-method-"]')
 			.map(b => b.attributes('data-testid'))
@@ -663,8 +666,18 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(renderedOrder).toEqual([
 			'add-method-api-key',
 			'add-method-oauth-device-code',
-			'add-method-oauth-login',
 		]);
+		// oauth-login 入口不渲染
+		expect(w.find('[data-testid="add-method-oauth-login"]').exists()).toBe(false);
+	});
+
+	test('without device-code, oauth-login stays in the chooser (api-key + oauth-login)', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-gemini"]').trigger('click');
+		expect(w.vm.selectedMethod).toBe('');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(true);
+		expect(w.vm.selectedProviderMethods).toEqual(['api-key', 'oauth-login']);
+		expect(w.find('[data-testid="add-method-oauth-login"]').exists()).toBe(true);
 	});
 
 	test('chooser → pick api-key opens the key form', async () => {
@@ -715,7 +728,8 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 
 	test('oauth-login entry shows "not supported" with a back button', async () => {
 		const w = makeWrapper({ catalog: multiCatalog });
-		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		// gemini = api-key + cb（无 code）→ chooser 保留 oauth-login 入口
+		await w.find('[data-testid="add-provider-item-gemini"]').trigger('click');
 		await w.find('[data-testid="add-method-oauth-login"]').trigger('click');
 		const note = w.find('[data-testid="add-oauth-login-unsupported"]');
 		expect(note.exists()).toBe(true);

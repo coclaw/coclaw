@@ -9,7 +9,7 @@
 			{{ $t('modelConfig.providerAuth.oauth.starting') }}
 		</div>
 
-		<!-- pending：拿到受理帧，展示授权链接 + 验证码（rawText 在结构化字段抠不到时兜底） -->
+		<!-- pending：拿到受理帧，展示授权链接 + 授权码（rawText 在结构化字段抠不到时兜底） -->
 		<template v-else-if="phase === 'pending'">
 			<p class="text-sm text-muted">
 				{{ $t('modelConfig.providerAuth.oauth.instructions', { provider }) }}
@@ -37,7 +37,7 @@
 				</UButton>
 			</div>
 
-			<!-- 验证码：等宽 + 可选中复制 -->
+			<!-- 授权码：等宽 + 可选中复制 -->
 			<div v-if="userCode" class="flex flex-col gap-1">
 				<span class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.codeLabel') }}</span>
 				<code data-testid="oauth-user-code" class="select-all rounded bg-elevated px-2 py-1 font-mono text-base tracking-wider">

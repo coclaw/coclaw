@@ -225,7 +225,9 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - `api-key` → 上面的"输 key"步骤。
 - `oauth-device-code` → **设备码登录步骤**（挂 `ProviderOAuthLoginStep` 组件，§ 5.5）。
 - `oauth-login` → 列出但点开提示**"暂不支持"**（回环-PKCE 远端要贴回 redirect URL，UX 太重）。
-- 一个 provider 多方式 → **多个入口并排**让用户选（如 openai-codex 同时给 api-key + 设备码 + oauth-login）；单方式直达对应步骤。
+- **device-code 在场时隐掉 oauth-login**：同一 provider 同时给 `oauth-device-code` + `oauth-login` 时只留 device-code——cb 我们暂不支持，留着只会多出一个点了即"暂不支持"的死入口；对用户而言两种 OAuth 都是"开页授权"、无需暴露差异。故 openai-codex（api-key + code + cb）塌成 **api-key + 设备码** 两入口。
+- 一个 provider 多方式 → **多个入口并排**让用户选；单方式直达对应步骤。
+- **面向用户的文案统一为"账号授权"**（device-code 与 oauth-login 共用同一标签——经上一条过滤后两者永不并排，故同名自洽），流程内展示的码称"授权码"；底层协议键 `oauth-device-code`/`oauth-login` 与机制名"设备码"不变。
 
 ### 5.3 换主模型流程
 
