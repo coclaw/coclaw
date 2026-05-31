@@ -152,7 +152,10 @@ cmd_down() {
 }
 
 # 兜底清理所有遗留隔离网关——含「worktree 已删、wt:down 调不动而搁浅」的孤儿。
-# 扫文件系统不依赖 cwd，可从任意检出运行；按 pid 精确杀，pid 不可用才回退按端口。
+# 扫文件系统不依赖 cwd，可从任意检出运行。按 pid 精确收尸：仅杀「pid 仍活且仍占记录端口」者，
+# 故意不设按端口兜底杀（那会误伤接管该端口的无关进程）——换来「绝不误伤」。代价：pid 记录丢失的
+# 网关收不到（只会发生在 SIGTERM 没生效 / 手动删了 pid 文件，而 OpenClaw 实测稳收 SIGTERM），
+# 会留真孤儿、需手动 fuser -k <port>。极窄、可接受，是有意取舍。
 __reap_all() {
 	shopt -s nullglob
 	local dirs=("$HOME"/.openclaw-wt-*)
