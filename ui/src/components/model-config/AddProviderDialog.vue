@@ -383,8 +383,8 @@ export default {
 		 */
 		modalUi() {
 			if (this.step !== 'configure') return undefined;
-			// 局部收紧 body 纵向 padding（py-2），不改全局 promptModalUi
-			return { ...promptModalUi, body: 'px-4 py-2 sm:px-5 sm:py-2' };
+			// 局部收紧 body 底部 padding（pt-3 同全局、pb-2 收紧），不改全局 promptModalUi
+			return { ...promptModalUi, body: 'px-4 pt-3 pb-2 sm:px-5 sm:pt-3 sm:pb-2' };
 		},
 		/**
 		 * 仅 Step 1 列表在移动端全屏铺开；Step 2 走 confirm 小卡片，移动端也居中显示不全屏
