@@ -268,7 +268,7 @@ export function setupModelConfigMock(page, initialState) {
 					return Promise.resolve({ byProvider });
 				}
 				if (method === 'coclaw.providerAuth.loginOauth') {
-					// 两阶段设备码：phase-1 受理帧经 onAccepted 异步推（展示授权链接 + 码 + rawText）；
+					// 两阶段验证码授权：phase-1 受理帧经 onAccepted 异步推（展示授权链接 + 码 + rawText）；
 					// phase-2 终态本 mock 不自动到达（只验展示流），返回永不 resolve 的 promise，
 					// 组件取消/卸载会 abort 本地 waiter（mock 不需处理 signal）。
 					const provider = (params && params.provider) || '';

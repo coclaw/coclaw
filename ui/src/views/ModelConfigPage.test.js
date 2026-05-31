@@ -614,7 +614,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		expect(loginCall[1]).toEqual({ provider: 'github-copilot' });
 		expect(loginCall[2].onAccepted).toBe(onAccepted);
 		expect(loginCall[2].signal).toBe(signal);
-		// 设备码登录要等用户授权，不设 RPC 超时
+		// 验证码授权要等用户授权，不设 RPC 超时
 		expect(loginCall[2].timeout).toBe(0);
 
 		await cancelOauth({ loginId: 'L1' });

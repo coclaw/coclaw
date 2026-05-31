@@ -108,7 +108,7 @@
 						<!-- 返回按钮统一落到对话框 footer（见下方 #footer），此处不再内联 -->
 					</div>
 
-					<!-- oauth-device-code：设备码两阶段登录步。动作（取消/返回/重试）由 footer 承载，
+					<!-- oauth-device-code：验证码授权两阶段步。动作（取消/返回/重试）由 footer 承载，
 					     本步只显示状态文案；通过 update:phase 把阶段抛上来驱动 footer -->
 					<ProviderOAuthLoginStep
 						v-else-if="selectedMethod === 'oauth-device-code'"
@@ -207,7 +207,7 @@
 					{{ $t('modelConfig.providerAuth.add.back') }}
 				</UButton>
 
-				<!-- 设备码登录 pending：单个取消 → 实心 primary -->
+				<!-- 验证码授权 pending：单个取消 → 实心 primary -->
 				<UButton
 					v-else-if="footerMode === 'oauth-pending'"
 					data-testid="oauth-cancel"
@@ -217,7 +217,7 @@
 					{{ $t('common.cancel') }}
 				</UButton>
 
-				<!-- 设备码登录 error：返回 + 重试（双按钮） -->
+				<!-- 验证码授权 error：返回 + 重试（双按钮） -->
 				<template v-else-if="footerMode === 'oauth-error'">
 					<UButton
 						data-testid="oauth-back"
@@ -272,7 +272,7 @@ import ProviderOAuthLoginStep from './ProviderOAuthLoginStep.vue';
 
 const RPC_TIMEOUT = 60_000;
 
-// catalog authMethods 已知三类 + 固定渲染顺序（api-key 优先，其次设备码，最后 oauth-login 暂不支持）。
+// catalog authMethods 已知三类 + 固定渲染顺序（api-key 优先，其次验证码授权，最后 oauth-login 暂不支持）。
 // 顺序写死让多入口渲染稳定、零特判；未知 kind（token/custom）catalog 本就不会下发。
 const KNOWN_AUTH_METHODS = ['api-key', 'oauth-device-code', 'oauth-login'];
 
@@ -291,7 +291,7 @@ export default {
 		 * `{ provider, authMethods, hasCred }`（setup 全集，基座 id、每 provider 一条）。
 		 * 本组件按 `provider` 字段去重出可选项；hasCred 维度的"已配排除"由父组件经
 		 * `existingProviders` 传入（口径全在父组件）。`authMethods` 驱动配置步的多入口渲染
-		 * （api-key 输 key / oauth-device-code 设备码登录 / oauth-login 暂不支持）。
+		 * （api-key 输 key / oauth-device-code 验证码授权 / oauth-login 暂不支持）。
 		 *
 		 * @type {{ provider: string, authMethods?: string[], hasCred?: boolean }[]}
 		 */
@@ -324,7 +324,7 @@ export default {
 			default: null,
 		},
 		/**
-		 * 发起两阶段 OAuth 设备码登录的回调，透传给 ProviderOAuthLoginStep（设备码入口用）。
+		 * 发起两阶段 OAuth 验证码授权的回调，透传给 ProviderOAuthLoginStep（验证码授权入口用）。
 		 *   ({ provider, onAccepted, signal }) => Promise
 		 * 父组件 ModelConfigPage wrap 一次 conn.request('coclaw.providerAuth.loginOauth')。
 		 *
@@ -369,7 +369,7 @@ export default {
 			inlineErrorKey: '',
 			/** 正在调 setApiKey RPC */
 			submitting: false,
-			/** 设备码登录子步当前阶段（starting/pending/error），经子步 update:phase 同步，驱动 footer */
+			/** 验证码授权子步当前阶段（starting/pending/error），经子步 update:phase 同步，驱动 footer */
 			oauthPhase: 'starting',
 		};
 	},
@@ -467,7 +467,7 @@ export default {
 		 * 当前 footer 渲染模式（'' = 不渲染 footer）。统一各 configure 子态的动作落点：
 		 *   chooser/oauth-unsupported = 单返回；oauth-pending = 单取消；
 		 *   oauth-error = 返回+重试；api-key = 取消+提交。
-		 * 设备码 starting 态无动作 → 不渲染 footer。
+		 * 验证码授权 starting 态无动作 → 不渲染 footer。
 		 *
 		 * @returns {string}
 		 */
@@ -509,15 +509,15 @@ export default {
 			this.submitting = false;
 			this.oauthPhase = 'starting';
 		},
-		/** footer 取消（设备码 pending 态）：委托子步做 teardown + emit cancel → onMethodBack */
+		/** footer 取消（验证码授权 pending 态）：委托子步做 teardown + emit cancel → onMethodBack */
 		onOauthCancel() {
 			this.$refs.oauthStep?.onCancel();
 		},
-		/** footer 返回（设备码 error 态）：委托子步 emit cancel → onMethodBack */
+		/** footer 返回（验证码授权 error 态）：委托子步 emit cancel → onMethodBack */
 		onOauthBack() {
 			this.$refs.oauthStep?.onBack();
 		},
-		/** footer 重试（设备码 error 态）：委托子步重新发起登录 */
+		/** footer 重试（验证码授权 error 态）：委托子步重新发起登录 */
 		onOauthRetry() {
 			this.$refs.oauthStep?.start();
 		},
@@ -560,7 +560,7 @@ export default {
 		},
 		/**
 		 * 配置步内的"返回"：多方式 provider 从某入口回到 chooser；否则（chooser 自身 / 单方式）
-		 * 回到 provider 选择。也复用为设备码/oauth-login 步的取消回退。
+		 * 回到 provider 选择。也复用为验证码授权/oauth-login 步的取消回退。
 		 */
 		onMethodBack() {
 			if (this.selectedMethod && this.selectedProviderMethods.length > 1) {

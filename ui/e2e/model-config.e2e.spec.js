@@ -449,12 +449,12 @@ test('模型配置 S7：选模型器来自 listAvailable，能选中别名套餐
 });
 
 // ================================================================
-// S8：加 provider——设备码登录步展示授权链接 + 用户码（两阶段 phase-1 展示流）
+// S8：加 provider——验证码授权步展示授权链接 + 验证码（两阶段 phase-1 展示流）
 // ================================================================
-test('模型配置 S8：加 provider 设备码入口——展示授权链接 + 码，可取消返回 @ui', async ({ page }) => {
+test('模型配置 S8：加 provider 验证码授权入口——展示授权链接 + 码，可取消返回 @ui', async ({ page }) => {
 	test.setTimeout(120_000);
 	await page.setViewportSize(DESKTOP);
-	// groq 已配（hasCred → 排除）；github-copilot 仅设备码、未配 → 出现在加 provider 列表且单方式直达设备码步
+	// groq 已配（hasCred → 排除）；github-copilot 仅验证码授权、未配 → 出现在加 provider 列表且单方式直达验证码授权步
 	await setupModelConfigMock(page, {
 		profiles: [mockProfile('groq')],
 		primary: GROQ_PRIMARY,
@@ -477,7 +477,7 @@ test('模型配置 S8：加 provider 设备码入口——展示授权链接 + �
 	await gear.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 
-	// 打开加 provider → 选 github-copilot（单一设备码方式 → 直达设备码登录步，无 chooser）
+	// 打开加 provider → 选 github-copilot（单一验证码授权方式 → 直达验证码授权步，无 chooser）
 	const addBtn = page.getByTestId('btn-add-provider');
 	await expect(addBtn).toBeEnabled({ timeout: 30_000 });
 	await addBtn.click();
@@ -486,7 +486,7 @@ test('模型配置 S8：加 provider 设备码入口——展示授权链接 + �
 	await expect(page.getByTestId('add-provider-item-groq')).toHaveCount(0);
 	await page.getByTestId('add-provider-item-github-copilot').click();
 
-	// 设备码步：phase-1 受理帧（mock 异步推）→ 展示授权链接 + 用户码
+	// 验证码授权步：phase-1 受理帧（mock 异步推）→ 展示授权链接 + 验证码
 	await expect(page.getByTestId('oauth-login-step')).toBeVisible({ timeout: 10_000 });
 	await expect(page.getByTestId('oauth-verification-link')).toContainText('github.com/login/device', { timeout: 10_000 });
 	await expect(page.getByTestId('oauth-user-code')).toHaveText('E2E-CODE');

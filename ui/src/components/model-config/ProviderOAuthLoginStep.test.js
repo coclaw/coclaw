@@ -54,7 +54,7 @@ function makeWrapper(props = {}) {
 	});
 }
 
-// phase-1 受理帧默认形态（B1 设备码）
+// phase-1 受理帧默认形态（B1 验证码授权）
 function accepted(over = {}) {
 	return {
 		status: 'accepted',

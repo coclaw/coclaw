@@ -51,7 +51,7 @@ const UInputStub = {
 
 const UIconStub = { props: ['name'], template: '<span :data-icon="name" />' };
 
-// 设备码登录子步：stub 出来便于断言 props 透传 + 驱动 success/cancel/update:phase 事件。
+// 验证码授权子步：stub 出来便于断言 props 透传 + 驱动 success/cancel/update:phase 事件。
 // 动作（取消/返回/重试）已上移到父 footer，footer 经 $refs 调本 stub 的 onCancel/onBack/start，
 // 故 stub 也暴露这三个方法（模拟真组件契约）。oauth-stub-pending/error 供测试驱动 footer 切换。
 const ProviderOAuthLoginStepStub = {
@@ -609,7 +609,7 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 
 	test('device-code pending → footer shows a single solid Cancel; clicking it returns', async () => {
 		const w = makeWrapper({ catalog: multiCatalog });
-		// 单方式 → 直接进设备码步；驱动子步进入 pending
+		// 单方式 → 直接进验证码授权步；驱动子步进入 pending
 		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
 		await w.find('.oauth-stub-pending').trigger('click');
 		expect(w.vm.footerMode).toBe('oauth-pending');
