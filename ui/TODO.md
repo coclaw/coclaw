@@ -2,6 +2,17 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## AddProviderDialog 不校验"provider 至少有一个已知认证方式" → 空方式 provider 会渲染空 chooser
+
+**发现日期**：2026-06-01
+**来源**：provider OAuth UI 打磨批次（`c6c0c057..HEAD`）的只读 deep-review；预存隐患，非本批引入
+
+- 现状：`availableProviders`（`ui/src/components/model-config/AddProviderDialog.vue:415-435`）对任何带合法 `provider` id 且未配过的 catalog 条目无条件建 entry，**不校验 `authMethods` 是否含已知方式**（api-key / oauth-device-code / oauth-login）。若 catalog 哪天下发一个 `authMethods:[]` 或仅含 token/custom 的 provider，它会出现在可加列表里；点进去 `selectedProviderMethods`（:460）为空 → `onPickProvider`（:558-559）落 `selectedMethod=''` → 渲染**空 chooser**（`v-for` 遍历空数组、零入口按钮，仅 footer 单个返回按钮，不会彻底卡死）。
+- 为何现在不复现：被上游 catalog 契约挡住——catalog handler 只下发"至少有一个已知方式"的 provider（未知 kind token/custom 本就不进；custom-only 的 ollama/proxy/cli 已在网关 setup 侧排除）。属"完全依赖上游契约兜底、组件自身无防御"。
+- 与本批 cb 过滤无关：`selectedProviderMethods` 的 `found.delete('oauth-login')` 只在 device-code 在场时触发、device-code 永留，数学上塌不到零，本批不新增任何空塌陷路径。
+- 修复方向（候选）：在 `availableProviders` 过滤掉 `selectedProviderMethods` 恒空的 provider；或 `onPickProvider` 对 `methods.length===0` 给提示而非进空 chooser。
+- 范围：仅 UI（`AddProviderDialog.vue`）。
+
 ## 账号授权 starting 态取消后"在飞 login"治理：晚到 accepted 主动拨后端 + 新 login 竞态（增强，待评审）
 
 **发现日期**：2026-06-01
