@@ -186,34 +186,35 @@
 		</template>
 
 		<!-- 统一 footer：configure 步的所有动作都右下角对齐（select 步无 footer）。
-		     单按钮场景（返回/取消）用实心按钮，视觉权重更足；双按钮保持 ghost + primary。 -->
+		     单按钮场景（返回/取消）用实心 primary（同 prompt 对话框"确认"按钮，暗色下不发白）；
+		     双按钮保持 ghost neutral + primary。 -->
 		<template v-if="footerMode" #footer>
 			<div class="flex w-full justify-end gap-2">
-				<!-- 方法 chooser：单个返回 → 实心 -->
+				<!-- 方法 chooser：单个返回 → 实心 primary -->
 				<UButton
 					v-if="footerMode === 'chooser'"
 					data-testid="add-method-back"
-					color="neutral"
+					color="primary"
 					@click="onMethodBack"
 				>
 					{{ $t('modelConfig.providerAuth.add.back') }}
 				</UButton>
 
-				<!-- oauth-login 暂不支持：单个返回 → 实心 -->
+				<!-- oauth-login 暂不支持：单个返回 → 实心 primary -->
 				<UButton
 					v-else-if="footerMode === 'oauth-unsupported'"
 					data-testid="add-oauth-login-back"
-					color="neutral"
+					color="primary"
 					@click="onMethodBack"
 				>
 					{{ $t('modelConfig.providerAuth.add.back') }}
 				</UButton>
 
-				<!-- 设备码登录 pending：单个取消 → 实心 -->
+				<!-- 设备码登录 pending：单个取消 → 实心 primary -->
 				<UButton
 					v-else-if="footerMode === 'oauth-pending'"
 					data-testid="oauth-cancel"
-					color="neutral"
+					color="primary"
 					@click="onOauthCancel"
 				>
 					{{ $t('common.cancel') }}
