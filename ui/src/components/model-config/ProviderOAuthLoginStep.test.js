@@ -263,13 +263,15 @@ describe('ProviderOAuthLoginStep — cancel', () => {
 		w.unmount();
 	});
 
-	test('Cancel button in pending → calls cancelOauth(loginId) + emits cancel; late resolve ignored', async () => {
+	test('onCancel() in pending → calls cancelOauth(loginId) + emits cancel; late resolve ignored', async () => {
+		// 取消按钮已上移到父对话框 footer，footer 经 $refs 调本组件 onCancel()
 		const ctl = makeLogin();
 		const cancelOauth = vi.fn().mockResolvedValue({});
 		const w = makeWrapper({ loginOauth: ctl.loginOauth, cancelOauth });
 		ctl.onAccepted(accepted());
 		await w.vm.$nextTick();
-		await w.find('[data-testid="oauth-cancel"]').trigger('click');
+		w.vm.onCancel();
+		await w.vm.$nextTick();
 		expect(cancelOauth).toHaveBeenCalledWith({ loginId: 'login-1' });
 		expect(w.emitted('cancel')).toBeTruthy();
 		// 取消后 in-flight promise 即便 resolve 也被 token 作废，不再 emit success
@@ -303,7 +305,8 @@ describe('ProviderOAuthLoginStep — cancel', () => {
 });
 
 describe('ProviderOAuthLoginStep — retry + missing channel', () => {
-	test('Retry from error restarts login', async () => {
+	test('start() from error restarts login', async () => {
+		// 重试按钮已上移到父对话框 footer，footer 经 $refs 调本组件 start()
 		const ctl = makeLogin();
 		const w = makeWrapper({ loginOauth: ctl.loginOauth });
 		ctl.onAccepted(accepted());
@@ -311,21 +314,39 @@ describe('ProviderOAuthLoginStep — retry + missing channel', () => {
 		ctl.reject(Object.assign(new Error('boom'), { code: 'OAUTH_FAILED' }));
 		await flushPromises();
 		expect(w.find('[data-testid="oauth-error"]').exists()).toBe(true);
-		await w.find('[data-testid="oauth-retry"]').trigger('click');
+		w.vm.start();
+		await w.vm.$nextTick();
 		expect(ctl.loginOauth).toHaveBeenCalledTimes(2);
 		expect(w.find('[data-testid="oauth-starting"]').exists()).toBe(true);
 		w.unmount();
 	});
 
-	test('Back button from error emits cancel', async () => {
+	test('onBack() from error emits cancel', async () => {
+		// 返回按钮已上移到父对话框 footer，footer 经 $refs 调本组件 onBack()
 		const ctl = makeLogin();
 		const w = makeWrapper({ loginOauth: ctl.loginOauth });
 		ctl.onAccepted(accepted());
 		await w.vm.$nextTick();
 		ctl.reject(Object.assign(new Error('boom'), { code: 'OAUTH_FAILED' }));
 		await flushPromises();
-		await w.find('[data-testid="oauth-back"]').trigger('click');
+		w.vm.onBack();
 		expect(w.emitted('cancel')).toBeTruthy();
+		w.unmount();
+	});
+
+	test('emits update:phase on mount and on each phase transition', async () => {
+		// 父对话框 footer 依赖 update:phase 切换动作按钮（starting→pending→error）
+		const ctl = makeLogin();
+		const w = makeWrapper({ loginOauth: ctl.loginOauth });
+		// 挂载即上抛初始 starting
+		expect(w.emitted('update:phase')?.[0]).toEqual(['starting']);
+		ctl.onAccepted(accepted());
+		await w.vm.$nextTick();
+		ctl.reject(Object.assign(new Error('boom'), { code: 'OAUTH_FAILED' }));
+		await flushPromises();
+		const phases = (w.emitted('update:phase') || []).map(e => e[0]);
+		expect(phases).toContain('pending');
+		expect(phases[phases.length - 1]).toBe('error');
 		w.unmount();
 	});
 

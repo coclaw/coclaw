@@ -52,39 +52,12 @@
 			</div>
 
 			<p class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.waiting') }}</p>
-
-			<div class="flex justify-end">
-				<UButton
-					data-testid="oauth-cancel"
-					variant="ghost"
-					color="neutral"
-					@click="onCancel"
-				>
-					{{ $t('common.cancel') }}
-				</UButton>
-			</div>
 		</template>
 
-		<!-- error：终态失败（含 phase-1 前单帧错误）。展示映射文案 + 重试 / 返回 -->
+		<!-- error：终态失败（含 phase-1 前单帧错误）。仅展示映射文案；
+		     重试 / 返回 动作由父对话框的 footer 承载（见下方 update:phase + 公开方法 start/onBack） -->
 		<template v-else-if="phase === 'error'">
 			<p data-testid="oauth-error" class="text-sm text-error">{{ $t(errorKey) }}</p>
-			<div class="flex justify-end gap-2">
-				<UButton
-					data-testid="oauth-back"
-					variant="ghost"
-					color="neutral"
-					@click="onBack"
-				>
-					{{ $t('modelConfig.providerAuth.add.back') }}
-				</UButton>
-				<UButton
-					data-testid="oauth-retry"
-					color="primary"
-					@click="start"
-				>
-					{{ $t('common.retry') }}
-				</UButton>
-			</div>
 		</template>
 	</div>
 </template>
@@ -143,7 +116,9 @@ export default {
 			default: true,
 		},
 	},
-	emits: ['success', 'cancel'],
+	// update:phase 把内部阶段（starting/pending/error）抛给父对话框，
+	// 让 footer 按阶段渲染对应动作（pending→取消 / error→返回+重试）。
+	emits: ['success', 'cancel', 'update:phase'],
 	setup() {
 		return {
 			notify: useNotify(),
@@ -171,7 +146,15 @@ export default {
 			return !this.verificationUri && !!this.rawText;
 		},
 	},
+	watch: {
+		// 阶段变化即上抛，父 footer 跟随切换动作按钮
+		phase(val) {
+			this.$emit('update:phase', val);
+		},
+	},
 	mounted() {
+		// 先同步初始阶段（每次重新挂载都会发，父级据此复位 footer），再自动发起
+		this.$emit('update:phase', this.phase);
 		if (this.autoStart) this.start();
 	},
 	beforeUnmount() {

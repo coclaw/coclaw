@@ -51,14 +51,26 @@ const UInputStub = {
 
 const UIconStub = { props: ['name'], template: '<span :data-icon="name" />' };
 
-// 设备码登录子步：stub 出来便于断言 props 透传 + 驱动 success/cancel 事件
+// 设备码登录子步：stub 出来便于断言 props 透传 + 驱动 success/cancel/update:phase 事件。
+// 动作（取消/返回/重试）已上移到父 footer，footer 经 $refs 调本 stub 的 onCancel/onBack/start，
+// 故 stub 也暴露这三个方法（模拟真组件契约）。oauth-stub-pending/error 供测试驱动 footer 切换。
 const ProviderOAuthLoginStepStub = {
 	name: 'ProviderOAuthLoginStep',
 	props: ['provider', 'loginOauth', 'cancelOauth', 'autoStart'],
-	emits: ['success', 'cancel'],
+	emits: ['success', 'cancel', 'update:phase'],
+	mounted() {
+		this.$emit('update:phase', 'starting');
+	},
+	methods: {
+		onCancel() { this.$emit('cancel'); },
+		onBack() { this.$emit('cancel'); },
+		start() { this.$emit('update:phase', 'starting'); },
+	},
 	template: `<div class="oauth-step-stub" :data-provider="provider" :data-has-login="String(!!loginOauth)" :data-has-cancel="String(!!cancelOauth)">
 		<button class="oauth-stub-success" @click="$emit('success', { provider, profileId: provider + ':default' })">ok</button>
 		<button class="oauth-stub-cancel" @click="$emit('cancel')">x</button>
+		<button class="oauth-stub-pending" @click="$emit('update:phase', 'pending')">p</button>
+		<button class="oauth-stub-error" @click="$emit('update:phase', 'error')">e</button>
 	</div>`,
 };
 
@@ -577,7 +589,7 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);
 	});
 
-	test('single device-code provider goes straight to ProviderOAuthLoginStep (no chooser, no footer)', async () => {
+	test('single device-code provider goes straight to ProviderOAuthLoginStep (no chooser; starting → no footer)', async () => {
 		const w = makeWrapper({ catalog: multiCatalog });
 		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
 		expect(w.vm.selectedMethod).toBe('oauth-device-code');
@@ -588,9 +600,39 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		// loginOauth / cancelOauth 透传到子步
 		expect(step.attributes('data-has-login')).toBe('true');
 		expect(step.attributes('data-has-cancel')).toBe('true');
-		// 非 api-key 入口无 footer 按钮（Submit / Cancel 都不渲染——footer slot 整体不提供）
+		// starting 阶段无动作 → footer 不渲染（api-key 的 Submit/Cancel 自然不在）
+		expect(w.vm.footerMode).toBe('');
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(false);
 		expect(w.find('[data-testid="add-provider-cancel"]').exists()).toBe(false);
+	});
+
+	test('device-code pending → footer shows a single solid Cancel; clicking it returns', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		// 单方式 → 直接进设备码步；驱动子步进入 pending
+		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
+		await w.find('.oauth-stub-pending').trigger('click');
+		expect(w.vm.footerMode).toBe('oauth-pending');
+		expect(w.find('[data-testid="oauth-cancel"]').exists()).toBe(true);
+		// footer Cancel → 委托子步 onCancel（stub emit cancel）→ 单方式回到 provider 选择
+		await w.find('[data-testid="oauth-cancel"]').trigger('click');
+		expect(w.vm.step).toBe('select');
+	});
+
+	test('device-code error → footer shows Back + Retry; Retry re-arms (back to starting)', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-github-copilot"]').trigger('click');
+		await w.find('.oauth-stub-error').trigger('click');
+		expect(w.vm.footerMode).toBe('oauth-error');
+		expect(w.find('[data-testid="oauth-back"]').exists()).toBe(true);
+		expect(w.find('[data-testid="oauth-retry"]').exists()).toBe(true);
+		// Retry → 委托子步 start（stub emit update:phase 'starting'）→ footer 回到无动作态
+		await w.find('[data-testid="oauth-retry"]').trigger('click');
+		expect(w.vm.oauthPhase).toBe('starting');
+		expect(w.vm.footerMode).toBe('');
+		// 重新驱动到 error 再点 Back → 单方式回 provider 选择
+		await w.find('.oauth-stub-error').trigger('click');
+		await w.find('[data-testid="oauth-back"]').trigger('click');
+		expect(w.vm.step).toBe('select');
 	});
 
 	test('single oauth-login provider goes straight to the "not supported" view (no chooser)', async () => {

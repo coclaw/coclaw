@@ -108,29 +108,24 @@
 						>
 							{{ methodLabel(m) }}
 						</button>
-						<div class="flex justify-end">
-							<UButton
-								data-testid="add-method-back"
-								variant="ghost"
-								color="neutral"
-								@click="onMethodBack"
-							>
-								{{ $t('modelConfig.providerAuth.add.back') }}
-							</UButton>
-						</div>
+						<!-- 返回按钮统一落到对话框 footer（见下方 #footer），此处不再内联 -->
 					</div>
 
-					<!-- oauth-device-code：设备码两阶段登录步 -->
+					<!-- oauth-device-code：设备码两阶段登录步。动作（取消/返回/重试）由 footer 承载，
+					     本步只显示状态文案；通过 update:phase 把阶段抛上来驱动 footer -->
 					<ProviderOAuthLoginStep
 						v-else-if="selectedMethod === 'oauth-device-code'"
+						ref="oauthStep"
 						:provider="selectedProvider"
 						:login-oauth="loginOauth"
 						:cancel-oauth="cancelOauth"
+						@update:phase="oauthPhase = $event"
 						@success="onOauthSuccess"
 						@cancel="onMethodBack"
 					/>
 
-					<!-- oauth-login：刻意列出但暂不支持（回环回调对小白 UX 太重，记一笔免日后纳闷） -->
+					<!-- oauth-login：刻意列出但暂不支持（回环回调对小白 UX 太重，记一笔免日后纳闷）。
+					     返回按钮同样落到 footer -->
 					<div
 						v-else-if="selectedMethod === 'oauth-login'"
 						data-testid="add-oauth-login-unsupported"
@@ -139,16 +134,6 @@
 						<p class="text-sm text-muted">
 							{{ $t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: selectedProvider }) }}
 						</p>
-						<div class="flex justify-end">
-							<UButton
-								data-testid="add-oauth-login-back"
-								variant="ghost"
-								color="neutral"
-								@click="onMethodBack"
-							>
-								{{ $t('modelConfig.providerAuth.add.back') }}
-							</UButton>
-						</div>
 					</div>
 
 					<!-- api-key：输 key（form 仅用于支持原生回车提交；提交按钮与回车都走 onSubmit）-->
@@ -200,28 +185,80 @@
 			</div>
 		</template>
 
-		<!-- footer 仅在 api-key 输入态提供：右下角 取消 + 提交。其它入口（chooser / 设备码 /
-		     oauth-login）各自在 body 内带返回/取消控件，不复用此 footer。 -->
-		<template v-if="step === 'configure' && selectedMethod === 'api-key'" #footer>
+		<!-- 统一 footer：configure 步的所有动作都右下角对齐（select 步无 footer）。
+		     单按钮场景（返回/取消）用实心按钮，视觉权重更足；双按钮保持 ghost + primary。 -->
+		<template v-if="footerMode" #footer>
 			<div class="flex w-full justify-end gap-2">
+				<!-- 方法 chooser：单个返回 → 实心 -->
 				<UButton
-					data-testid="add-provider-cancel"
-					variant="ghost"
+					v-if="footerMode === 'chooser'"
+					data-testid="add-method-back"
 					color="neutral"
-					:disabled="submitting"
-					@click="onCancel"
+					@click="onMethodBack"
+				>
+					{{ $t('modelConfig.providerAuth.add.back') }}
+				</UButton>
+
+				<!-- oauth-login 暂不支持：单个返回 → 实心 -->
+				<UButton
+					v-else-if="footerMode === 'oauth-unsupported'"
+					data-testid="add-oauth-login-back"
+					color="neutral"
+					@click="onMethodBack"
+				>
+					{{ $t('modelConfig.providerAuth.add.back') }}
+				</UButton>
+
+				<!-- 设备码登录 pending：单个取消 → 实心 -->
+				<UButton
+					v-else-if="footerMode === 'oauth-pending'"
+					data-testid="oauth-cancel"
+					color="neutral"
+					@click="onOauthCancel"
 				>
 					{{ $t('common.cancel') }}
 				</UButton>
-				<UButton
-					data-testid="add-provider-submit"
-					color="primary"
-					:loading="submitting"
-					:disabled="submitting"
-					@click="onSubmit"
-				>
-					{{ $t('modelConfig.providerAuth.add.submitButton') }}
-				</UButton>
+
+				<!-- 设备码登录 error：返回 + 重试（双按钮） -->
+				<template v-else-if="footerMode === 'oauth-error'">
+					<UButton
+						data-testid="oauth-back"
+						variant="ghost"
+						color="neutral"
+						@click="onOauthBack"
+					>
+						{{ $t('modelConfig.providerAuth.add.back') }}
+					</UButton>
+					<UButton
+						data-testid="oauth-retry"
+						color="primary"
+						@click="onOauthRetry"
+					>
+						{{ $t('common.retry') }}
+					</UButton>
+				</template>
+
+				<!-- api-key：取消 + 提交（双按钮） -->
+				<template v-else-if="footerMode === 'api-key'">
+					<UButton
+						data-testid="add-provider-cancel"
+						variant="ghost"
+						color="neutral"
+						:disabled="submitting"
+						@click="onCancel"
+					>
+						{{ $t('common.cancel') }}
+					</UButton>
+					<UButton
+						data-testid="add-provider-submit"
+						color="primary"
+						:loading="submitting"
+						:disabled="submitting"
+						@click="onSubmit"
+					>
+						{{ $t('modelConfig.providerAuth.add.submitButton') }}
+					</UButton>
+				</template>
 			</div>
 		</template>
 	</UModal>
@@ -334,6 +371,8 @@ export default {
 			inlineErrorKey: '',
 			/** 正在调 setApiKey RPC */
 			submitting: false,
+			/** 设备码登录子步当前阶段（starting/pending/error），经子步 update:phase 同步，驱动 footer */
+			oauthPhase: 'starting',
 		};
 	},
 	computed: {
@@ -424,6 +463,26 @@ export default {
 			}
 			return KNOWN_AUTH_METHODS.filter(k => found.has(k));
 		},
+		/**
+		 * 当前 footer 渲染模式（'' = 不渲染 footer）。统一各 configure 子态的动作落点：
+		 *   chooser/oauth-unsupported = 单返回；oauth-pending = 单取消；
+		 *   oauth-error = 返回+重试；api-key = 取消+提交。
+		 * 设备码 starting 态无动作 → 不渲染 footer。
+		 *
+		 * @returns {string}
+		 */
+		footerMode() {
+			if (this.step !== 'configure') return '';
+			if (!this.selectedMethod) return 'chooser';
+			if (this.selectedMethod === 'api-key') return 'api-key';
+			if (this.selectedMethod === 'oauth-login') return 'oauth-unsupported';
+			if (this.selectedMethod === 'oauth-device-code') {
+				if (this.oauthPhase === 'pending') return 'oauth-pending';
+				if (this.oauthPhase === 'error') return 'oauth-error';
+				return '';
+			}
+			return '';
+		},
 	},
 	watch: {
 		open(val) {
@@ -448,6 +507,19 @@ export default {
 			this.apiKey = '';
 			this.inlineErrorKey = '';
 			this.submitting = false;
+			this.oauthPhase = 'starting';
+		},
+		/** footer 取消（设备码 pending 态）：委托子步做 teardown + emit cancel → onMethodBack */
+		onOauthCancel() {
+			this.$refs.oauthStep?.onCancel();
+		},
+		/** footer 返回（设备码 error 态）：委托子步 emit cancel → onMethodBack */
+		onOauthBack() {
+			this.$refs.oauthStep?.onBack();
+		},
+		/** footer 重试（设备码 error 态）：委托子步重新发起登录 */
+		onOauthRetry() {
+			this.$refs.oauthStep?.start();
 		},
 		/** configure 入口的人类可读标签（chooser 列表项用） */
 		methodLabel(method) {
