@@ -7,7 +7,7 @@
 
 **现象**：在 worktree 里跑 `pnpm wt:up`（`pnpm install` ~3.7s + `pnpm deploy` ~18s，合计约 22s 高 CPU/IO）期间，主网关**偶发**收到外部 SIGTERM、干净关闭（~467ms），systemd 立即自愈重启（pid 变、`openclaw.json` md5 不变）。3 次同类操作中复现 1 次（另两次主网关 pid 全程不变）。
 
-**已排除**：对照探针证明**隔离 profile 网关本身不扰主网关**——distinct 端口 + `gateway run --force` 只杀目标端口，起独立网关时主网关 pid 不变。所以不是方案 B 的隔离泄漏。
+**已排除**：对照探针证明**隔离 profile 网关本身不扰主网关**——distinct 端口、起独立网关时主网关 pid 不变。所以不是方案 B 的隔离泄漏。（注：2026-05-31 起脚本已不再传 `gateway run --force`，改为只起在自己的空闲端口上，连"只杀目标端口"的抢占都不做，进一步与主网关解耦。）
 
 **根因初判（未钉死）**：SIGTERM（而非 SIGABRT/SIGKILL）指向"显式 stop/restart"而非 OOM/看门狗超时（systemd 看门狗默认发 SIGABRT）。leading 假说：①重构建饥饿主网关事件循环 → 某健康检查判不健康触发 restart；②某条命令使主 `openclaw.json` 被同内容重写（md5 不变但 mtime 变）→ chokidar `plugins.*` reload。两者都未坐实。本机 WSL2 11.7GB、8 核，资源紧时更易触发。
 

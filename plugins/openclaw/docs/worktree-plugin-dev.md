@@ -49,7 +49,10 @@ pnpm wt:reload                   # 重启隔离网关，src 软链自动跟随�
 # 改了 index.js / manifest / 依赖：
 pnpm wt:up                       # 重跑（重建 stage）
 pnpm wt:down                     # 停网关 + 删 profile（用完必做）
+pnpm wt:down --all               # 兜底：清掉所有遗留隔离网关（含已搁浅的孤儿，见红线）
 ```
+
+- 停网关按 **pid+端口双印证**精确杀（记录的 pid 仍占着记录端口才杀），不会误伤碰巧接管该端口的无关进程；起停都跑通 RPC 探活（`coclaw.info`）确认插件真加载，而非只看日志。
 
 - profile / 端口从 worktree 目录名派生：同一 worktree 多次操作稳定，不同 worktree 并行互不撞。
 - **隔离保证（实测）**：主 `openclaw.json` 全程 md5 不变、主 stage 不动、主网关 pid 不变。
@@ -62,14 +65,27 @@ pnpm wt:down                     # 停网关 + 删 profile（用完必做）
   `plugins.load.paths` 改指到 worktree 的 stage；等 worktree 删除，主网关配置指向不存在目录 →
   **主网关起不来 / 告警**。worktree 验活网关**只走 `pnpm wt:*`**。
 - 用完 **`pnpm wt:down`** 清掉隔离 profile（别留一堆 `~/.openclaw-wt-*`）。
+- **顺序红线：`wt:down` 必须在 `git worktree remove` 之前**。隔离网关是脱离进程（会话结束也不死），脚本又随 worktree 一起删——先删 worktree 就再也调不动 `wt:down`，留下"目录在跑、状态没了"的孤儿。真搁浅了用 **`pnpm wt:down --all`** 从任意检出兜底清（它扫 `~/.openclaw-wt-*`、按 pid+端口精确收尸）。
 - 删 worktree / 分支前确认提交已合回 main（提交挂在分支上，分支没合就删＝提交真丢）。
 
 ## 已知偶发（severity low）
 
 worktree 重构建（`wt:up` 的 install + deploy 合计约 22s）与主网关并跑时，**曾偶发**让主网关收到
 SIGTERM 重启一次（systemd `Restart=always` 几秒自愈）。已用对照探针证明**隔离网关本身不扰主网关**
-（distinct 端口 + `--force` 只杀目标端口）；根因疑重构建饥饿主网关事件循环触发健康/看门狗，未完全钉死，
+（distinct 端口 + 不传 `--force`、只起在自己的空闲端口上、不抢占任何东西）；根因疑重构建饥饿主网关事件循环触发健康/看门狗，未完全钉死，
 见 [`../TODO.md`](../TODO.md)。影响小（自愈），但重构建期间别对主网关做敏感操作。
+
+## 对上游契约的依赖（升级 OpenClaw / pnpm 后必做冒烟）
+
+`wt:*` 是在编排 OpenClaw 与 pnpm 的命令行，天然吊在它们的一组契约上，**这层依赖消不掉**（除非自己重写一套隔离逻辑，不值）。这不是待办，而是固有约束 + 怎么兜底：
+
+- **OpenClaw CLI**：`--profile`（state/config 隔离的根）、`gateway run --port`、`--allow-unconfigured`、`--auth none`、`plugins install --link --dangerously-force-unsafe-install`。
+- **pnpm `--legacy` deploy**：`build_stage` 必须带 `--legacy`——实测去掉即报 `ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE`：pnpm v10 起不开 `inject-workspace-packages=true`（全 monorepo 级、为 dev 工具改它不成比例）就拒绝产扁平依赖。待 pnpm 哪天移除 legacy impl，才被迫迁移到 injected deps。
+- **已主动卸掉的耦合**：不再传 `gateway run --force`（曾依赖其"只杀目标端口"语义，是误伤主网关的命门），改为"等自己端口空出来再起"（`__wait_port_free`），与主网关彻底解耦。
+
+**为什么不加 pre-flight 版本/flag 探测**：flag 改名/移除时 OpenClaw / pnpm 自己就打印 `unknown option X`（已够响、自带 flag 名），`wt:up` 本身又是行为漂移的冒烟，再叠一层基本冗余。`build_stage` 的 src 软链自检 + `wt:up` 的 RPC 探活就绪两道护栏，已能把多数漂移变成显式失败而非静默假绿。
+
+**所以唯一动作**：升级 OpenClaw / pnpm 后跑一遍 `pnpm wt:up`（+ `pnpm wt:call coclaw.info`）冒烟，契约漂移会当场暴露。
 
 ## 成本（实测，暖 pnpm store）
 

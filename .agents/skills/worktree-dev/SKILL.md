@@ -35,5 +35,5 @@ cd <worktree绝对路径>/<工作区> && <cmd>      # 如 cd /home/.../.agents/w
 ## 红线
 
 - **别在 worktree 里 `pnpm run link`**——会把主网关共享 config 指到 worktree stage，worktree 删后主网关起不来。验活网关只走 `pnpm wt:*`。
-- 用完 `pnpm wt:down` 清隔离 profile；删 worktree / 分支前确认提交已合回 main（分支没合就删＝提交真丢）。
+- 用完 `pnpm wt:down` 清隔离 profile；**`wt:down` 必须在 `git worktree remove` 之前**（先删 worktree 会留下脚本没了、网关还跑的孤儿，要 `pnpm wt:down --all` 从任意检出兜底收）。删 worktree / 分支前确认提交已合回 main（分支没合就删＝提交真丢）。
 - 别在 worktree 会话里裸 `git worktree remove` 删自己 cwd；合回站 main 执行 `git -C <main> merge worktree-<名>`。

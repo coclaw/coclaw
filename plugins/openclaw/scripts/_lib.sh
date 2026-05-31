@@ -127,6 +127,17 @@ build_stage() {
 	rm -rf "$STAGE_DIR/src"
 	ln -s "$PLUGIN_DIR/src" "$STAGE_DIR/src"
 
+	# 自检：确认 stage 的 src 确为指向「本检出」源码的活软链。一旦 pnpm deploy 布局
+	# 变更（跟随/拷贝 src）或软链创建失败，这里 loud 失败，避免 reload 静默测到旧码。
+	local stage_src real_src
+	stage_src="$(readlink -f "$STAGE_DIR/src" 2>/dev/null || true)"
+	real_src="$(readlink -f "$PLUGIN_DIR/src" 2>/dev/null || true)"
+	if [[ -z "$stage_src" || "$stage_src" != "$real_src" ]]; then
+		echo "[ERROR] stage src 软链自检失败：$STAGE_DIR/src → ${stage_src:-<空>}（期望 $real_src）" >&2
+		echo "[HINT] 可能 pnpm deploy 布局变更或软链失活，reload 会测到旧码，已中止" >&2
+		exit 1
+	fi
+
 	# 核对：node_modules 里不允许再有指向 stage 外的 symlink，
 	# 一旦 pnpm 布局变更引入新的外指会立即暴露。
 	local leak
