@@ -84,8 +84,8 @@ test('模型配置 S1：首次接入——橙条引导→配 key→选主模型�
 	await expect(bar).toBeVisible({ timeout: 30_000 });
 	await expect(bar).toContainText(await tr(page, 'modelConfig.guidance.noKeyWarning'));
 
-	// 点"去配置"进子页
-	await page.getByTestId(`guidance-go-${clawId}`).click();
+	// 点模型行进子页（入口已上移到模型行；橙条不再带"去配置"链接）。noKey 态下模型行渲染 CTA，整行仍可点
+	await page.getByTestId(`claw-model-${clawId}`).click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 
 	// 配第一个 API key：选 groq → 输入 key → 提交
@@ -149,10 +149,10 @@ test('模型配置 S2：撤销主模型载体 provider——强提示分支→�
 	// 起始 primary 有效 → 无橙条
 	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
 
-	// 齿轮进子页
-	const gear = page.getByTestId(`btn-model-config-${clawId}`);
-	await expect(gear).toBeEnabled({ timeout: 30_000 });
-	await gear.click();
+	// 点模型行进子页
+	const modelRow = page.getByTestId(`claw-model-${clawId}`);
+	await expect(modelRow).toBeVisible({ timeout: 30_000 });
+	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 
 	// 子页：主模型有效、两个凭据行
@@ -208,10 +208,10 @@ test('模型配置 S3：切换主模型——无二次确认→toast→子页即
 	await waitDashReady(page, clawId);
 	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
 
-	// 齿轮进子页
-	const gear = page.getByTestId(`btn-model-config-${clawId}`);
-	await expect(gear).toBeEnabled({ timeout: 30_000 });
-	await gear.click();
+	// 点模型行进子页
+	const modelRow = page.getByTestId(`claw-model-${clawId}`);
+	await expect(modelRow).toBeVisible({ timeout: 30_000 });
+	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY, { timeout: 30_000 });
 
@@ -368,10 +368,10 @@ test('模型配置 S6：内联 key 列出可撤（强提示）、env 行只读�
 	// 内联 key 让主模型有效（凭据信号跨三源）→ 无橙条（核心：列表空也不误报）
 	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
 
-	// 齿轮进子页
-	const gear = page.getByTestId(`btn-model-config-${clawId}`);
-	await expect(gear).toBeEnabled({ timeout: 30_000 });
-	await gear.click();
+	// 点模型行进子页
+	const modelRow = page.getByTestId(`claw-model-${clawId}`);
+	await expect(modelRow).toBeVisible({ timeout: 30_000 });
+	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY, { timeout: 30_000 });
 
@@ -427,10 +427,10 @@ test('模型配置 S7：选模型器来自 listAvailable，能选中别名套餐
 	// 基座 key 让主模型有效 → 无橙条
 	await expect(page.getByTestId(`guidance-${clawId}`)).toHaveCount(0, { timeout: 30_000 });
 
-	// 齿轮进子页，主模型有效
-	const gear = page.getByTestId(`btn-model-config-${clawId}`);
-	await expect(gear).toBeEnabled({ timeout: 30_000 });
-	await gear.click();
+	// 点模型行进子页，主模型有效
+	const modelRow = page.getByTestId(`claw-model-${clawId}`);
+	await expect(modelRow).toBeVisible({ timeout: 30_000 });
+	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 	await expect(page.getByTestId('primary-current')).toHaveText('volcengine/doubao-pro', { timeout: 30_000 });
 
@@ -471,10 +471,10 @@ test('模型配置 S8：加 provider 账号授权入口——展示授权链接 
 	const clawId = await getOnlineClawId(page);
 	await waitDashReady(page, clawId);
 
-	// 齿轮进子页
-	const gear = page.getByTestId(`btn-model-config-${clawId}`);
-	await expect(gear).toBeEnabled({ timeout: 30_000 });
-	await gear.click();
+	// 点模型行进子页
+	const modelRow = page.getByTestId(`claw-model-${clawId}`);
+	await expect(modelRow).toBeVisible({ timeout: 30_000 });
+	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 
 	// 打开加 provider → 选 github-copilot（单一账号授权方式 → 直达账号授权步，无 chooser）
@@ -515,10 +515,10 @@ test('模型配置 S9：oauth 凭据显示 oauth 徽章且可撤销 @ui', async 
 	const clawId = await getOnlineClawId(page);
 	await waitDashReady(page, clawId);
 
-	// 齿轮进子页
-	const gear = page.getByTestId(`btn-model-config-${clawId}`);
-	await expect(gear).toBeEnabled({ timeout: 30_000 });
-	await gear.click();
+	// 点模型行进子页
+	const modelRow = page.getByTestId(`claw-model-${clawId}`);
+	await expect(modelRow).toBeVisible({ timeout: 30_000 });
+	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 
 	// oauth 行带 oauth 徽章（字面量 oauth，不进 i18n）

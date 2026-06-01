@@ -301,6 +301,9 @@ export const jaMessages = {
 		commandCopied: 'コピーしました',
 		removeFailed: 'Claw の削除に失敗しました',
 		renameClaw: 'Claw の名前を変更',
+		manageModel: 'モデルを管理',
+		rename: '名前を変更',
+		model: { notSet: 'プライマリモデル未設定', noProvider: 'モデル未設定' },
 		renameFailed: '名前の変更に失敗しました',
 		pluginVersion: 'プラグイン：',
 		clawVersion: 'OpenClaw：',
@@ -558,7 +561,6 @@ export const jaMessages = {
 			noKeyWarning: 'API キー未設定。会話できません。',
 			noPrimaryWarning: 'プライマリモデル未設定。会話できません。',
 			invalidPrimaryWarning: 'メインモデルは利用できなくなりました。新しいものを選んでください。',
-			goConfigure: '設定する',
 		},
 	},
 };

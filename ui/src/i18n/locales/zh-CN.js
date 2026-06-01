@@ -301,6 +301,9 @@ export const zhCNMessages = {
 		commandCopied: '已复制',
 		removeFailed: '移除失败',
 		renameClaw: '重命名 Claw',
+		manageModel: '管理模型',
+		rename: '重命名',
+		model: { notSet: '未设置主模型', noProvider: '未配置模型' },
 		renameFailed: '重命名失败',
 		pluginVersion: '插件：',
 		clawVersion: 'OpenClaw：',
@@ -558,7 +561,6 @@ export const zhCNMessages = {
 			noKeyWarning: '未配 API key，无法对话',
 			noPrimaryWarning: '未配主模型，无法对话',
 			invalidPrimaryWarning: '主模型已失效，请重新选择',
-			goConfigure: '去配置',
 		},
 	},
 };

@@ -301,6 +301,9 @@ export const frMessages = {
 		commandCopied: 'Copié',
 		removeFailed: 'Échec de la suppression de la Claw',
 		renameClaw: 'Renommer la Claw',
+		manageModel: 'Gérer les modèles',
+		rename: 'Renommer',
+		model: { notSet: 'Aucun modèle principal', noProvider: 'Aucun modèle configuré' },
 		renameFailed: 'Échec du renommage',
 		pluginVersion: 'Plugin : ',
 		clawVersion: 'OpenClaw : ',
@@ -558,7 +561,6 @@ export const frMessages = {
 			noKeyWarning: 'Aucune clé API — l’agent ne peut pas discuter.',
 			noPrimaryWarning: 'Aucun modèle principal — l’agent ne peut pas discuter.',
 			invalidPrimaryWarning: 'Le modèle principal n\'est plus disponible. Veuillez en choisir un nouveau.',
-			goConfigure: 'Configurer',
 		},
 	},
 };

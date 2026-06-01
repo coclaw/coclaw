@@ -301,6 +301,9 @@ export const viMessages = {
 		commandCopied: 'Đã sao chép',
 		removeFailed: 'Không thể xóa Claw',
 		renameClaw: 'Đổi tên Claw',
+		manageModel: 'Quản lý mô hình',
+		rename: 'Đổi tên',
+		model: { notSet: 'Chưa đặt mô hình chính', noProvider: 'Chưa cấu hình mô hình' },
 		renameFailed: 'Đổi tên thất bại',
 		pluginVersion: 'Plugin: ',
 		clawVersion: 'OpenClaw: ',
@@ -558,7 +561,6 @@ export const viMessages = {
 			noKeyWarning: 'Chưa có API key — agent không thể trò chuyện.',
 			noPrimaryWarning: 'Chưa có mô hình chính — agent không thể trò chuyện.',
 			invalidPrimaryWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn mô hình mới.',
-			goConfigure: 'Đi cấu hình',
 		},
 	},
 };

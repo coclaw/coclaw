@@ -86,6 +86,11 @@ const AgentCardStub = {
 	template: '<div data-testid="agent-card">{{ agent.name }}</div>',
 };
 
+// vitest 不挂 @nuxt/ui，UPopover 需 stub：默认槽（触发按钮）+ #content 槽（菜单项）都渲染出来便于断言
+const UPopoverStub = {
+	template: '<div><slot /><slot name="content" /></div>',
+};
+
 let mockBots = [];
 
 function createWrapper() {
@@ -97,6 +102,7 @@ function createWrapper() {
 				UBadge: UBadgeStub,
 				UIcon: { props: ['name'], template: '<i />' },
 				AgentCard: AgentCardStub,
+				UPopover: UPopoverStub,
 			},
 			mocks: {
 				$t: (key, params) => {
@@ -130,7 +136,10 @@ function createWrapper() {
 						'modelConfig.guidance.noKeyWarning': 'GuidanceNoKey',
 						'modelConfig.guidance.noPrimaryWarning': 'GuidanceNoPrimary',
 						'modelConfig.guidance.invalidPrimaryWarning': 'GuidanceInvalid',
-						'modelConfig.guidance.goConfigure': 'GoConfigure',
+						'claws.manageModel': 'Manage models',
+						'claws.rename': 'Rename',
+						'claws.model.notSet': 'No primary model',
+						'claws.model.noProvider': 'No model configured',
 					};
 					return map[key] ?? key;
 				},
@@ -421,7 +430,7 @@ describe('ManageClawsPage', () => {
 		await pending;
 	});
 
-	test('卡片 Remove 按钮在 unbind in-flight 期间同时反映 loading + disabled（钉住 :disabled 不被误砍）', async () => {
+	test('unbind in-flight 期间：目标 claw 菜单触发按钮 loading + 三个菜单项全禁用（防误操作）；他 claw 不受影响', async () => {
 		mockBots = [
 			{ id: '1', name: 'Bot1', online: true },
 			{ id: '2', name: 'Bot2', online: true },
@@ -443,21 +452,20 @@ describe('ManageClawsPage', () => {
 		const pending = wrapper.vm.onConfirmRemove();
 		await wrapper.vm.$nextTick();
 
-		// 在所有 UButton stub 实例里过滤出 Remove 按钮（按 text 锁定）
-		// 不依赖渲染顺序——sortedClaws 同优先级按 lastAliveAt 排序，位置不可控
+		// 移除按钮已收进三点菜单：in-flight 时菜单触发按钮反映 loading（claw 1 true / claw 2 false）
 		const allBtns = wrapper.findAllComponents(UButtonStub);
-		const removeBtns = allBtns.filter(b => b.text() === 'Remove');
-		expect(removeBtns.length).toBe(2);
+		const trigger1 = allBtns.find(b => b.attributes('data-testid') === 'claw-menu-1');
+		const trigger2 = allBtns.find(b => b.attributes('data-testid') === 'claw-menu-2');
+		expect(trigger1.props('loading')).toBe(true);
+		expect(trigger2.props('loading')).toBe(false);
 
-		// in-flight 那个 Remove 按钮：loading + disabled 同时为 true（双保险都要在）
-		const blocked = removeBtns.filter(b => b.props('loading') === true);
-		expect(blocked.length).toBe(1);
-		expect(blocked[0].props('disabled')).toBe(true);
-
-		// 另一个 Remove 按钮：loading + disabled 同时为 false（不受 claw 1 影响）
-		const open = removeBtns.filter(b => b.props('loading') === false);
-		expect(open.length).toBe(1);
-		expect(open[0].props('disabled')).toBe(false);
+		// unbind in-flight 时目标 claw 的三个菜单项全禁用（管理模型/重命名/移除）；他 claw 不受影响
+		expect(wrapper.find('[data-testid="claw-menu-models-1"]').element.disabled).toBe(true);
+		expect(wrapper.find('[data-testid="claw-menu-rename-1"]').element.disabled).toBe(true);
+		expect(wrapper.find('[data-testid="claw-menu-remove-1"]').element.disabled).toBe(true);
+		expect(wrapper.find('[data-testid="claw-menu-models-2"]').element.disabled).toBe(false);
+		expect(wrapper.find('[data-testid="claw-menu-rename-2"]').element.disabled).toBe(false);
+		expect(wrapper.find('[data-testid="claw-menu-remove-2"]').element.disabled).toBe(false);
 
 		// 收尾
 		resolveA();
@@ -1104,49 +1112,127 @@ function dashWithModelConfig(mc, extra = {}) {
 	};
 }
 
-describe('模型设置入口（齿轮 icon）', () => {
-	test('在线 claw → 渲染齿轮按钮且未禁用', async () => {
+describe('模型设置入口（三点菜单）', () => {
+	test('在线 claw → 渲染三点菜单触发按钮', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		const gear = wrapper.find('[data-testid="btn-model-config-1"]');
-		expect(gear.exists()).toBe(true);
-		const gearComp = wrapper.findAllComponents(UButtonStub).find((c) => c.attributes('data-testid') === 'btn-model-config-1');
-		// 严格 false（而非仅 falsy）：若 :disabled 绑定被整个移除，prop 会变 undefined → 本断言失败
-		expect(gearComp.props('disabled')).toBe(false);
+		expect(wrapper.find('[data-testid="claw-menu-1"]').exists()).toBe(true);
 	});
 
-	test('离线 claw（else 分支）→ 不渲染齿轮按钮', async () => {
+	test('菜单「管理模型」在线可点、点击 → 导航到 /claws/:id/models', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const item = wrapper.find('[data-testid="claw-menu-models-1"]');
+		expect(item.exists()).toBe(true);
+		expect(item.element.disabled).toBe(false);
+		await item.trigger('click');
+		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');
+	});
+
+	test('离线 claw → 菜单仍在；管理模型/重命名禁用、移除可用', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: false }];
 		mockGetDashboard.mockReturnValue(null);
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		expect(wrapper.find('[data-testid="btn-model-config-1"]').exists()).toBe(false);
+		expect(wrapper.find('[data-testid="claw-menu-1"]').exists()).toBe(true);
+		expect(wrapper.find('[data-testid="claw-menu-models-1"]').element.disabled).toBe(true);
+		expect(wrapper.find('[data-testid="claw-menu-rename-1"]').element.disabled).toBe(true);
+		expect(wrapper.find('[data-testid="claw-menu-remove-1"]').element.disabled).toBe(false);
 	});
 
-	test('齿轮 :disabled 跟随 !claw.online（在线分支但 online=false 时禁用）', async () => {
-		mockBots = [{ id: '1', name: 'Bot1', online: false }];
-		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
-		const wrapper = createWrapper();
-		await flushPromises();
-
-		const gear = wrapper.find('[data-testid="btn-model-config-1"]');
-		expect(gear.exists()).toBe(true);
-		const gearComp = wrapper.findAllComponents(UButtonStub).find((c) => c.attributes('data-testid') === 'btn-model-config-1');
-		expect(gearComp.props('disabled')).toBe(true);
-	});
-
-	test('点击齿轮 → 导航到 /claws/:id/models', async () => {
+	test('菜单「重命名」点击 → 打开重命名对话框', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		await wrapper.find('[data-testid="btn-model-config-1"]').trigger('click');
+		await wrapper.find('[data-testid="claw-menu-rename-1"]').trigger('click');
+		expect(wrapper.vm.renameOpen).toBe(true);
+	});
+
+	test('菜单「移除」点击 → 打开移除确认对话框', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		await wrapper.find('[data-testid="claw-menu-remove-1"]').trigger('click');
+		expect(wrapper.vm.removeConfirmOpen).toBe(true);
+	});
+});
+
+describe('claw 卡片「模型行」（复用便宜信号，不碰可用清单）', () => {
+	test('健康 → 显示 provider/model 两行，整行可点导航', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama-3.3-70b', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const row = wrapper.find('[data-testid="claw-model-1"]');
+		expect(row.exists()).toBe(true);
+		expect(row.text()).toContain('groq');
+		expect(row.text()).toContain('llama-3.3-70b');
+		await row.trigger('click');
 		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');
+	});
+
+	test('失效（invalid）→ 仍显示模型名，不重复 loud 警告（无 CTA）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const row = wrapper.find('[data-testid="claw-model-1"]');
+		expect(row.exists()).toBe(true);
+		expect(row.text()).toContain('llama');
+		expect(wrapper.find('[data-testid="claw-model-cta-1"]').exists()).toBe(false);
+	});
+
+	test('未设主模型（noPrimary）→ 安静 CTA 文案', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const cta = wrapper.find('[data-testid="claw-model-cta-1"]');
+		expect(cta.exists()).toBe(true);
+		expect(cta.text()).toBe('No primary model');
+	});
+
+	test('无凭据（noKey）→ 安静 CTA 文案', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: false, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const cta = wrapper.find('[data-testid="claw-model-cta-1"]');
+		expect(cta.exists()).toBe(true);
+		expect(cta.text()).toBe('No model configured');
+	});
+
+	test('数据没到（modelConfigFetched=false）→ 不渲染模型行', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: false, hasAny: false, primary: null, effective: false }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="claw-model-1"]').exists()).toBe(false);
+	});
+
+	test('离线 → 不渲染模型行（入口交给菜单）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: false }];
+		mockGetDashboard.mockReturnValue(null);
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		expect(wrapper.find('[data-testid="claw-model-1"]').exists()).toBe(false);
 	});
 });
 
@@ -1211,14 +1297,14 @@ describe('首次引导橙条（优先级 + fetch gating）', () => {
 		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(false);
 	});
 
-	test('点击橙条"去配置" → 导航到 /claws/:id/models', async () => {
+	test('橙条不再带「去配置」链接（入口已上移到模型行/菜单）', async () => {
 		mockBots = [{ id: '1', name: 'Bot1', online: true }];
 		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: false, primary: null, effective: false }));
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		await wrapper.find('[data-testid="guidance-go-1"]').trigger('click');
-		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');
+		expect(wrapper.find('[data-testid="guidance-1"]').exists()).toBe(true);
+		expect(wrapper.find('[data-testid="guidance-go-1"]').exists()).toBe(false);
 	});
 
 	// feature-detect-suppress 已移除：旧插件给不出凭据信号 → store 落 hasAny=false → 该弹 noKey 就弹（不再压制）
@@ -1269,6 +1355,7 @@ describe('chat 按钮在引导态下不被禁用（不变量）', () => {
 					UButton: UButtonStub,
 					UBadge: UBadgeStub,
 					UIcon: { props: ['name'], template: '<i />' },
+					UPopover: UPopoverStub,
 				},
 				mocks: {
 					$t: (key) => key,

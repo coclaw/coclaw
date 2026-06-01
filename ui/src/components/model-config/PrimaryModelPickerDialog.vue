@@ -95,6 +95,7 @@
 <script>
 import { getProviderMeta } from '../../constants/provider-meta.js';
 import { mapModelConfigErrorKey, isCanceledError } from '../../utils/model-config-errors.js';
+import { parseModelId } from '../../utils/model-id.js';
 import { useEnvStore } from '../../stores/env.store.js';
 import { useNotify } from '../../composables/use-notify.js';
 
@@ -160,17 +161,13 @@ export default {
 			return !!this.pendingTarget;
 		},
 		/**
-		 * 当前主模型的 provider/model 拆分，纯计算
+		 * 当前主模型的 provider/model 拆分（统一走 utils/model-id 的 parseModelId）。
+		 * 唯一消费点 isCurrent 比对 provider===目录provider，目录 provider 永不为空串，
+		 * 故无 '/' 时兜底成 { provider:'', model } 与原 null 对 isCurrent 等价（恒不命中）。
 		 * @returns {{ provider: string, model: string }|null}
 		 */
 		currentParsed() {
-			if (!this.current || typeof this.current !== 'string') return null;
-			const idx = this.current.indexOf('/');
-			if (idx <= 0 || idx === this.current.length - 1) return null;
-			return {
-				provider: this.current.slice(0, idx),
-				model: this.current.slice(idx + 1),
-			};
+			return parseModelId(this.current);
 		},
 		/**
 		 * 按 provider 分组：直接吃 listAvailable 的 byProvider（含别名变体，已是干净目录∩别名感知凭据，无幽灵）。

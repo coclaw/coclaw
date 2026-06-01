@@ -2,6 +2,16 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## InstanceOverview 的 channel 渲染同款换行隐患（窄屏多渠道可能溢出）
+
+**发现日期**：2026-06-01
+**来源**：claw 卡片模型入口改造时的 channel 调研；预存隐患，非本次引入
+
+- 现状：`ui/src/components/dashboard/InstanceOverview.vue` 渲染 channel 列表的那段（`✅/❌ + id`）与 `ManageClawsPage.vue` 此前逐字相同——内层 channels 容器用 `flex`（**无 flex-wrap**）、id 文本无 truncate/max-width、容器无 `min-w-0`。渠道数多（4+）时这条不换行的横线宽度随渠道数线性增长，链路上无 `overflow-hidden`，窄屏可能向右溢出卡片。
+- 本次只修了 `ManageClawsPage.vue` 那处（加 `flex flex-wrap ... min-w-0`），`InstanceOverview.vue` 这份**未动**（超出本次范围）。
+- 修法方向：照搬 `ManageClawsPage.vue` 的处理——channels 内层 span 从 `flex items-center gap-1.5` 改为 `flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0`。零视觉副作用、基线安全。
+- 严重度：低（id 实为短渠道类型名，需 4+ 渠道才显形；当前开发环境 channels 为空、无法目测，需有真实多渠道卡片确认）。
+
 ## AddProviderDialog 不校验"provider 至少有一个已知认证方式" → 空方式 provider 会渲染空 chooser
 
 **发现日期**：2026-06-01

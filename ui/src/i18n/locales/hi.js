@@ -301,6 +301,9 @@ export const hiMessages = {
 		commandCopied: 'कॉपी हो गया',
 		removeFailed: 'Claw हटाना विफल',
 		renameClaw: 'Claw का नाम बदलें',
+		manageModel: 'मॉडल प्रबंधित करें',
+		rename: 'नाम बदलें',
+		model: { notSet: 'कोई प्राथमिक मॉडल नहीं', noProvider: 'कोई मॉडल कॉन्फ़िगर नहीं' },
 		renameFailed: 'नाम बदलना विफल',
 		pluginVersion: 'प्लगिन: ',
 		clawVersion: 'OpenClaw: ',
@@ -558,7 +561,6 @@ export const hiMessages = {
 			noKeyWarning: 'कोई API key नहीं — एजेंट चैट नहीं कर सकता.',
 			noPrimaryWarning: 'कोई प्राथमिक मॉडल नहीं — एजेंट चैट नहीं कर सकता.',
 			invalidPrimaryWarning: 'मुख्य मॉडल अब उपलब्ध नहीं है। कृपया एक नया चुनें।',
-			goConfigure: 'कॉन्फ़िगर करें',
 		},
 	},
 };

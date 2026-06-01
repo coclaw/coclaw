@@ -301,6 +301,9 @@ export const esMessages = {
 		commandCopied: 'Copiado',
 		removeFailed: 'Error al eliminar el Claw',
 		renameClaw: 'Renombrar Claw',
+		manageModel: 'Gestionar modelos',
+		rename: 'Renombrar',
+		model: { notSet: 'Sin modelo principal', noProvider: 'Sin modelo configurado' },
 		renameFailed: 'Error al renombrar',
 		pluginVersion: 'Plugin: ',
 		clawVersion: 'OpenClaw: ',
@@ -558,7 +561,6 @@ export const esMessages = {
 			noKeyWarning: 'Sin API key — el agente no puede chatear.',
 			noPrimaryWarning: 'Sin modelo principal — el agente no puede chatear.',
 			invalidPrimaryWarning: 'El modelo principal ya no está disponible. Elige uno nuevo.',
-			goConfigure: 'Configurar',
 		},
 	},
 };

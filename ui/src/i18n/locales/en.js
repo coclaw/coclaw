@@ -301,6 +301,9 @@ export const enMessages = {
 		commandCopied: 'Copied',
 		removeFailed: 'Failed to remove Claw',
 		renameClaw: 'Rename Claw',
+		manageModel: 'Manage models',
+		rename: 'Rename',
+		model: { notSet: 'No primary model', noProvider: 'No model configured' },
 		renameFailed: 'Failed to rename',
 		pluginVersion: 'Plugin: ',
 		clawVersion: 'OpenClaw: ',
@@ -558,7 +561,6 @@ export const enMessages = {
 			noKeyWarning: 'No API key set — agent cannot chat.',
 			noPrimaryWarning: 'No primary model set — agent cannot chat.',
 			invalidPrimaryWarning: 'Primary model is no longer available. Please pick a new one.',
-			goConfigure: 'Go configure',
 		},
 	},
 };

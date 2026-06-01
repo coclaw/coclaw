@@ -85,10 +85,11 @@ test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
 	// UNBIND（通过 Remove 确认 modal）
 	// ================================================================
 
-	// 1) 点卡片里的 Remove 按钮 → 打开确认 modal
-	const removeBtn = clawCard.getByRole('button', { name: 'Remove' });
-	await expect(removeBtn).toBeVisible({ timeout: 5_000 });
-	await removeBtn.click();
+	// 1) 打开三点菜单 → 点"移除"菜单项 → 打开确认 modal（Remove 已收进菜单，popover 内容 teleport 到 body）
+	await clawCard.getByTestId(`claw-menu-${newClawId}`).click();
+	const removeItem = page.getByTestId(`claw-menu-remove-${newClawId}`);
+	await expect(removeItem).toBeVisible({ timeout: 5_000 });
+	await removeItem.click();
 
 	// 2) modal 出现（标题 "Remove Claw"），点 Confirm
 	const removeModalTitle = page.getByText('Remove Claw', { exact: true });
@@ -177,8 +178,9 @@ test('Claw 解绑：server 返回 404 时仍本地剔除并关闭 modal @bind', 
 		});
 	});
 
-	// 点 Remove → modal 出现
-	await targetCard.getByRole('button', { name: 'Remove' }).click();
+	// 打开三点菜单 → 点"移除"菜单项 → modal 出现（Remove 已收进菜单，popover 内容 teleport 到 body）
+	await targetCard.getByTestId(`claw-menu-${targetId}`).click();
+	await page.getByTestId(`claw-menu-remove-${targetId}`).click();
 	const removeModalTitle = page.getByText('Remove Claw', { exact: true });
 	await expect(removeModalTitle).toBeVisible({ timeout: 5_000 });
 

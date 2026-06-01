@@ -301,6 +301,9 @@ export const zhTWMessages = {
 		commandCopied: '已複製',
 		removeFailed: '移除失敗',
 		renameClaw: '重新命名 Claw',
+		manageModel: '管理模型',
+		rename: '重新命名',
+		model: { notSet: '尚未設定主模型', noProvider: '尚未設定模型' },
 		renameFailed: '重新命名失敗',
 		pluginVersion: '插件：',
 		clawVersion: 'OpenClaw：',
@@ -558,7 +561,6 @@ export const zhTWMessages = {
 			noKeyWarning: '尚未設定 API key，無法對話',
 			noPrimaryWarning: '尚未設定主模型，無法對話',
 			invalidPrimaryWarning: '主模型已失效，請重新選擇',
-			goConfigure: '前往設定',
 		},
 	},
 };

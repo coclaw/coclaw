@@ -171,6 +171,7 @@ import RemoveProviderConfirmDialog from '../components/model-config/RemoveProvid
 import AddProviderDialog from '../components/model-config/AddProviderDialog.vue';
 import PrimaryModelPickerDialog from '../components/model-config/PrimaryModelPickerDialog.vue';
 import { navBack } from '../utils/nav-back.js';
+import { parseModelId } from '../utils/model-id.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { useDashboardStore, computePrimaryEffective } from '../stores/dashboard.store.js';
 import { useClawConnections } from '../services/claw-connection-manager.js';
@@ -283,17 +284,9 @@ export default {
 			if (!this.primary) return 'notSet';
 			return this.primaryEffective === false ? 'invalid' : 'effective';
 		},
-		/**
-		 * 当前主模型拆 provider/model（镜像 picker 的 currentParsed）供分两行展示；
-		 * 无有效 '/' 分隔时整串当 model 显示、不藏 provider 行（兜底，避免信息丢失）
-		 * @returns {{ provider: string, model: string }|null} primary 为空时 null
-		 */
+		/** 当前主模型拆 provider/model 供分两行展示（统一走 utils/model-id 的 parseModelId） */
 		primaryParsed() {
-			const p = this.primary;
-			if (!p || typeof p !== 'string') return null;
-			const idx = p.indexOf('/');
-			if (idx <= 0 || idx === p.length - 1) return { provider: '', model: p };
-			return { provider: p.slice(0, idx), model: p.slice(idx + 1) };
+			return parseModelId(this.primary);
 		},
 		removeTargetProvider() {
 			if (!this.primary || !this.removeTarget) return '';

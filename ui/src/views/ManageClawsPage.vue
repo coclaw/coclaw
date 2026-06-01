@@ -28,8 +28,8 @@
 
 			<p v-if="!loading && !claws.length" class="text-sm text-muted">{{ $t('claws.noClaw') }}</p>
 
-			<div v-for="{ claw, dashboard, connDetail, peerDetail, rtcPhase, guidanceState } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
-				<!-- Claw card：左侧信息 + 右侧解绑 -->
+			<div v-for="{ claw, dashboard, connDetail, peerDetail, rtcPhase, guidanceState, modelView } in clawEntries" :key="claw.id" :data-testid="`claw-${claw.id}`">
+				<!-- Claw card：左侧信息 + 右侧三点菜单 -->
 				<div class="rounded-xl bg-elevated p-3 mb-3">
 					<div class="flex">
 						<!-- 左侧：claw 信息 -->
@@ -41,30 +41,7 @@
 											class="inline-block size-2.5 rounded-full shrink-0"
 											:class="clawDotClass(claw)"
 										></span>
-										<div class="flex items-center gap-1 min-w-0">
-											<h2 class="text-base font-semibold truncate min-w-0">{{ getClawName(claw) }}</h2>
-											<UButton
-												class="cc-icon-btn shrink-0"
-												variant="ghost"
-												color="primary"
-												size="md"
-												icon="i-lucide-pencil"
-												:disabled="renaming || !claw.online"
-												@click="openRename(claw)"
-											/>
-											<UButton
-												:data-testid="`btn-model-config-${claw.id}`"
-												class="cc-icon-btn shrink-0"
-												variant="ghost"
-												color="primary"
-												size="md"
-												icon="i-lucide-settings"
-												:disabled="!claw.online"
-												:aria-label="$t('modelConfig.title')"
-												:title="$t('modelConfig.title')"
-												@click="goToModels(claw.id)"
-											/>
-										</div>
+										<h2 class="text-base font-semibold truncate min-w-0">{{ getClawName(claw) }}</h2>
 										<UBadge color="primary" variant="subtle" size="xs" class="shrink-0">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
 									</div>
 									<div v-if="dashboard.instance.monthlyCost && typeof dashboard.instance.monthlyCost.total === 'number'" class="text-right shrink-0" data-testid="monthly-cost">
@@ -72,10 +49,27 @@
 										<p class="text-xs text-muted">{{ $t('dashboard.monthlyCost') }}</p>
 									</div>
 								</div>
+								<!-- 模型行：当前默认模型，整行可点 → 模型配置页；数据没到不渲染（入口交给三点菜单） -->
+								<button
+									v-if="modelView"
+									type="button"
+									:data-testid="`claw-model-${claw.id}`"
+									class="mt-2 flex w-full items-center justify-between gap-2 text-start cursor-pointer"
+									@click="goToModels(claw.id)"
+								>
+									<span class="min-w-0 flex-1">
+										<template v-if="modelView.kind === 'model'">
+											<span v-if="modelView.provider" class="block truncate text-xs text-muted">{{ modelView.provider }}</span>
+											<span class="block truncate font-mono text-sm">{{ modelView.model }}</span>
+										</template>
+										<span v-else :data-testid="`claw-model-cta-${claw.id}`" class="block truncate text-sm text-muted">{{ $t(modelView.textKey) }}</span>
+									</span>
+									<UIcon name="i-lucide-chevron-right" class="size-4 shrink-0 text-muted" />
+								</button>
 								<div class="mt-3 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
 									<span v-if="dashboard.instance.pluginVersion">{{ $t('claws.pluginVersion') }}{{ dashboard.instance.pluginVersion }}</span>
 									<span v-if="dashboard.instance.clawVersion">{{ $t('claws.clawVersion') }}{{ dashboard.instance.clawVersion }}</span>
-									<span v-if="dashboard.instance.channels?.length" class="flex items-center gap-1.5">
+									<span v-if="dashboard.instance.channels?.length" class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
 										<span v-for="ch in dashboard.instance.channels" :key="ch.id" class="inline-flex items-center gap-0.5" :title="ch.id">
 											<span class="text-[10px]">{{ ch.connected ? '✅' : '❌' }}</span>
 											<span>{{ ch.id }}</span>
@@ -91,17 +85,56 @@
 								</div>
 							</template>
 						</div>
-						<!-- 右侧：解绑按钮 -->
+						<!-- 右侧：三点菜单（管理模型 / 重命名 / 移除） -->
 						<div class="pl-3 shrink-0">
-							<UButton
-								color="error"
-								variant="soft"
-								:loading="!!unbindingMap[claw.id]"
-								:disabled="!!unbindingMap[claw.id]"
-								@click="confirmRemove(claw.id)"
-							>
-								{{ $t('claws.remove') }}
-							</UButton>
+							<UPopover v-model:open="menuOpenMap[claw.id]" :content="{ side: 'bottom', align: 'end' }">
+								<UButton
+									:data-testid="`claw-menu-${claw.id}`"
+									class="cc-icon-btn"
+									variant="ghost"
+									color="neutral"
+									size="md"
+									icon="i-lucide-ellipsis"
+									:loading="!!unbindingMap[claw.id]"
+									:aria-label="$t('common.moreActions')"
+								/>
+								<template #content>
+									<div class="flex max-w-60 flex-col py-1">
+										<!-- unbind in-flight 时整菜单禁用（管理模型/重命名/移除均不可点），避免对正在解绑的 claw 误操作 -->
+										<button
+											type="button"
+											:data-testid="`claw-menu-models-${claw.id}`"
+											class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented disabled:opacity-40 disabled:cursor-not-allowed"
+											:disabled="!claw.online || !!unbindingMap[claw.id]"
+											@click="menuOpenMap[claw.id] = false; goToModels(claw.id)"
+										>
+											<UIcon name="i-lucide-sliders-horizontal" class="size-[18px] shrink-0" />
+											<span class="truncate">{{ $t('claws.manageModel') }}</span>
+										</button>
+										<button
+											type="button"
+											:data-testid="`claw-menu-rename-${claw.id}`"
+											class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented disabled:opacity-40 disabled:cursor-not-allowed"
+											:disabled="renaming || !claw.online || !!unbindingMap[claw.id]"
+											@click="menuOpenMap[claw.id] = false; openRename(claw)"
+										>
+											<UIcon name="i-lucide-pencil" class="size-[18px] shrink-0" />
+											<span class="truncate">{{ $t('claws.rename') }}</span>
+										</button>
+										<div class="my-1 border-t border-default"></div>
+										<button
+											type="button"
+											:data-testid="`claw-menu-remove-${claw.id}`"
+											class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-error transition-colors hover:bg-accented active:bg-accented disabled:opacity-40 disabled:cursor-not-allowed"
+											:disabled="!!unbindingMap[claw.id]"
+											@click="menuOpenMap[claw.id] = false; confirmRemove(claw.id)"
+										>
+											<UIcon name="i-lucide-trash-2" class="size-[18px] shrink-0" />
+											<span class="truncate">{{ $t('claws.remove') }}</span>
+										</button>
+									</div>
+								</template>
+							</UPopover>
 						</div>
 					</div>
 
@@ -109,20 +142,12 @@
 					<div
 						v-if="guidanceState"
 						:data-testid="`guidance-${claw.id}`"
-						class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-orange-500/10 px-2 py-1.5 text-xs text-orange-600 dark:text-orange-400"
+						class="mt-3 flex items-center gap-2 rounded-lg bg-orange-500/10 px-2 py-1.5 text-xs text-orange-600 dark:text-orange-400"
 					>
 						<span class="flex min-w-0 items-center gap-1.5">
 							<UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" />
 							<span class="min-w-0">{{ guidanceText(guidanceState) }}</span>
 						</span>
-						<button
-							type="button"
-							:data-testid="`guidance-go-${claw.id}`"
-							class="shrink-0 cursor-pointer font-medium underline underline-offset-2 hover:opacity-80"
-							@click="goToModels(claw.id)"
-						>
-							{{ $t('modelConfig.guidance.goConfigure') }}
-						</button>
 					</div>
 				</div>
 
@@ -195,6 +220,7 @@ import { getReadyConn } from '../stores/get-ready-conn.js';
 import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import { pickGuidanceState } from '../utils/guidance-state.js';
+import { parseModelId } from '../utils/model-id.js';
 import AgentCard from '../components/AgentCard.vue';
 
 /** 前台恢复刷新的 freshness gate：60s 内不重复 reload */
@@ -228,6 +254,8 @@ export default {
 			renaming: false,
 			renameClawId: '',
 			expandedDetails: {},
+			// per-claw 三点菜单展开态：key=clawId
+			menuOpenMap: {},
 		};
 	},
 	computed: {
@@ -270,13 +298,16 @@ export default {
 			return this.sortedClaws.map(claw => {
 				const id = String(claw.id);
 				const clawById = this.clawsStore.byId[id];
+				const dashboard = this.dashboardStore.getDashboard(id);
+				const guidanceState = this.__guidanceStateFor(claw, dashboard);
 				return {
 					claw,
-					dashboard: this.dashboardStore.getDashboard(id),
+					dashboard,
 					connDetail: clawById?.rtcTransportInfo ?? null,
 					peerDetail: clawById?.rtcPeerTransportInfo ?? null,
 					rtcPhase: clawById?.rtcPhase ?? 'idle',
-					guidanceState: this.__guidanceStateFor(claw, this.dashboardStore.getDashboard(id)),
+					guidanceState,
+					modelView: this.__clawModelViewFor(claw, dashboard, guidanceState),
 				};
 			});
 		},
@@ -404,6 +435,25 @@ export default {
 				primary: dashboard.primaryModel,
 				effective: dashboard.primaryProviderUsable,
 			});
+		},
+		/**
+		 * claw 卡片「模型行」视图：复用便宜信号（不碰那条 ~12s 可用清单冷调用）。
+		 *   - 数据没到（离线 / 凭据 RPC 未返回）→ null：不渲染模型行，入口交给三点菜单
+		 *   - noKey（无凭据）/ noPrimary（未设主模型）→ 安静 CTA（文案通用，loud 警告交给橙条）
+		 *   - 健康 / invalid（失效）→ 显示真实主模型两行；失效那句警告交给橙条
+		 * @param {object} claw
+		 * @param {object} dashboard
+		 * @param {'noKey'|'noPrimary'|'invalid'|null} guidanceState - 已算好的引导态，避免重复计算
+		 * @returns {{ kind: 'model', provider: string, model: string }|{ kind: 'cta', textKey: string }|null}
+		 */
+		__clawModelViewFor(claw, dashboard, guidanceState) {
+			if (!claw?.online || !dashboard || !dashboard.modelConfigFetched) return null;
+			if (guidanceState === 'noKey') return { kind: 'cta', textKey: 'claws.model.noProvider' };
+			if (guidanceState === 'noPrimary') return { kind: 'cta', textKey: 'claws.model.notSet' };
+			// guidanceState 为 null（健康）或 'invalid'：显示主模型；primary 异常空时兜底当未设
+			const parsed = parseModelId(dashboard.primaryModel);
+			if (!parsed) return { kind: 'cta', textKey: 'claws.model.notSet' };
+			return { kind: 'model', provider: parsed.provider, model: parsed.model };
 		},
 		/** 引导态 → 本地化橙条文案 */
 		guidanceText(state) {

@@ -301,6 +301,9 @@ export const ptMessages = {
 		commandCopied: 'Copiado',
 		removeFailed: 'Falha ao remover o Claw',
 		renameClaw: 'Renomear Claw',
+		manageModel: 'Gerenciar modelos',
+		rename: 'Renomear',
+		model: { notSet: 'Sem modelo principal', noProvider: 'Sem modelo configurado' },
 		renameFailed: 'Falha ao renomear',
 		pluginVersion: 'Plugin: ',
 		clawVersion: 'OpenClaw: ',
@@ -558,7 +561,6 @@ export const ptMessages = {
 			noKeyWarning: 'Sem API key — o agente não pode conversar.',
 			noPrimaryWarning: 'Sem modelo principal — o agente não pode conversar.',
 			invalidPrimaryWarning: 'O modelo principal não está mais disponível. Escolha um novo.',
-			goConfigure: 'Configurar',
 		},
 	},
 };

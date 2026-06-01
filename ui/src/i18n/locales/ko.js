@@ -301,6 +301,9 @@ export const koMessages = {
 		commandCopied: '복사됨',
 		removeFailed: 'Claw 제거 실패',
 		renameClaw: 'Claw 이름 변경',
+		manageModel: '모델 관리',
+		rename: '이름 변경',
+		model: { notSet: '기본 모델 미설정', noProvider: '모델 미설정' },
 		renameFailed: '이름 변경 실패',
 		pluginVersion: '플러그인: ',
 		clawVersion: 'OpenClaw: ',
@@ -558,7 +561,6 @@ export const koMessages = {
 			noKeyWarning: 'API 키 미설정 — 대화 불가.',
 			noPrimaryWarning: '기본 모델 미설정 — 대화 불가.',
 			invalidPrimaryWarning: '주 모델을 더 이상 사용할 수 없습니다. 새로 선택해 주세요.',
-			goConfigure: '설정하기',
 		},
 	},
 };

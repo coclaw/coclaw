@@ -301,6 +301,9 @@ export const deMessages = {
 		commandCopied: 'Kopiert',
 		removeFailed: 'Claw konnte nicht entfernt werden',
 		renameClaw: 'Claw umbenennen',
+		manageModel: 'Modelle verwalten',
+		rename: 'Umbenennen',
+		model: { notSet: 'Kein primäres Modell', noProvider: 'Kein Modell konfiguriert' },
 		renameFailed: 'Umbenennen fehlgeschlagen',
 		pluginVersion: 'Plugin: ',
 		clawVersion: 'OpenClaw: ',
@@ -558,7 +561,6 @@ export const deMessages = {
 			noKeyWarning: 'Kein API-Schlüssel — Agent kann nicht chatten.',
 			noPrimaryWarning: 'Kein primäres Modell — Agent kann nicht chatten.',
 			invalidPrimaryWarning: 'Das Hauptmodell ist nicht mehr verfügbar. Bitte wähle ein neues aus.',
-			goConfigure: 'Einrichten',
 		},
 	},
 };
