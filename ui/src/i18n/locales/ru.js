@@ -496,7 +496,8 @@ export const ruMessages = {
 			selectButton: 'Настроить',
 			pickerTitle: 'Выбор основной модели',
 			pickerSearchPlaceholder: 'Поиск моделей…',
-			pickerEmpty: 'Нет доступных моделей. Сначала добавьте ключ API хотя бы для одного поставщика.',
+			pickerEmpty: 'Нет доступных моделей. Сначала настройте хотя бы одного поставщика.',
+			pickerEmptyAdd: 'Добавить',
 		},
 		providerAuth: {
 			title: 'API-ключи',

@@ -496,7 +496,8 @@ export const esMessages = {
 			selectButton: 'Configurar',
 			pickerTitle: 'Seleccionar modelo principal',
 			pickerSearchPlaceholder: 'Buscar modelos…',
-			pickerEmpty: 'No hay modelos disponibles. Primero añade una clave de API para al menos un proveedor.',
+			pickerEmpty: 'No hay modelos disponibles. Configura primero al menos un proveedor.',
+			pickerEmptyAdd: 'Añadir',
 		},
 		providerAuth: {
 			title: 'Claves de API',

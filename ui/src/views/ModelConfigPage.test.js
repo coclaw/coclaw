@@ -46,13 +46,14 @@ vi.mock('../components/model-config/PrimaryModelPickerDialog.vue', () => ({
 	default: {
 		name: 'PrimaryModelPickerDialog',
 		props: ['open', 'usable', 'current', 'setPrimary'],
-		emits: ['update:open', 'picked'],
+		emits: ['update:open', 'picked', 'add-provider'],
 		template: `
 			<div v-if="open" class="picker-dialog"
 				:data-current="current||''"
 				:data-usable="Object.keys(usable||{}).join(',')"
 			>
 				<button class="pk-fire-picked" @click="$emit('picked', { primary: 'groq/llama-3.3-70b-versatile' }); $emit('update:open', false)">picked</button>
+				<button class="pk-fire-add" @click="$emit('add-provider')">add</button>
 				<button class="pk-cancel" @click="$emit('update:open', false)">cancel</button>
 				<button class="pk-rpc" @click="setPrimary && setPrimary({ primary: 'groq/llama-3.3-70b-versatile' })">rpc</button>
 			</div>
@@ -532,6 +533,23 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		expect(w.find('.picker-dialog').exists()).toBe(true);
+		w.unmount();
+	});
+
+	test('picker "add-provider" event closes picker + opens AddProviderDialog (one-way)', async () => {
+		primed();
+		const w = makeWrapper();
+		await flushPromises();
+		await w.find('[data-testid="btn-primary"]').trigger('click');
+		await w.vm.$nextTick();
+		expect(w.find('.picker-dialog').exists()).toBe(true);
+		expect(w.find('.add-dialog').exists()).toBe(false);
+		await w.find('.pk-fire-add').trigger('click');
+		await w.vm.$nextTick();
+		expect(w.vm.pickerOpen).toBe(false);
+		expect(w.vm.addOpen).toBe(true);
+		expect(w.find('.picker-dialog').exists()).toBe(false);
+		expect(w.find('.add-dialog').exists()).toBe(true);
 		w.unmount();
 	});
 

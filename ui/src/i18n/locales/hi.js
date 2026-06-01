@@ -496,7 +496,8 @@ export const hiMessages = {
 			selectButton: 'कॉन्फ़िगर करें',
 			pickerTitle: 'मुख्य मॉडल चुनें',
 			pickerSearchPlaceholder: 'मॉडल खोजें…',
-			pickerEmpty: 'कोई मॉडल उपलब्ध नहीं है। पहले कम-से-कम एक प्रदाता के लिए API कुंजी जोड़ें।',
+			pickerEmpty: 'कोई मॉडल उपलब्ध नहीं है। पहले कम-से-कम एक प्रदाता कॉन्फ़िगर करें।',
+			pickerEmptyAdd: 'जोड़ें',
 		},
 		providerAuth: {
 			title: 'API कुंजियाँ',

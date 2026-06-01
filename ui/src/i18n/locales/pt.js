@@ -496,7 +496,8 @@ export const ptMessages = {
 			selectButton: 'Configurar',
 			pickerTitle: 'Selecionar modelo principal',
 			pickerSearchPlaceholder: 'Buscar modelos…',
-			pickerEmpty: 'Nenhum modelo disponível. Adicione primeiro uma chave de API para pelo menos um provedor.',
+			pickerEmpty: 'Nenhum modelo disponível. Configure primeiro pelo menos um provedor.',
+			pickerEmptyAdd: 'Adicionar',
 		},
 		providerAuth: {
 			title: 'Chaves de API',

@@ -496,7 +496,8 @@ export const jaMessages = {
 			selectButton: '設定',
 			pickerTitle: 'メインモデルを選択',
 			pickerSearchPlaceholder: 'モデルを検索…',
-			pickerEmpty: '利用可能なモデルがありません。まずは少なくとも 1 つのプロバイダに API キーを追加してください。',
+			pickerEmpty: '利用可能なモデルがありません。まずは少なくとも 1 つのプロバイダを設定してください。',
+			pickerEmptyAdd: '追加する',
 		},
 		providerAuth: {
 			title: 'API キー',

@@ -496,7 +496,8 @@ export const enMessages = {
 			selectButton: 'Configure',
 			pickerTitle: 'Select primary model',
 			pickerSearchPlaceholder: 'Search models…',
-			pickerEmpty: 'No models available. Add an API key for at least one provider first.',
+			pickerEmpty: 'No models available. Configure at least one provider first.',
+			pickerEmptyAdd: 'Add one',
 		},
 		providerAuth: {
 			title: 'API keys',

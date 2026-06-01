@@ -122,6 +122,14 @@ describe('PrimaryModelPickerDialog — byProvider (listAvailable) sole data sour
 		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
 	});
 
+	test('empty state "add" link emits add-provider', async () => {
+		const w = makeWrapper({ usable: {} });
+		const addLink = w.find('[data-testid="primary-picker-add"]');
+		expect(addLink.exists()).toBe(true);
+		await addLink.trigger('click');
+		expect(w.emitted('add-provider')).toHaveLength(1);
+	});
+
 	test('provider key with empty model array contributes no group', () => {
 		const w = makeWrapper({ usable: { groq: [], openai: ['gpt-4'] }, current: null });
 		expect(w.find('[data-testid="primary-picker-group-groq"]').exists()).toBe(false);

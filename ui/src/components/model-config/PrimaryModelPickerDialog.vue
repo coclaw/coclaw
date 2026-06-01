@@ -27,7 +27,17 @@
 						data-testid="primary-picker-empty"
 						class="px-2 py-6 text-center text-sm text-muted"
 					>
-						{{ $t('modelConfig.primary.pickerEmpty') }}
+						<p>{{ $t('modelConfig.primary.pickerEmpty') }}</p>
+						<!-- 快捷入口：发 add-provider 让父页关选择器 + 开"添加服务商"对话框（单向，加完不自动回选择器） -->
+						<UButton
+							data-testid="primary-picker-add"
+							class="mt-2 underline underline-offset-2"
+							variant="link"
+							color="primary"
+							size="md"
+							:label="$t('modelConfig.primary.pickerEmptyAdd')"
+							@click="$emit('add-provider')"
+						/>
 					</div>
 
 					<template
@@ -126,7 +136,7 @@ export default {
 			default: null,
 		},
 	},
-	emits: ['update:open', 'picked'],
+	emits: ['update:open', 'picked', 'add-provider'],
 	setup() {
 		return {
 			envStore: useEnvStore(),

@@ -154,6 +154,7 @@
 			:current="primary"
 			:set-primary="setPrimaryRpc"
 			@picked="onPrimaryPicked"
+			@add-provider="onPickerAddProvider"
 		/>
 	</div>
 </template>
@@ -497,6 +498,12 @@ export default {
 			if (!this.actionsEnabled) return;
 			this.__writeClawId = this.clawId;
 			this.addOpen = true;
+		},
+
+		// picker 空态"去添加"快捷入口：关选择器 + 开添加对话框（单向，加完不自动回选择器）
+		onPickerAddProvider() {
+			this.pickerOpen = false;
+			this.onAddProvider();
 		},
 
 		/**

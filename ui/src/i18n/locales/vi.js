@@ -496,7 +496,8 @@ export const viMessages = {
 			selectButton: 'Cấu hình',
 			pickerTitle: 'Chọn mô hình chính',
 			pickerSearchPlaceholder: 'Tìm mô hình…',
-			pickerEmpty: 'Không có mô hình nào khả dụng. Hãy thêm khóa API cho ít nhất một nhà cung cấp trước.',
+			pickerEmpty: 'Không có mô hình nào khả dụng. Hãy thiết lập ít nhất một nhà cung cấp trước.',
+			pickerEmptyAdd: 'Thêm',
 		},
 		providerAuth: {
 			title: 'Khóa API',

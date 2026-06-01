@@ -496,7 +496,8 @@ export const koMessages = {
 			selectButton: '설정',
 			pickerTitle: '주 모델 선택',
 			pickerSearchPlaceholder: '모델 검색…',
-			pickerEmpty: '사용 가능한 모델이 없습니다. 먼저 최소 하나의 공급자에 API 키를 추가하세요.',
+			pickerEmpty: '사용 가능한 모델이 없습니다. 먼저 최소 하나의 공급자를 설정하세요.',
+			pickerEmptyAdd: '추가하기',
 		},
 		providerAuth: {
 			title: 'API 키',

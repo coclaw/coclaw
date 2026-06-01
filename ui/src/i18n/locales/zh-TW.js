@@ -496,7 +496,8 @@ export const zhTWMessages = {
 			selectButton: '配置',
 			pickerTitle: '選擇主模型',
 			pickerSearchPlaceholder: '搜尋模型…',
-			pickerEmpty: '暫無可選模型，請先為至少一個模型服務商設定 API key',
+			pickerEmpty: '暫無可選模型，請先設定至少一個模型服務商',
+			pickerEmptyAdd: '去新增',
 		},
 		providerAuth: {
 			title: 'API 金鑰',

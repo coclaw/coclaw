@@ -496,7 +496,8 @@ export const deMessages = {
 			selectButton: 'Konfigurieren',
 			pickerTitle: 'Hauptmodell auswählen',
 			pickerSearchPlaceholder: 'Modelle suchen…',
-			pickerEmpty: 'Keine Modelle verfügbar. Füge zuerst einen API-Schlüssel für mindestens einen Provider hinzu.',
+			pickerEmpty: 'Keine Modelle verfügbar. Richte zuerst mindestens einen Provider ein.',
+			pickerEmptyAdd: 'Hinzufügen',
 		},
 		providerAuth: {
 			title: 'API-Schlüssel',
