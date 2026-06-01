@@ -925,6 +925,13 @@ describe('ModelConfigPage — listAvailable (picker source) + catalog.hasCred (a
 		// invalid 态：统一行显示失效的模型名（信息增益）+ 警告并存；按钮走"更换"（btn-primary）
 		expect(w.find('[data-testid="primary-current"]').exists()).toBe(true);
 		expect(w.find('[data-testid="primary-warning"]').exists()).toBe(true);
+		// 移动端友好：provider/model 拆两行（provider 暗一号 text-muted），各自 truncate 防溢出
+		const providerLine = w.find('[data-testid="primary-current-provider"]');
+		expect(providerLine.exists()).toBe(true);
+		expect(providerLine.text()).toBe('groq');
+		expect(providerLine.classes()).toContain('text-muted');
+		expect(providerLine.classes()).toContain('truncate');
+		expect(w.find('[data-testid="primary-current"]').text()).toBe('llama-3.3-70b-versatile');
 		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		expect(w.find('.picker-dialog').attributes('data-usable')).toBe('');

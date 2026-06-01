@@ -66,16 +66,21 @@
 							<div v-if="primaryState === 'unknown'" data-testid="primary-unknown" class="text-sm text-muted">
 								—
 							</div>
-							<!-- effective / notSet / invalid 统一一行：左=内容（有主模型显示模型名，失效/未配再叠警告）、右=按钮（有主模型→更换、未配→配置，共用同一 picker） -->
-							<div v-else class="flex flex-wrap items-center justify-between gap-2">
-								<div class="min-w-0 space-y-1">
-									<span v-if="primary" data-testid="primary-current" class="block font-mono text-sm">{{ primary }}</span>
+							<!-- effective / notSet / invalid 统一一行：左=内容（有主模型把 provider/model 拆两行、各自 truncate，失效/未配再叠警告）、右=按钮（有主模型→更换、未配→配置，共用同一 picker） -->
+							<div v-else class="flex items-center justify-between gap-2">
+								<div class="min-w-0 flex-1 space-y-1">
+									<!-- provider 暗一号 + model 等宽，各自 truncate；移动端不溢出（不换行，靠 truncate 收口、按钮钉右，见外层去掉 flex-wrap） -->
+									<template v-if="primaryParsed">
+										<span v-if="primaryParsed.provider" data-testid="primary-current-provider" class="block truncate text-xs text-muted">{{ primaryParsed.provider }}</span>
+										<span data-testid="primary-current" class="block truncate font-mono text-sm">{{ primaryParsed.model }}</span>
+									</template>
 									<p v-if="primaryState !== 'effective'" data-testid="primary-warning" class="text-sm text-warning">
 										{{ primaryState === 'invalid' ? $t('modelConfig.primary.invalidWarning') : $t('modelConfig.primary.notSetWarning') }}
 									</p>
 								</div>
 								<UButton
 									data-testid="btn-primary"
+									class="shrink-0"
 									variant="soft"
 									color="primary"
 									:disabled="!actionsEnabled"
@@ -277,6 +282,18 @@ export default {
 			if (!this.loadOk.primary) return 'unknown';
 			if (!this.primary) return 'notSet';
 			return this.primaryEffective === false ? 'invalid' : 'effective';
+		},
+		/**
+		 * 当前主模型拆 provider/model（镜像 picker 的 currentParsed）供分两行展示；
+		 * 无有效 '/' 分隔时整串当 model 显示、不藏 provider 行（兜底，避免信息丢失）
+		 * @returns {{ provider: string, model: string }|null} primary 为空时 null
+		 */
+		primaryParsed() {
+			const p = this.primary;
+			if (!p || typeof p !== 'string') return null;
+			const idx = p.indexOf('/');
+			if (idx <= 0 || idx === p.length - 1) return { provider: '', model: p };
+			return { provider: p.slice(0, idx), model: p.slice(idx + 1) };
 		},
 		removeTargetProvider() {
 			if (!this.primary || !this.removeTarget) return '';
