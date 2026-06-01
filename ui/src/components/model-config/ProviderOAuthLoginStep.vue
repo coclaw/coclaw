@@ -214,10 +214,9 @@ export default {
 			const token = (this.__runToken || 0) + 1;
 			this.__runToken = token;
 			if (!this.loginOauth) {
-				// 父组件没注入通道——直接进错误态，不静默挂住
+				// 父组件没注入通道——直接进错误态，不静默挂住；以常驻 inline error 呈现，不弹 toast
 				this.errorKey = 'modelConfig.common.connError';
 				this.phase = 'error';
-				this.notify.error(this.$t(this.errorKey));
 				return;
 			}
 			const aborter = new AbortController();
@@ -252,8 +251,8 @@ export default {
 					}
 					this.errorKey = this.__errorKeyFor(code);
 					this.phase = 'error';
-					// 错误操作始终 notify（ui/CLAUDE.md）；inline error 另给重试/返回入口
-					this.notify.error(this.$t(this.errorKey));
+					// 失败以常驻 inline error + footer 重试/返回 呈现，不再叠加 toast（避免重复反馈）。
+					// 有意偏离 ui/CLAUDE.md “错误始终 notify”：此处常驻提示比一次性 toast 更合适
 				});
 		},
 		onOpenLink() {

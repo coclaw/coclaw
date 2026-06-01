@@ -252,7 +252,7 @@ describe('ProviderOAuthLoginStep — phase-2 terminal', () => {
 		['OAUTH_TIMEOUT', 'modelConfig.providerAuth.oauth.errors.OAUTH_TIMEOUT'],
 		['IO_FAILED', 'modelConfig.providerAuth.oauth.errors.IO_FAILED'],
 		['NOT_FOUND', 'modelConfig.providerAuth.oauth.errors.NOT_FOUND'],
-	])('phase-2 error %s → error state with mapped key + notify', async (code, key) => {
+	])('phase-2 error %s → error state with mapped key (inline only, no toast)', async (code, key) => {
 		const ctl = makeLogin();
 		const w = makeWrapper({ loginOauth: ctl.loginOauth });
 		ctl.onAccepted(accepted());
@@ -260,7 +260,8 @@ describe('ProviderOAuthLoginStep — phase-2 terminal', () => {
 		ctl.reject(Object.assign(new Error('boom'), { code }));
 		await flushPromises();
 		expect(w.find('[data-testid="oauth-error"]').text()).toBe(key);
-		expect(mockNotify.error).toHaveBeenCalledWith(key);
+		// 失败只走常驻 inline error + footer 动作，不再弹 toast
+		expect(mockNotify.error).not.toHaveBeenCalled();
 		expect(w.emitted('cancel')).toBeFalsy();
 		w.unmount();
 	});
@@ -273,7 +274,7 @@ describe('ProviderOAuthLoginStep — phase-2 terminal', () => {
 		ctl.reject(Object.assign(new Error('weird'), { code: 'RPC_TIMEOUT' }));
 		await flushPromises();
 		expect(w.find('[data-testid="oauth-error"]').text()).toBe('modelConfig.providerAuth.oauth.failed');
-		expect(mockNotify.error).toHaveBeenCalledWith('modelConfig.providerAuth.oauth.failed');
+		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
 	});
 
@@ -297,8 +298,8 @@ describe('ProviderOAuthLoginStep — phase-2 terminal', () => {
 		expect(w.find('[data-testid="oauth-error"]').text()).toBe('modelConfig.providerAuth.oauth.errors.NOT_FOUND');
 		// 始终未进 pending（无受理帧）
 		expect(w.find('[data-testid="oauth-user-code"]').exists()).toBe(false);
-		// 错误操作 notify（映同一 key）
-		expect(mockNotify.error).toHaveBeenCalledWith('modelConfig.providerAuth.oauth.errors.NOT_FOUND');
+		// 失败只走常驻 inline error，不弹 toast
+		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
 	});
 });
@@ -418,11 +419,11 @@ describe('ProviderOAuthLoginStep — retry + missing channel', () => {
 		w.unmount();
 	});
 
-	test('no loginOauth prop → immediate error state + notify connError', async () => {
+	test('no loginOauth prop → immediate error state (inline connError, no toast)', async () => {
 		const w = makeWrapper({ loginOauth: null });
 		await w.vm.$nextTick();
 		expect(w.find('[data-testid="oauth-error"]').text()).toBe('modelConfig.common.connError');
-		expect(mockNotify.error).toHaveBeenCalledWith('modelConfig.common.connError');
+		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
 	});
 });
