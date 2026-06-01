@@ -538,10 +538,10 @@ export const deMessages = {
 			},
 			oauth: {
 				starting: 'Autorisierungscode wird angefordert …',
-				instructions: 'Öffne den Link unten und gib den Autorisierungscode ein, um {provider} zu autorisieren.',
-				openLink: 'Autorisierungsseite öffnen',
-				linkLabel: 'Autorisierungslink',
+				instructions: 'Öffne den Link unten, um die Autorisierung durchzuführen.',
 				codeLabel: 'Autorisierungscode',
+				copy: 'Kopieren',
+				copied: 'Kopiert',
 				rawTextLabel: 'Autorisierungshinweise',
 				waiting: 'Warte auf deine Autorisierung …',
 				failed: 'Autorisierung fehlgeschlagen. Bitte erneut versuchen.',

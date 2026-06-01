@@ -538,10 +538,10 @@ export const viMessages = {
 			},
 			oauth: {
 				starting: 'Đang yêu cầu mã ủy quyền…',
-				instructions: 'Mở liên kết bên dưới và nhập mã ủy quyền để cấp quyền cho {provider}.',
-				openLink: 'Mở trang cấp quyền',
-				linkLabel: 'Liên kết cấp quyền',
+				instructions: 'Mở liên kết bên dưới để cấp quyền.',
 				codeLabel: 'Mã ủy quyền',
+				copy: 'Sao chép',
+				copied: 'Đã sao chép',
 				rawTextLabel: 'Hướng dẫn cấp quyền',
 				waiting: 'Đang chờ bạn cấp quyền…',
 				failed: 'Cấp quyền thất bại. Vui lòng thử lại.',

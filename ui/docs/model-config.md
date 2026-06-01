@@ -293,7 +293,7 @@ provider 的 `authMethods` 含 `oauth-device-code` 时，「加 provider」走�
 
 **两阶段契约**（见 plugin `model-config-api.md` § 2.3.2 / § 6.16.8）：
 
-- phase-1（`onAccepted`，仅 `status==='accepted'` 帧触发）：`coclaw.providerAuth.loginOauth({provider})` 返回 `{ loginId, verificationUri, userCode, rawText }`。展示 `verificationUri` + `userCode`（可附二维码）；结构化字段抠不到时用 `rawText` 全文**兜底渲染**。
+- phase-1（`onAccepted`，仅 `status==='accepted'` 帧触发）：`coclaw.providerAuth.loginOauth({provider})` 返回 `{ loginId, verificationUri, userCode, rawText }`。展示顺序为**先授权码（inline 小块 + icon 复制按钮，复制后就地显示"已复制"约 3s，不弹 toast）再授权链接**（多数流程第一步是复制码、再点链接）；结构化字段抠不到时用 `rawText` 全文**兜底渲染**。授权码**已嵌进 `verificationUri` 时不单列**（启发式 `showUserCode`：`verificationUri` 直接子串含 `userCode` 即隐藏，如 minimax-portal；假定码不被 URI 换码，匹配落空只是照常显示、失败安全）。
 - phase-2（终态帧，同一请求）：成功 → 通知父级走既有 `refreshAfterWrite` 刷新；失败按 `error.code` 映 i18n——`OAUTH_FAILED` / `OAUTH_TIMEOUT` / `IO_FAILED` / `NOT_FOUND` 各有文案，未知码回退泛化"失败"文案；**`OAUTH_CANCELLED` 不映错误文案**（取消是预期终态、静默退回，不弹 toast）。
 - 取消：调 `coclaw.providerAuth.cancelOauth({loginId})`（用登录起记的 claw id 定位，避免切 claw 期间拨错；client waiter 由 `signal` abort 收掉）。
 - `loginOauth` / `cancelOauth` 走 DC 直达 plugin；**`loginOauth` 注入 `timeout:0`**（设备码授权窗口长、不设超时），`cancelOauth` 是快速 abort、用常规 `RPC_TIMEOUT`（~60s）。
@@ -461,7 +461,7 @@ export const PROVIDER_META = {
 | 二级命名空间 | 归属 | 示例 |
 |---|---|---|
 | `modelConfig.primary.*` | 默认主模型区 + 主模型选择器 | `primary.title`、`primary.changeButton`、`primary.notSetWarning`、`primary.invalidWarning`、`primary.pickerTitle` |
-| `modelConfig.providerAuth.*` | API 凭据区 + 添加 / 撤销流程 + **OAuth 设备码登录步** | `providerAuth.title`、`providerAuth.addButton`、`providerAuth.removeButton`、`providerAuth.add.stepSelectTitle`、`providerAuth.add.stepConfigTitle`、`providerAuth.remove.title`、`providerAuth.remove.descAffectPrimary`；**设备码流** `providerAuth.oauth.*`：`oauth.starting`、`oauth.instructions`（含 `{provider}` 占位）、`oauth.openLink`、`oauth.linkLabel`、`oauth.codeLabel`、`oauth.rawTextLabel`、`oauth.waiting`、`oauth.failed`（泛化回退）、`oauth.errors.{OAUTH_FAILED, OAUTH_TIMEOUT, IO_FAILED, NOT_FOUND}`（**OAUTH_CANCELLED 静默、无 key**）；oauth-login"暂不支持" = `providerAuth.add.oauthLoginUnsupported`（含 `{provider}`）+ `providerAuth.add.methodOauthLogin` |
+| `modelConfig.providerAuth.*` | API 凭据区 + 添加 / 撤销流程 + **OAuth 设备码登录步** | `providerAuth.title`、`providerAuth.addButton`、`providerAuth.removeButton`、`providerAuth.add.stepSelectTitle`、`providerAuth.add.stepConfigTitle`、`providerAuth.remove.title`、`providerAuth.remove.descAffectPrimary`；**设备码流** `providerAuth.oauth.*`：`oauth.starting`、`oauth.instructions`（**通用文案、不含占位**——标题已带 provider）、`oauth.codeLabel`、`oauth.copy` / `oauth.copied`（复制按钮 aria-label / 就地"已复制"反馈）、`oauth.rawTextLabel`、`oauth.waiting`、`oauth.failed`（泛化回退）、`oauth.errors.{OAUTH_FAILED, OAUTH_TIMEOUT, IO_FAILED, NOT_FOUND}`（**OAUTH_CANCELLED 静默、无 key**）；复制失败复用 `common.copyFailed`。链接为可点 `<a>`（无独立"打开"按钮、无 `linkLabel`，指引已说"下方链接"）；oauth-login"暂不支持" = `providerAuth.add.oauthLoginUnsupported`（含 `{provider}`）+ `providerAuth.add.methodOauthLogin` |
 | `modelConfig.guidance.*` | ManageClawsPage 外层引导（橙条文案 + "去配置"按钮） | `guidance.noKeyWarning`、`guidance.noPrimaryWarning`、`guidance.invalidPrimaryWarning`、`guidance.goConfigure` |
 | `modelConfig.common.*` | 通用文案（offline 提示 / 保存失败 / 连接异常等） | `common.clawOffline`、`common.saveFailed`、`common.connError` |
 

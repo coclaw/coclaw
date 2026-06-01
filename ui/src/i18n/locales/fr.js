@@ -538,10 +538,10 @@ export const frMessages = {
 			},
 			oauth: {
 				starting: 'Demande d’un code d’autorisation…',
-				instructions: 'Ouvrez le lien ci-dessous et saisissez le code d’autorisation pour autoriser {provider}.',
-				openLink: 'Ouvrir la page d’autorisation',
-				linkLabel: 'Lien d’autorisation',
+				instructions: 'Ouvrez le lien ci-dessous pour autoriser.',
 				codeLabel: 'Code d’autorisation',
+				copy: 'Copier',
+				copied: 'Copié',
 				rawTextLabel: 'Instructions d’autorisation',
 				waiting: 'En attente de votre autorisation…',
 				failed: 'L’autorisation a échoué. Veuillez réessayer.',

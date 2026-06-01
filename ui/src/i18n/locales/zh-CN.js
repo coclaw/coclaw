@@ -538,10 +538,10 @@ export const zhCNMessages = {
 			},
 			oauth: {
 				starting: '正在获取授权码…',
-				instructions: '打开下方链接并输入授权码以授权 {provider}。',
-				openLink: '打开授权页面',
-				linkLabel: '授权链接',
+				instructions: '点击下方链接进行授权。',
 				codeLabel: '授权码',
+				copy: '复制',
+				copied: '已复制',
 				rawTextLabel: '授权说明',
 				waiting: '等待你完成授权…',
 				failed: '授权失败，请重试。',

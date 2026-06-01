@@ -538,10 +538,10 @@ export const esMessages = {
 			},
 			oauth: {
 				starting: 'Solicitando un código de autorización…',
-				instructions: 'Abre el enlace de abajo e introduce el código de autorización para autorizar {provider}.',
-				openLink: 'Abrir página de autorización',
-				linkLabel: 'Enlace de autorización',
+				instructions: 'Abre el enlace de abajo para autorizar.',
 				codeLabel: 'Código de autorización',
+				copy: 'Copiar',
+				copied: 'Copiado',
 				rawTextLabel: 'Instrucciones de autorización',
 				waiting: 'Esperando a que autorices…',
 				failed: 'La autorización falló. Inténtalo de nuevo.',

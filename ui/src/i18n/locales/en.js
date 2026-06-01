@@ -538,10 +538,10 @@ export const enMessages = {
 			},
 			oauth: {
 				starting: 'Requesting an authorization code…',
-				instructions: 'Open the link below and enter the authorization code to authorize {provider}.',
-				openLink: 'Open authorization page',
-				linkLabel: 'Authorization link',
+				instructions: 'Open the link below to authorize.',
 				codeLabel: 'Authorization code',
+				copy: 'Copy',
+				copied: 'Copied',
 				rawTextLabel: 'Authorization instructions',
 				waiting: 'Waiting for you to authorize…',
 				failed: 'Authorization failed. Please try again.',

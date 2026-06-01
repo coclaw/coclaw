@@ -15,6 +15,12 @@ vi.mock('../../composables/use-notify.js', () => ({
 	useNotify: () => mockNotify,
 }));
 
+// 复制授权码走跨平台 writeClipboardText：mock 掉，避免真访问剪贴板
+const writeClipboardTextMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('../../utils/clipboard.js', () => ({
+	writeClipboardText: writeClipboardTextMock,
+}));
+
 import ProviderOAuthLoginStep from './ProviderOAuthLoginStep.vue';
 
 const UButtonStub = {
@@ -133,13 +139,75 @@ describe('ProviderOAuthLoginStep — autostart + phase-1', () => {
 		w.unmount();
 	});
 
-	test('Open link button calls openExternalUrl with verificationUri', async () => {
+	test('clicking the verification link calls openExternalUrl with verificationUri', async () => {
 		const ctl = makeLogin();
 		const w = makeWrapper({ loginOauth: ctl.loginOauth });
 		ctl.onAccepted(accepted());
 		await w.vm.$nextTick();
-		await w.find('[data-testid="oauth-open-link"]').trigger('click');
+		await w.find('[data-testid="oauth-verification-link"]').trigger('click');
 		expect(openExternalUrlMock).toHaveBeenCalledWith('https://github.com/login/device');
+		w.unmount();
+	});
+
+	test('copy button copies the user code, shows inline "copied", no toast', async () => {
+		const ctl = makeLogin();
+		const w = makeWrapper({ loginOauth: ctl.loginOauth });
+		ctl.onAccepted(accepted());
+		await w.vm.$nextTick();
+		await w.find('[data-testid="oauth-copy-code"]').trigger('click');
+		await flushPromises();
+		expect(writeClipboardTextMock).toHaveBeenCalledWith('ABCD-1234');
+		expect(w.vm.codeCopied).toBe(true);
+		expect(w.find('[data-testid="oauth-code-copied"]').exists()).toBe(true);
+		expect(mockNotify.error).not.toHaveBeenCalled();
+		w.unmount();
+	});
+
+	test('copied state reverts to copyable after 3s', async () => {
+		vi.useFakeTimers();
+		try {
+			const ctl = makeLogin();
+			const w = makeWrapper({ loginOauth: ctl.loginOauth });
+			ctl.onAccepted(accepted());
+			await w.vm.$nextTick();
+			w.vm.onCopyCode();
+			await Promise.resolve();
+			await Promise.resolve();
+			await w.vm.$nextTick();
+			expect(w.vm.codeCopied).toBe(true);
+			vi.advanceTimersByTime(3000);
+			await w.vm.$nextTick();
+			expect(w.vm.codeCopied).toBe(false);
+			expect(w.find('[data-testid="oauth-code-copied"]').exists()).toBe(false);
+			w.unmount();
+		}
+		finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('copy failure → notify.error(copyFailed), codeCopied stays false', async () => {
+		writeClipboardTextMock.mockRejectedValueOnce(new Error('clip fail'));
+		const ctl = makeLogin();
+		const w = makeWrapper({ loginOauth: ctl.loginOauth });
+		ctl.onAccepted(accepted());
+		await w.vm.$nextTick();
+		await w.find('[data-testid="oauth-copy-code"]').trigger('click');
+		await flushPromises();
+		expect(mockNotify.error).toHaveBeenCalledWith('common.copyFailed');
+		expect(w.vm.codeCopied).toBe(false);
+		w.unmount();
+	});
+
+	test('user code hidden when embedded in the verification URL (e.g. minimax-portal)', async () => {
+		const ctl = makeLogin();
+		const w = makeWrapper({ loginOauth: ctl.loginOauth });
+		ctl.onAccepted(accepted({ verificationUri: 'https://portal.example.com/auth?code=ABCD-1234', userCode: 'ABCD-1234' }));
+		await w.vm.$nextTick();
+		// 码已嵌进链接 → 不再单列码块（含复制按钮）；用户直接点链接即可
+		expect(w.find('[data-testid="oauth-user-code"]').exists()).toBe(false);
+		expect(w.find('[data-testid="oauth-copy-code"]').exists()).toBe(false);
+		expect(w.find('[data-testid="oauth-verification-link"]').exists()).toBe(true);
 		w.unmount();
 	});
 });

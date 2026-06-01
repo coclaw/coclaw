@@ -538,10 +538,10 @@ export const ptMessages = {
 			},
 			oauth: {
 				starting: 'Solicitando um código de autorização…',
-				instructions: 'Abra o link abaixo e insira o código de autorização para autorizar {provider}.',
-				openLink: 'Abrir página de autorização',
-				linkLabel: 'Link de autorização',
+				instructions: 'Abra o link abaixo para autorizar.',
 				codeLabel: 'Código de autorização',
+				copy: 'Copiar',
+				copied: 'Copiado',
 				rawTextLabel: 'Instruções de autorização',
 				waiting: 'Aguardando sua autorização…',
 				failed: 'A autorização falhou. Tente novamente.',

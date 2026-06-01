@@ -9,41 +9,42 @@
 			{{ $t('modelConfig.providerAuth.oauth.starting') }}
 		</div>
 
-		<!-- pending：拿到受理帧，展示授权链接 + 授权码（rawText 在结构化字段抠不到时兜底） -->
+		<!-- pending：拿到受理帧，先展示授权码（多数流程第一步是复制码）再展示授权链接（rawText 在结构化字段抠不到时兜底） -->
 		<template v-else-if="phase === 'pending'">
 			<p class="text-sm text-muted">
-				{{ $t('modelConfig.providerAuth.oauth.instructions', { provider }) }}
+				{{ $t('modelConfig.providerAuth.oauth.instructions') }}
 			</p>
 
-			<!-- 结构化授权链接：远端用户在自己设备打开（走平台外链） -->
-			<div v-if="verificationUri" class="flex flex-col gap-1">
-				<span class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.linkLabel') }}</span>
-				<a
-					data-testid="oauth-verification-link"
-					class="self-start break-all text-sm text-primary underline cursor-pointer"
-					@click="onOpenLink"
-				>
-					{{ verificationUri }}
-				</a>
+			<!-- 授权码：inline 等宽小块 + icon 复制按钮（样式同用户信息复制登录名）；
+			     码已嵌进授权链接（如 minimax-portal）时不再单列，用户直接点链接即可（见 showUserCode） -->
+			<div v-if="showUserCode" class="flex items-center gap-2">
+				<span class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.codeLabel') }}</span>
+				<code data-testid="oauth-user-code" class="select-all rounded bg-elevated px-2 py-0.5 font-mono text-base tracking-wider">{{ userCode }}</code>
 				<UButton
-					data-testid="oauth-open-link"
-					class="self-start"
-					size="xs"
-					variant="soft"
+					data-testid="oauth-copy-code"
+					class="cc-icon-btn"
+					variant="ghost"
 					color="primary"
-					@click="onOpenLink"
-				>
-					{{ $t('modelConfig.providerAuth.oauth.openLink') }}
-				</UButton>
+					size="md"
+					:icon="codeCopied ? 'i-lucide-check' : 'i-lucide-copy'"
+					:aria-label="$t('modelConfig.providerAuth.oauth.copy')"
+					@click="onCopyCode"
+				/>
+				<!-- 复制成功就地反馈“已复制”，约 3s 后自动消失（不弹 toast） -->
+				<span v-if="codeCopied" data-testid="oauth-code-copied" class="text-xs text-success">
+					{{ $t('modelConfig.providerAuth.oauth.copied') }}
+				</span>
 			</div>
 
-			<!-- 授权码：等宽 + 可选中复制 -->
-			<div v-if="userCode" class="flex flex-col gap-1">
-				<span class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.codeLabel') }}</span>
-				<code data-testid="oauth-user-code" class="select-all rounded bg-elevated px-2 py-1 font-mono text-base tracking-wider">
-					{{ userCode }}
-				</code>
-			</div>
+			<!-- 结构化授权链接：远端用户在自己设备打开（走平台外链）。指引已说“下方链接”、URL 自明，不再加标签/按钮 -->
+			<a
+				v-if="verificationUri"
+				data-testid="oauth-verification-link"
+				class="self-start break-all text-sm text-primary underline cursor-pointer"
+				@click="onOpenLink"
+			>
+				{{ verificationUri }}
+			</a>
 
 			<!-- rawText 兜底：仅在结构化链接抠不到、且有原文时渲染（交用户自行阅读授权指引） -->
 			<div v-if="showRawText" class="flex flex-col gap-1">
@@ -64,6 +65,7 @@
 
 <script>
 import { openExternalUrl } from '../../utils/external-url.js';
+import { writeClipboardText } from '../../utils/clipboard.js';
 import { useNotify } from '../../composables/use-notify.js';
 
 // 终态失败 error.code → i18n key 映射。OAUTH_CANCELLED 不在此表（取消是预期终态、静默退回）；
@@ -135,6 +137,8 @@ export default {
 			rawText: '',
 			/** 终态失败的 i18n key（'' 表示无错误） */
 			errorKey: '',
+			/** 授权码刚复制：就地显示“已复制”，约 3s 后由定时器复位（非 toast） */
+			codeCopied: false,
 		};
 	},
 	computed: {
@@ -144,6 +148,16 @@ export default {
 		 */
 		showRawText() {
 			return !this.verificationUri && !!this.rawText;
+		},
+		/**
+		 * 是否单独展示授权码：码非空，且没被嵌进授权链接里。minimax-portal 这类把
+		 * user_code 拼进 URL，用户点链接即完成、无需再单列码。假定码不会被 URI 换码，
+		 * 直接子串匹配；匹配落空只会“照常显示码”（轻微冗余），失败安全。
+		 * @returns {boolean}
+		 */
+		showUserCode() {
+			if (!this.userCode) return false;
+			return !(this.verificationUri && this.verificationUri.includes(this.userCode));
 		},
 	},
 	watch: {
@@ -160,6 +174,7 @@ export default {
 	beforeUnmount() {
 		// 作废在飞 handler + 中止本地 waiter；有在途登录则顺手拨掉后端轮询（best-effort）
 		this.__teardown();
+		if (this.__copyTimer) clearTimeout(this.__copyTimer);
 	},
 	methods: {
 		/**
@@ -244,6 +259,21 @@ export default {
 			if (!this.verificationUri) return;
 			// fire-and-forget：openExternalUrl 内部已兜底，这里再 catch 一层防极端环境抛出
 			Promise.resolve(openExternalUrl(this.verificationUri)).catch(() => {});
+		},
+		/** 复制授权码：成功就地显示“已复制”约 3s（不弹 toast），失败才提示 */
+		async onCopyCode() {
+			try {
+				await writeClipboardText(this.userCode);
+				this.codeCopied = true;
+				if (this.__copyTimer) clearTimeout(this.__copyTimer);
+				this.__copyTimer = setTimeout(() => {
+					this.codeCopied = false;
+					this.__copyTimer = null;
+				}, 3000);
+			}
+			catch {
+				this.notify.error(this.$t('common.copyFailed'));
+			}
 		},
 		onCancel() {
 			// 仅在 starting/pending 有在飞登录时才需拨后端；其它态直接退回

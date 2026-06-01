@@ -538,10 +538,10 @@ export const koMessages = {
 			},
 			oauth: {
 				starting: '인가 코드를 요청하는 중…',
-				instructions: '아래 링크를 열고 인가 코드를 입력하여 {provider}를 인증하세요.',
-				openLink: '인증 페이지 열기',
-				linkLabel: '인증 링크',
+				instructions: '아래 링크를 열어 인증하세요.',
 				codeLabel: '인가 코드',
+				copy: '복사',
+				copied: '복사됨',
 				rawTextLabel: '인증 안내',
 				waiting: '인증을 기다리는 중…',
 				failed: '인증에 실패했습니다. 다시 시도해 주세요.',

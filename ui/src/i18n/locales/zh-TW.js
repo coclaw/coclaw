@@ -538,10 +538,10 @@ export const zhTWMessages = {
 			},
 			oauth: {
 				starting: '正在取得授權碼…',
-				instructions: '開啟下方連結並輸入授權碼以授權 {provider}。',
-				openLink: '開啟授權頁面',
-				linkLabel: '授權連結',
+				instructions: '點擊下方連結進行授權。',
 				codeLabel: '授權碼',
+				copy: '複製',
+				copied: '已複製',
 				rawTextLabel: '授權說明',
 				waiting: '等待你完成授權…',
 				failed: '授權失敗，請重試。',

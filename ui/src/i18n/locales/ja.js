@@ -538,10 +538,10 @@ export const jaMessages = {
 			},
 			oauth: {
 				starting: '認可コードを取得しています…',
-				instructions: '下のリンクを開き、認可コードを入力して {provider} を認可してください。',
-				openLink: '認可ページを開く',
-				linkLabel: '認可リンク',
+				instructions: '下のリンクを開いて認可してください。',
 				codeLabel: '認可コード',
+				copy: 'コピー',
+				copied: 'コピーしました',
 				rawTextLabel: '認可の手順',
 				waiting: '認可をお待ちしています…',
 				failed: '認可に失敗しました。もう一度お試しください。',
