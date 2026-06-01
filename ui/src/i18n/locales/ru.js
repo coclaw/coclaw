@@ -532,8 +532,8 @@ export const ruMessages = {
 				submitFailed: 'Не удалось сохранить API-ключ. Попробуйте ещё раз.',
 				methodApiKey: 'API-ключ',
 				methodDeviceCode: 'Авторизация через аккаунт',
-				methodOauthLogin: 'Авторизация через аккаунт',
-				oauthLoginUnsupported: 'Авторизация через аккаунт для {provider} пока не поддерживается. Используйте API-ключ.',
+				methodOauthLogin: 'Авторизация через аккаунт (пока не поддерживается)',
+				oauthLoginUnsupported: 'Авторизация через аккаунт для {provider} пока не поддерживается.',
 				back: 'Назад',
 			},
 			oauth: {

@@ -642,17 +642,19 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(w.vm.step).toBe('select');
 	});
 
-	test('single oauth-login provider goes straight to the "not supported" view (no chooser)', async () => {
+	test('single oauth-login provider does not navigate; notifies "not supported" and stays on select', async () => {
 		const w = makeWrapper({ catalog: [
 			{ provider: 'gemini-cli', authMethods: ['oauth-login'], hasCred: false },
 		] });
 		await w.find('[data-testid="add-provider-item-gemini-cli"]').trigger('click');
-		expect(w.vm.selectedMethod).toBe('oauth-login');
-		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(false);
-		expect(w.find('[data-testid="add-oauth-login-unsupported"]').exists()).toBe(true);
-		// 单方式 oauth-login：返回直接回 provider 选择
-		await w.find('[data-testid="add-oauth-login-back"]').trigger('click');
+		// 不进配置屏：留在 provider 选择步，selectedProvider 不残留（滚动位置天然保住）
 		expect(w.vm.step).toBe('select');
+		expect(w.vm.selectedProvider).toBe('');
+		expect(w.find('[data-testid="add-provider-list"]').exists()).toBe(true);
+		// notify 提示账号授权暂不支持（带 provider）
+		expect(w.vm.notify.warning).toHaveBeenCalledTimes(1);
+		expect(w.vm.notify.warning.mock.calls[0][0]).toContain('modelConfig.providerAuth.add.oauthLoginUnsupported');
+		expect(w.vm.notify.warning.mock.calls[0][0]).toContain('gemini-cli');
 	});
 
 	test('device-code present hides oauth-login; chooser shows api-key + device-code in fixed order', async () => {
@@ -729,18 +731,18 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(w.find('[data-testid="add-provider-list"]').exists()).toBe(true);
 	});
 
-	test('oauth-login entry shows "not supported" with a back button', async () => {
+	test('chooser oauth-login entry does not navigate; notifies "not supported" and stays in chooser', async () => {
 		const w = makeWrapper({ catalog: multiCatalog });
 		// gemini = api-key + cb（无 code）→ chooser 保留 oauth-login 入口
 		await w.find('[data-testid="add-provider-item-gemini"]').trigger('click');
 		await w.find('[data-testid="add-method-oauth-login"]').trigger('click');
-		const note = w.find('[data-testid="add-oauth-login-unsupported"]');
-		expect(note.exists()).toBe(true);
-		expect(note.text()).toContain('modelConfig.providerAuth.add.oauthLoginUnsupported');
-		// 返回回到 chooser
-		await w.find('[data-testid="add-oauth-login-back"]').trigger('click');
+		// 点了不进配置子屏：仍停在 chooser
 		expect(w.vm.selectedMethod).toBe('');
 		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(true);
+		// notify 提示账号授权暂不支持（带 provider）
+		expect(w.vm.notify.warning).toHaveBeenCalledTimes(1);
+		expect(w.vm.notify.warning.mock.calls[0][0]).toContain('modelConfig.providerAuth.add.oauthLoginUnsupported');
+		expect(w.vm.notify.warning.mock.calls[0][0]).toContain('gemini');
 	});
 
 	test('chooser back returns to provider select', async () => {

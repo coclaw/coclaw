@@ -532,8 +532,8 @@ export const esMessages = {
 				submitFailed: 'No se pudo guardar la clave de API. Inténtalo de nuevo.',
 				methodApiKey: 'Clave de API',
 				methodDeviceCode: 'Autorizar con la cuenta',
-				methodOauthLogin: 'Autorizar con la cuenta',
-				oauthLoginUnsupported: 'La autorización de la cuenta para {provider} aún no es compatible. Usa una clave de API.',
+				methodOauthLogin: 'Autorizar con la cuenta (aún no compatible)',
+				oauthLoginUnsupported: 'La autorización de la cuenta para {provider} aún no es compatible.',
 				back: 'Atrás',
 			},
 			oauth: {

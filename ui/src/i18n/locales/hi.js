@@ -532,8 +532,8 @@ export const hiMessages = {
 				submitFailed: 'API कुंजी सहेजने में विफल। कृपया पुनः प्रयास करें।',
 				methodApiKey: 'API कुंजी',
 				methodDeviceCode: 'खाते से अधिकृत करें',
-				methodOauthLogin: 'खाते से अधिकृत करें',
-				oauthLoginUnsupported: '{provider} के लिए खाता प्राधिकरण अभी समर्थित नहीं है। इसके बजाय API कुंजी का उपयोग करें।',
+				methodOauthLogin: 'खाते से अधिकृत करें (अभी समर्थित नहीं)',
+				oauthLoginUnsupported: '{provider} के लिए खाता प्राधिकरण अभी समर्थित नहीं है।',
 				back: 'वापस',
 			},
 			oauth: {

@@ -532,8 +532,8 @@ export const frMessages = {
 				submitFailed: 'Échec de l\'enregistrement de la clé API. Veuillez réessayer.',
 				methodApiKey: 'Clé API',
 				methodDeviceCode: 'Autoriser avec le compte',
-				methodOauthLogin: 'Autoriser avec le compte',
-				oauthLoginUnsupported: 'L’autorisation du compte pour {provider} n’est pas encore prise en charge. Utilisez une clé API.',
+				methodOauthLogin: 'Autoriser avec le compte (pas encore pris en charge)',
+				oauthLoginUnsupported: 'L’autorisation du compte pour {provider} n’est pas encore prise en charge.',
 				back: 'Retour',
 			},
 			oauth: {

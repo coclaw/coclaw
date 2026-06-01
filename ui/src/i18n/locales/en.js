@@ -532,8 +532,8 @@ export const enMessages = {
 				submitFailed: 'Failed to save the API key. Please retry.',
 				methodApiKey: 'API key',
 				methodDeviceCode: 'Authorize with account',
-				methodOauthLogin: 'Authorize with account',
-				oauthLoginUnsupported: 'Account authorization for {provider} isn’t supported yet. Use an API key instead.',
+				methodOauthLogin: 'Authorize with account (not supported yet)',
+				oauthLoginUnsupported: 'Account authorization for {provider} isn’t supported yet.',
 				back: 'Back',
 			},
 			oauth: {

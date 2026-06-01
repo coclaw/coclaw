@@ -532,8 +532,8 @@ export const zhTWMessages = {
 				submitFailed: 'API key 儲存失敗，請重試',
 				methodApiKey: 'API key',
 				methodDeviceCode: '帳號授權',
-				methodOauthLogin: '帳號授權',
-				oauthLoginUnsupported: '{provider} 的帳號授權暫不支援，請改用 API key。',
+				methodOauthLogin: '帳號授權（暫不支援）',
+				oauthLoginUnsupported: '{provider} 的帳號授權暫不支援。',
 				back: '返回',
 			},
 			oauth: {

@@ -532,8 +532,8 @@ export const ptMessages = {
 				submitFailed: 'Falha ao salvar a chave de API. Tente novamente.',
 				methodApiKey: 'Chave de API',
 				methodDeviceCode: 'Autorizar com a conta',
-				methodOauthLogin: 'Autorizar com a conta',
-				oauthLoginUnsupported: 'A autorização da conta para {provider} ainda não é suportada. Use uma chave de API.',
+				methodOauthLogin: 'Autorizar com a conta (ainda não suportado)',
+				oauthLoginUnsupported: 'A autorização da conta para {provider} ainda não é suportada.',
 				back: 'Voltar',
 			},
 			oauth: {

@@ -532,8 +532,8 @@ export const deMessages = {
 				submitFailed: 'API-Schlüssel konnte nicht gespeichert werden. Bitte erneut versuchen.',
 				methodApiKey: 'API-Schlüssel',
 				methodDeviceCode: 'Mit Konto autorisieren',
-				methodOauthLogin: 'Mit Konto autorisieren',
-				oauthLoginUnsupported: 'Die Kontoautorisierung für {provider} wird noch nicht unterstützt. Nutze stattdessen einen API-Schlüssel.',
+				methodOauthLogin: 'Mit Konto autorisieren (noch nicht unterstützt)',
+				oauthLoginUnsupported: 'Die Kontoautorisierung für {provider} wird noch nicht unterstützt.',
 				back: 'Zurück',
 			},
 			oauth: {

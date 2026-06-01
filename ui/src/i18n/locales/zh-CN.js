@@ -532,8 +532,8 @@ export const zhCNMessages = {
 				submitFailed: 'API key 保存失败，请重试',
 				methodApiKey: 'API key',
 				methodDeviceCode: '账号授权',
-				methodOauthLogin: '账号授权',
-				oauthLoginUnsupported: '{provider} 的账号授权暂不支持，请改用 API key。',
+				methodOauthLogin: '账号授权（暂不支持）',
+				oauthLoginUnsupported: '{provider} 的账号授权暂不支持。',
 				back: '返回',
 			},
 			oauth: {

@@ -532,8 +532,8 @@ export const viMessages = {
 				submitFailed: 'Lưu khóa API thất bại. Vui lòng thử lại.',
 				methodApiKey: 'Khóa API',
 				methodDeviceCode: 'Cấp quyền bằng tài khoản',
-				methodOauthLogin: 'Cấp quyền bằng tài khoản',
-				oauthLoginUnsupported: 'Cấp quyền bằng tài khoản cho {provider} chưa được hỗ trợ. Hãy dùng khóa API.',
+				methodOauthLogin: 'Cấp quyền bằng tài khoản (chưa hỗ trợ)',
+				oauthLoginUnsupported: 'Cấp quyền bằng tài khoản cho {provider} chưa được hỗ trợ.',
 				back: 'Quay lại',
 			},
 			oauth: {

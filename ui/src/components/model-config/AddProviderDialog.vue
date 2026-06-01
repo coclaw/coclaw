@@ -121,19 +121,9 @@
 						@cancel="onMethodBack"
 					/>
 
-					<!-- oauth-login：刻意列出但暂不支持（回环回调对小白 UX 太重，记一笔免日后纳闷）。
-					     返回按钮同样落到 footer -->
-					<div
-						v-else-if="selectedMethod === 'oauth-login'"
-						data-testid="add-oauth-login-unsupported"
-						class="flex flex-col gap-3"
-					>
-						<p class="text-sm text-muted">
-							{{ $t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: selectedProvider }) }}
-						</p>
-					</div>
-
 					<!-- api-key：输 key（form 仅用于支持原生回车提交；提交按钮与回车都走 onSubmit）-->
+					<!-- 注：oauth-login（cb 回环回调）暂不支持，不再进入配置子屏——点击该入口直接 notify，
+					     selectedMethod 永不为 'oauth-login'（见 onPickProvider/onPickMethod） -->
 					<form v-else class="flex flex-col gap-3" autocomplete="off" @submit.prevent="onSubmit">
 						<!-- API key 是秘钥而非登录凭据：用 type=text + CSS 打码（cc-secret-mask）而非 type=password。
 						     若用 type=password，浏览器密码管家会弹“保存/更新密码”——Chrome 无视 autocomplete=off，只要是
@@ -191,16 +181,6 @@
 				<UButton
 					v-if="footerMode === 'chooser'"
 					data-testid="add-method-back"
-					color="primary"
-					@click="onMethodBack"
-				>
-					{{ $t('modelConfig.providerAuth.add.back') }}
-				</UButton>
-
-				<!-- oauth-login 暂不支持：单个返回 → 实心 primary -->
-				<UButton
-					v-else-if="footerMode === 'oauth-unsupported'"
-					data-testid="add-oauth-login-back"
 					color="primary"
 					@click="onMethodBack"
 				>
@@ -268,6 +248,7 @@ import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 import { mapModelConfigErrorKey, isCanceledError } from '../../utils/model-config-errors.js';
 import { openExternalUrl } from '../../utils/external-url.js';
 import { useEnvStore } from '../../stores/env.store.js';
+import { useNotify } from '../../composables/use-notify.js';
 import ProviderOAuthLoginStep from './ProviderOAuthLoginStep.vue';
 
 const RPC_TIMEOUT = 60_000;
@@ -348,6 +329,7 @@ export default {
 	setup() {
 		return {
 			envStore: useEnvStore(),
+			notify: useNotify(),
 		};
 	},
 	data() {
@@ -470,7 +452,7 @@ export default {
 		},
 		/**
 		 * 当前 footer 渲染模式（'' = 不渲染 footer）。统一各 configure 子态的动作落点：
-		 *   chooser/oauth-unsupported = 单返回；oauth-cancel（账号授权 starting/pending）= 单取消；
+		 *   chooser = 单返回；oauth-cancel（账号授权 starting/pending）= 单取消；
 		 *   oauth-error = 返回+重试；api-key = 取消+提交。
 		 * 账号授权 starting 态也渲染取消：①否则提示文案下无动作、标题区显得很重；
 		 * ②phase-1 受理可能因网络阻障迟迟不回，用户需能随时取消（取消的本地容错见 ProviderOAuthLoginStep.onCancel）。
@@ -481,7 +463,6 @@ export default {
 			if (this.step !== 'configure') return '';
 			if (!this.selectedMethod) return 'chooser';
 			if (this.selectedMethod === 'api-key') return 'api-key';
-			if (this.selectedMethod === 'oauth-login') return 'oauth-unsupported';
 			if (this.selectedMethod === 'oauth-device-code') {
 				if (this.oauthPhase === 'error') return 'oauth-error';
 				// starting + pending 都可取消
@@ -550,23 +531,36 @@ export default {
 		},
 		onPickProvider(providerId) {
 			if (!providerId) return;
+			// 先置 provider 让 selectedProviderMethods 可计算；仅当真要进配置屏才推进 step。
 			this.selectedProvider = providerId;
+			const methods = this.selectedProviderMethods;
+			// 仅 oauth-login（cb 回环回调，暂不支持）这一种方式时不进配置屏：弹 toast、留在 provider 列表。
+			// 避免切屏导致列表滚动位置丢失（select / configure 互斥渲染，返回会从头重渲染）。
+			if (methods.length === 1 && methods[0] === 'oauth-login') {
+				this.selectedProvider = '';
+				this.notify.warning(this.$t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: providerId }));
+				return;
+			}
 			this.step = 'configure';
 			this.apiKey = '';
 			this.inlineErrorKey = '';
 			// 单方式直接进入对应入口（跳过 chooser）；多方式（含 0，理论不出现）显示 chooser
-			const methods = this.selectedProviderMethods;
 			this.selectedMethod = methods.length === 1 ? methods[0] : '';
 		},
 		onPickMethod(method) {
 			if (!method) return;
+			// oauth-login（cb 回环回调）暂不支持：留在 chooser、弹 toast（不进配置子屏，移动端更友好）。
+			if (method === 'oauth-login') {
+				this.notify.warning(this.$t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: this.selectedProvider }));
+				return;
+			}
 			this.selectedMethod = method;
 			this.apiKey = '';
 			this.inlineErrorKey = '';
 		},
 		/**
 		 * 配置步内的"返回"：多方式 provider 从某入口回到 chooser；否则（chooser 自身 / 单方式）
-		 * 回到 provider 选择。也复用为账号授权/oauth-login 步的取消回退。
+		 * 回到 provider 选择。也复用为账号授权步的取消回退。
 		 */
 		onMethodBack() {
 			if (this.selectedMethod && this.selectedProviderMethods.length > 1) {

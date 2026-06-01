@@ -532,8 +532,8 @@ export const jaMessages = {
 				submitFailed: 'API キーの保存に失敗しました。もう一度お試しください。',
 				methodApiKey: 'API キー',
 				methodDeviceCode: 'アカウントで認可',
-				methodOauthLogin: 'アカウントで認可',
-				oauthLoginUnsupported: '{provider} のアカウント認可はまだ対応していません。API キーをご利用ください。',
+				methodOauthLogin: 'アカウントで認可（未対応）',
+				oauthLoginUnsupported: '{provider} のアカウント認可はまだ対応していません。',
 				back: '戻る',
 			},
 			oauth: {

@@ -532,8 +532,8 @@ export const koMessages = {
 				submitFailed: 'API 키 저장에 실패했습니다. 다시 시도해 주세요.',
 				methodApiKey: 'API 키',
 				methodDeviceCode: '계정으로 인증',
-				methodOauthLogin: '계정으로 인증',
-				oauthLoginUnsupported: '{provider}의 계정 인증은 아직 지원되지 않습니다. 대신 API 키를 사용하세요.',
+				methodOauthLogin: '계정으로 인증 (아직 미지원)',
+				oauthLoginUnsupported: '{provider}의 계정 인증은 아직 지원되지 않습니다.',
 				back: '뒤로',
 			},
 			oauth: {
