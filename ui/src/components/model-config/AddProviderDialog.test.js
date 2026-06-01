@@ -584,9 +584,9 @@ describe('AddProviderDialog — mobile / desktop layout', () => {
 		const w = makeWrapper();
 		// Step 1：不注入 :ui（走默认更宽的弹窗）
 		expect(w.find('.u-modal-stub').attributes('data-ui-body')).toBe('');
-		// Step 2：套 confirm 弹窗样式，但本对话框局部收紧 body 底部 padding（pt-3 同全局、pb-2 收紧；不改全局 promptModalUi）
+		// Step 2：套 confirm 弹窗样式，但本对话框局部收紧 body padding（pt-2 比全局 pt-3 略收、pb-2 收紧；不改全局 promptModalUi）
 		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
-		expect(w.find('.u-modal-stub').attributes('data-ui-body')).toBe('px-4 pt-3 pb-2 sm:px-5 sm:pt-3 sm:pb-2');
+		expect(w.find('.u-modal-stub').attributes('data-ui-body')).toBe('px-4 pt-2 pb-2 sm:px-5 sm:pt-2 sm:pb-2');
 		expect(promptModalUi.body).toBe('px-4 py-3 sm:px-5 sm:py-3');
 	});
 });

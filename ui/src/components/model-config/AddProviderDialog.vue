@@ -367,8 +367,9 @@ export default {
 		 */
 		modalUi() {
 			if (this.step !== 'configure') return undefined;
-			// 局部收紧 body 底部 padding（pt-3 同全局、pb-2 收紧），不改全局 promptModalUi
-			return { ...promptModalUi, body: 'px-4 pt-3 pb-2 sm:px-5 sm:pt-3 sm:pb-2' };
+			// 局部收紧 body padding（pt-2 比全局 pt-3 略收、pb-2 收紧），不改全局 promptModalUi；
+			// configure 首行（授权码）带较高的复制按钮，顶部统一 pt-2 视觉更协调
+			return { ...promptModalUi, body: 'px-4 pt-2 pb-2 sm:px-5 sm:pt-2 sm:pb-2' };
 		},
 		/**
 		 * 仅 Step 1 列表在移动端全屏铺开；Step 2 走 confirm 小卡片，移动端也居中显示不全屏
