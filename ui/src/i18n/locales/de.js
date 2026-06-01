@@ -493,7 +493,7 @@ export const deMessages = {
 			notSetWarning: 'Kein primäres Modell — Agent kann nicht chatten.',
 			invalidWarning: 'Das Hauptmodell ist nicht mehr verfügbar. Bitte wähle ein neues aus.',
 			changeButton: 'Ändern',
-			selectButton: 'Hauptmodell wählen',
+			selectButton: 'Konfigurieren',
 			pickerTitle: 'Hauptmodell auswählen',
 			pickerSearchPlaceholder: 'Modelle suchen…',
 			pickerEmpty: 'Keine Modelle verfügbar. Füge zuerst einen API-Schlüssel für mindestens einen Provider hinzu.',

@@ -493,7 +493,7 @@ export const enMessages = {
 			notSetWarning: 'No primary model set — agent cannot chat.',
 			invalidWarning: 'Primary model is no longer available. Please pick a new one.',
 			changeButton: 'Change',
-			selectButton: 'Select primary',
+			selectButton: 'Configure',
 			pickerTitle: 'Select primary model',
 			pickerSearchPlaceholder: 'Search models…',
 			pickerEmpty: 'No models available. Add an API key for at least one provider first.',

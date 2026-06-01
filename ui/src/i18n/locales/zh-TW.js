@@ -493,7 +493,7 @@ export const zhTWMessages = {
 			notSetWarning: '尚未設定主模型，無法對話',
 			invalidWarning: '主模型已失效，請重新選擇',
 			changeButton: '更換',
-			selectButton: '選擇主模型',
+			selectButton: '配置',
 			pickerTitle: '選擇主模型',
 			pickerSearchPlaceholder: '搜尋模型…',
 			pickerEmpty: '暫無可選模型，請先為至少一個模型服務商設定 API key',

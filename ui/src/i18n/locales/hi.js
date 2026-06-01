@@ -493,7 +493,7 @@ export const hiMessages = {
 			notSetWarning: 'कोई प्राथमिक मॉडल नहीं — एजेंट चैट नहीं कर सकता.',
 			invalidWarning: 'मुख्य मॉडल अब उपलब्ध नहीं है। कृपया एक नया चुनें।',
 			changeButton: 'बदलें',
-			selectButton: 'मुख्य चुनें',
+			selectButton: 'कॉन्फ़िगर करें',
 			pickerTitle: 'मुख्य मॉडल चुनें',
 			pickerSearchPlaceholder: 'मॉडल खोजें…',
 			pickerEmpty: 'कोई मॉडल उपलब्ध नहीं है। पहले कम-से-कम एक प्रदाता के लिए API कुंजी जोड़ें।',

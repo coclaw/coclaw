@@ -62,36 +62,26 @@
 							<h2 class="text-sm font-medium">{{ $t('modelConfig.primary.title') }}</h2>
 						</div>
 						<div class="px-3 py-2">
-							<!-- 已配且有效 -->
-							<div v-if="primaryState === 'effective' && primary" class="flex flex-wrap items-center justify-between gap-2">
-								<span data-testid="primary-current" class="font-mono text-sm">{{ primary }}</span>
-								<UButton
-									data-testid="btn-primary-change"
-									variant="soft"
-									color="primary"
-									:disabled="!actionsEnabled"
-									@click="onChangePrimary"
-								>
-									{{ $t('modelConfig.primary.changeButton') }}
-								</UButton>
-							</div>
-							<!-- 主模型未知（model.list RPC 失败）：placeholder，不强行报警告 -->
-							<div v-else-if="primaryState === 'unknown'" data-testid="primary-unknown" class="text-sm text-muted">
+							<!-- 主模型未知（model.list RPC 失败）：占位，不强行报警告（决策4：清单没到先不下结论） -->
+							<div v-if="primaryState === 'unknown'" data-testid="primary-unknown" class="text-sm text-muted">
 								—
 							</div>
-							<!-- 未配 / 失效：均走 selectButton -->
-							<div v-else class="space-y-3">
-								<p data-testid="primary-warning" class="text-sm text-warning">
-									{{ primaryState === 'invalid' ? $t('modelConfig.primary.invalidWarning') : $t('modelConfig.primary.notSetWarning') }}
-								</p>
+							<!-- effective / notSet / invalid 统一一行：左=内容（有主模型显示模型名，失效/未配再叠警告）、右=按钮（有主模型→更换、未配→配置，共用同一 picker） -->
+							<div v-else class="flex flex-wrap items-center justify-between gap-2">
+								<div class="min-w-0 space-y-1">
+									<span v-if="primary" data-testid="primary-current" class="block font-mono text-sm">{{ primary }}</span>
+									<p v-if="primaryState !== 'effective'" data-testid="primary-warning" class="text-sm text-warning">
+										{{ primaryState === 'invalid' ? $t('modelConfig.primary.invalidWarning') : $t('modelConfig.primary.notSetWarning') }}
+									</p>
+								</div>
 								<UButton
-									data-testid="btn-primary-select"
+									data-testid="btn-primary"
 									variant="soft"
 									color="primary"
 									:disabled="!actionsEnabled"
-									@click="onSelectPrimary"
+									@click="onOpenPrimaryPicker"
 								>
-									{{ $t('modelConfig.primary.selectButton') }}
+									{{ primary ? $t('modelConfig.primary.changeButton') : $t('modelConfig.primary.selectButton') }}
 								</UButton>
 							</div>
 						</div>
@@ -493,16 +483,11 @@ export default {
 			}
 		},
 
-		// --- 主模型按钮：打开 picker（change / select 同一对话框） ---
-		onChangePrimary() {
+		// --- 主模型按钮：打开 picker（更换 / 配置 共用同一对话框与处理） ---
+		onOpenPrimaryPicker() {
 			if (!this.actionsEnabled) return;
 			// 记下"这次写操作针对哪台 claw"：clawId 在 dialog 打开期间稳定（一旦切换 watcher 会关掉 dialog），
 			// 所以打开时刻即写操作目标。事件回调据此判断 inflight RPC 落地时是否已切走
-			this.__writeClawId = this.clawId;
-			this.pickerOpen = true;
-		},
-		onSelectPrimary() {
-			if (!this.actionsEnabled) return;
 			this.__writeClawId = this.clawId;
 			this.pickerOpen = true;
 		},

@@ -493,7 +493,7 @@ export const koMessages = {
 			notSetWarning: '기본 모델 미설정 — 대화 불가.',
 			invalidWarning: '주 모델을 더 이상 사용할 수 없습니다. 새로 선택해 주세요.',
 			changeButton: '변경',
-			selectButton: '주 모델 선택',
+			selectButton: '설정',
 			pickerTitle: '주 모델 선택',
 			pickerSearchPlaceholder: '모델 검색…',
 			pickerEmpty: '사용 가능한 모델이 없습니다. 먼저 최소 하나의 공급자에 API 키를 추가하세요.',

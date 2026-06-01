@@ -325,7 +325,7 @@ describe('ModelConfigPage — initial load races', () => {
 		w.unmount();
 	});
 
-	test('primary not set: notSet warning + selectButton, no current display', async () => {
+	test('primary not set: notSet warning + configure button, no current display', async () => {
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.list') return asProfiles([]);
 			if (method === 'coclaw.model.list') return asModelList(null);
@@ -337,7 +337,7 @@ describe('ModelConfigPage — initial load races', () => {
 		await flushPromises();
 		expect(w.vm.primaryState).toBe('notSet');
 		expect(w.find('[data-testid="primary-current"]').exists()).toBe(false);
-		expect(w.find('[data-testid="btn-primary-select"]').exists()).toBe(true);
+		expect(w.find('[data-testid="btn-primary"]').exists()).toBe(true);
 		expect(w.text()).toContain('modelConfig.primary.notSetWarning');
 		w.unmount();
 	});
@@ -508,7 +508,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		const w = makeWrapper();
 		await flushPromises();
 		expect(w.find('.picker-dialog').exists()).toBe(false);
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		const dialog = w.find('.picker-dialog');
 		expect(dialog.exists()).toBe(true);
@@ -517,7 +517,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		w.unmount();
 	});
 
-	test('Select primary button (notSet branch) opens the same picker dialog', async () => {
+	test('Configure button (notSet branch) opens the same picker dialog', async () => {
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.list') return asProfiles([
 				{ provider: 'groq', type: 'api_key', keyPreview: 'g…X', profileId: 'groq:default' },
@@ -529,7 +529,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		});
 		const w = makeWrapper();
 		await flushPromises();
-		await w.find('[data-testid="btn-primary-select"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		expect(w.find('.picker-dialog').exists()).toBe(true);
 		w.unmount();
@@ -677,7 +677,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		primed();
 		const w = makeWrapper();
 		await flushPromises();
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		await w.find('.pk-fire-picked').trigger('click');
 		await flushPromises();
@@ -692,7 +692,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		primed();
 		const w = makeWrapper();
 		await flushPromises();
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		await w.find('.pk-rpc').trigger('click');
 		await flushPromises();
@@ -706,7 +706,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		primed();
 		const w = makeWrapper();
 		await flushPromises();
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		mockClawConnGet.mockReturnValue(undefined);
 		const setPrimary = w.findComponent({ name: 'PrimaryModelPickerDialog' }).props('setPrimary');
@@ -727,7 +727,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		await flushPromises();
 		await w.find('[data-testid="btn-add-provider"]').trigger('click');
 		await w.vm.$nextTick();
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		clawsStoreState.byId.claw2 = { id: 'claw2', name: 'Other', online: true, dcReady: true };
 		w.vm.$route.params.clawId = 'claw2';
@@ -802,7 +802,7 @@ describe('ModelConfigPage — add-provider + primary-picker wiring', () => {
 		primed();
 		const w = makeWrapper();
 		await flushPromises();
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		clawsStoreState.byId.claw2 = { id: 'claw2', name: 'Other', online: true, dcReady: true };
 		w.vm.$route.params.clawId = 'claw2';
@@ -840,7 +840,7 @@ describe('ModelConfigPage — listAvailable (picker source) + catalog.hasCred (a
 		});
 		const w = makeWrapper();
 		await flushPromises();
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		const picker = w.find('.picker-dialog');
 		expect(splitAttr(picker.attributes('data-usable'))).toEqual(['groq', 'volcengine-plan']);
@@ -883,7 +883,7 @@ describe('ModelConfigPage — listAvailable (picker source) + catalog.hasCred (a
 		await flushPromises();
 		expect(w.vm.available).toBeNull();
 		expect(w.vm.primaryState).toBe('effective');
-		await w.find('[data-testid="btn-primary-change"]').trigger('click');
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		expect(w.find('.picker-dialog').attributes('data-usable')).toBe('');
 		w.unmount();
@@ -904,8 +904,10 @@ describe('ModelConfigPage — listAvailable (picker source) + catalog.hasCred (a
 		await flushPromises();
 		expect(w.vm.available).toEqual({});
 		expect(w.vm.primaryState).toBe('invalid');
-		// invalid 态走 selectButton（非 changeButton）
-		await w.find('[data-testid="btn-primary-select"]').trigger('click');
+		// invalid 态：统一行显示失效的模型名（信息增益）+ 警告并存；按钮走"更换"（btn-primary）
+		expect(w.find('[data-testid="primary-current"]').exists()).toBe(true);
+		expect(w.find('[data-testid="primary-warning"]').exists()).toBe(true);
+		await w.find('[data-testid="btn-primary"]').trigger('click');
 		await w.vm.$nextTick();
 		expect(w.find('.picker-dialog').attributes('data-usable')).toBe('');
 		w.unmount();
@@ -1647,7 +1649,7 @@ describe('ModelConfigPage — write vs in-flight loadAll race (__writeEpoch)', (
 		await flushPromises();
 		expect(w.vm.primary).toBe('groq/old-model');
 
-		w.vm.onChangePrimary();
+		w.vm.onOpenPrimaryPicker();
 
 		const staleResolvers = [];
 		mockRequest.mockImplementation((method) => new Promise((resolve) => {
@@ -1721,7 +1723,7 @@ describe('ModelConfigPage — primary switch "success is authoritative" (no re-r
 		await flushPromises();
 		expect(w.vm.primary).toBe('groq/old-model');
 
-		w.vm.onChangePrimary();
+		w.vm.onOpenPrimaryPicker();
 		await w.vm.$nextTick();
 
 		mockRequest.mockClear();
@@ -1755,7 +1757,7 @@ describe('ModelConfigPage — primary switch "success is authoritative" (no re-r
 		});
 		const w = makeWrapper();
 		await flushPromises();
-		w.vm.onChangePrimary();
+		w.vm.onOpenPrimaryPicker();
 		await w.vm.$nextTick();
 		await w.vm.onPrimaryPicked({ primary: 'minimax-portal/MiniMax-M2.7-highspeed' });
 		await flushPromises();
@@ -1859,7 +1861,7 @@ describe('ModelConfigPage — primary switch "success is authoritative" (no re-r
 		const stalePromise = w.vm.refreshAfterWrite(); // 默认路径，epoch+1，RPC 在飞
 		await Promise.resolve();
 
-		w.vm.onChangePrimary();
+		w.vm.onOpenPrimaryPicker();
 		await w.vm.$nextTick();
 		mockRequest.mockImplementation(async (method) => {
 			if (method === 'coclaw.providerAuth.list') return asProfiles(profiles);

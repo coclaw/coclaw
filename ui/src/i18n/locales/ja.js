@@ -493,7 +493,7 @@ export const jaMessages = {
 			notSetWarning: 'プライマリモデル未設定。会話できません。',
 			invalidWarning: 'メインモデルは利用できなくなりました。新しいものを選んでください。',
 			changeButton: '変更',
-			selectButton: 'メインを選択',
+			selectButton: '設定',
 			pickerTitle: 'メインモデルを選択',
 			pickerSearchPlaceholder: 'モデルを検索…',
 			pickerEmpty: '利用可能なモデルがありません。まずは少なくとも 1 つのプロバイダに API キーを追加してください。',

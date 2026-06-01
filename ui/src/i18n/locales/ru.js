@@ -493,7 +493,7 @@ export const ruMessages = {
 			notSetWarning: 'Основная модель не задана — агент не может общаться.',
 			invalidWarning: 'Основная модель больше не доступна. Пожалуйста, выберите новую.',
 			changeButton: 'Изменить',
-			selectButton: 'Выбрать основную',
+			selectButton: 'Настроить',
 			pickerTitle: 'Выбор основной модели',
 			pickerSearchPlaceholder: 'Поиск моделей…',
 			pickerEmpty: 'Нет доступных моделей. Сначала добавьте ключ API хотя бы для одного поставщика.',

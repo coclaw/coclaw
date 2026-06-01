@@ -493,7 +493,7 @@ export const frMessages = {
 			notSetWarning: 'Aucun modèle principal — l’agent ne peut pas discuter.',
 			invalidWarning: 'Le modèle principal n\'est plus disponible. Veuillez en choisir un nouveau.',
 			changeButton: 'Modifier',
-			selectButton: 'Choisir le principal',
+			selectButton: 'Configurer',
 			pickerTitle: 'Choisir le modèle principal',
 			pickerSearchPlaceholder: 'Rechercher des modèles…',
 			pickerEmpty: 'Aucun modèle disponible. Ajoutez d\'abord une clé API pour au moins un fournisseur.',

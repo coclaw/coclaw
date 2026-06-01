@@ -493,7 +493,7 @@ export const esMessages = {
 			notSetWarning: 'Sin modelo principal — el agente no puede chatear.',
 			invalidWarning: 'El modelo principal ya no está disponible. Elige uno nuevo.',
 			changeButton: 'Cambiar',
-			selectButton: 'Seleccionar principal',
+			selectButton: 'Configurar',
 			pickerTitle: 'Seleccionar modelo principal',
 			pickerSearchPlaceholder: 'Buscar modelos…',
 			pickerEmpty: 'No hay modelos disponibles. Primero añade una clave de API para al menos un proveedor.',

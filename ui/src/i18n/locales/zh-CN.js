@@ -493,7 +493,7 @@ export const zhCNMessages = {
 			notSetWarning: '未配主模型，无法对话',
 			invalidWarning: '主模型已失效，请重新选择',
 			changeButton: '更换',
-			selectButton: '选择主模型',
+			selectButton: '配置',
 			pickerTitle: '选择主模型',
 			pickerSearchPlaceholder: '搜索模型…',
 			pickerEmpty: '暂无可选模型，请先为至少一个模型服务商配置 API key',

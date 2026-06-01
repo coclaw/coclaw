@@ -493,7 +493,7 @@ export const viMessages = {
 			notSetWarning: 'Chưa có mô hình chính — agent không thể trò chuyện.',
 			invalidWarning: 'Mô hình chính không còn khả dụng. Vui lòng chọn mô hình mới.',
 			changeButton: 'Đổi',
-			selectButton: 'Chọn mô hình chính',
+			selectButton: 'Cấu hình',
 			pickerTitle: 'Chọn mô hình chính',
 			pickerSearchPlaceholder: 'Tìm mô hình…',
 			pickerEmpty: 'Không có mô hình nào khả dụng. Hãy thêm khóa API cho ít nhất một nhà cung cấp trước.',
