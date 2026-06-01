@@ -13,21 +13,25 @@
 		<template v-else-if="phase === 'pending'">
 			<!-- 授权码：inline 等宽小块 + icon 复制按钮（样式同用户信息复制登录名）；
 			     码已嵌进授权链接（如 minimax-portal）时不再单列，用户直接点链接即可（见 showUserCode） -->
-			<div v-if="showUserCode" class="flex items-center gap-2">
-				<span class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.codeLabel') }}</span>
-				<code data-testid="oauth-user-code" class="select-all rounded bg-elevated px-2 py-0.5 font-mono text-base tracking-wider">{{ userCode }}</code>
+			<div v-if="showUserCode" class="flex items-center">
+				<span class="text-sm text-muted">{{ $t('modelConfig.providerAuth.oauth.codeLabel') }}</span>
+				<!-- text-base + 高亮已够显著，去掉背景与左右 padding 省横向空间（利于移动端单行）；
+				     行内不用 gap，改在各元素上用 ms-* 精确控间距（复制按钮 cc-icon-btn 自带内边距） -->
+				<code data-testid="oauth-user-code" class="ms-2 select-all text-base text-highlighted">{{ userCode }}</code>
+				<!-- 复制后隐去按钮、让位给“已复制”文案，避免按钮+文案双重反馈；复位后按钮恢复 -->
 				<UButton
+					v-if="!codeCopied"
 					data-testid="oauth-copy-code"
-					class="cc-icon-btn"
+					class="cc-icon-btn ms-0.5"
 					variant="ghost"
 					color="primary"
 					size="md"
-					:icon="codeCopied ? 'i-lucide-check' : 'i-lucide-copy'"
+					icon="i-lucide-copy"
 					:aria-label="$t('modelConfig.providerAuth.oauth.copy')"
 					@click="onCopyCode"
 				/>
-				<!-- 复制成功就地反馈“已复制”，约 3s 后自动消失（不弹 toast） -->
-				<span v-if="codeCopied" data-testid="oauth-code-copied" class="text-xs text-success">
+				<!-- 复制成功就地反馈“已复制”，约 3s 后自动复位（不弹 toast） -->
+				<span v-else data-testid="oauth-code-copied" class="ms-2 text-sm text-success">
 					{{ $t('modelConfig.providerAuth.oauth.copied') }}
 				</span>
 			</div>
@@ -49,17 +53,23 @@
 
 			<!-- rawText 兜底：仅在结构化链接抠不到、且有原文时渲染（交用户自行阅读授权指引） -->
 			<div v-if="showRawText" class="flex flex-col gap-1">
-				<span class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.rawTextLabel') }}</span>
-				<pre data-testid="oauth-raw-text" class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated px-2 py-1 text-xs">{{ rawText }}</pre>
+				<span class="text-sm text-muted">{{ $t('modelConfig.providerAuth.oauth.rawTextLabel') }}</span>
+				<pre data-testid="oauth-raw-text" class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated px-2 py-1 text-sm">{{ rawText }}</pre>
 			</div>
 
-			<p class="text-xs text-muted">{{ $t('modelConfig.providerAuth.oauth.waiting') }}</p>
+			<!-- 等待轮询：转圈 spinner 强化“仍在进行中”的暗示；mt-1 与上方链接再拉开一点间距 -->
+			<p class="mt-1 flex items-center gap-1.5 text-sm text-muted">
+				<UIcon name="i-lucide-loader-2" class="size-4 shrink-0 animate-spin" />
+				<span>{{ $t('modelConfig.providerAuth.oauth.waiting') }}</span>
+			</p>
 		</template>
 
 		<!-- error：终态失败（含 phase-1 前单帧错误）。仅展示映射文案；
 		     重试 / 返回 动作由父对话框的 footer 承载（见下方 update:phase + 公开方法 start/onBack） -->
 		<template v-else-if="phase === 'error'">
 			<p data-testid="oauth-error" class="text-sm text-error">{{ $t(errorKey) }}</p>
+			<!-- 后端/通道原始 message：muted 小字、原文不翻译，便于用户截屏反馈定位（无则不渲染） -->
+			<p v-if="errorDetail" data-testid="oauth-error-detail" class="break-all text-xs text-muted">{{ errorDetail }}</p>
 		</template>
 	</div>
 </template>
@@ -138,6 +148,8 @@ export default {
 			rawText: '',
 			/** 终态失败的 i18n key（'' 表示无错误） */
 			errorKey: '',
+			/** 终态失败时后端/通道返回的原始 message（原文展示、不翻译，便于用户截屏反馈定位；'' 表示无） */
+			errorDetail: '',
 			/** 授权码刚复制：就地显示“已复制”，约 3s 后由定时器复位（非 toast） */
 			codeCopied: false,
 		};
@@ -211,6 +223,7 @@ export default {
 			this.userCode = '';
 			this.rawText = '';
 			this.errorKey = '';
+			this.errorDetail = '';
 			const token = (this.__runToken || 0) + 1;
 			this.__runToken = token;
 			if (!this.loginOauth) {
@@ -250,6 +263,8 @@ export default {
 						return;
 					}
 					this.errorKey = this.__errorKeyFor(code);
+					// 附后端/通道原始 message（原文、不翻译）供用户截屏反馈定位；无则不显示
+					this.errorDetail = (err && typeof err === 'object' && typeof err.message === 'string') ? err.message : '';
 					this.phase = 'error';
 					// 失败以常驻 inline error + footer 重试/返回 呈现，不再叠加 toast（避免重复反馈）。
 					// 有意偏离 ui/CLAUDE.md “错误始终 notify”：此处常驻提示比一次性 toast 更合适

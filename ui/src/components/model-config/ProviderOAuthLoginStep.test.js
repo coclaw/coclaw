@@ -52,7 +52,10 @@ function makeWrapper(props = {}) {
 			...props,
 		},
 		global: {
-			stubs: { UButton: UButtonStub },
+			stubs: {
+				UButton: UButtonStub,
+				UIcon: { props: ['name'], template: '<i :data-icon="name" />' },
+			},
 			mocks: {
 				$t: (key, params) => params ? `${key}|${JSON.stringify(params)}` : key,
 			},
@@ -159,6 +162,8 @@ describe('ProviderOAuthLoginStep — autostart + phase-1', () => {
 		expect(writeClipboardTextMock).toHaveBeenCalledWith('ABCD-1234');
 		expect(w.vm.codeCopied).toBe(true);
 		expect(w.find('[data-testid="oauth-code-copied"]').exists()).toBe(true);
+		// 复制后按钮隐去，只留“已复制”文案（避免按钮+文案双重反馈）
+		expect(w.find('[data-testid="oauth-copy-code"]').exists()).toBe(false);
 		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
 	});
@@ -179,6 +184,8 @@ describe('ProviderOAuthLoginStep — autostart + phase-1', () => {
 			await w.vm.$nextTick();
 			expect(w.vm.codeCopied).toBe(false);
 			expect(w.find('[data-testid="oauth-code-copied"]').exists()).toBe(false);
+			// 文案消失后复制按钮恢复
+			expect(w.find('[data-testid="oauth-copy-code"]').exists()).toBe(true);
 			w.unmount();
 		}
 		finally {
@@ -208,6 +215,17 @@ describe('ProviderOAuthLoginStep — autostart + phase-1', () => {
 		expect(w.find('[data-testid="oauth-user-code"]').exists()).toBe(false);
 		expect(w.find('[data-testid="oauth-copy-code"]').exists()).toBe(false);
 		expect(w.find('[data-testid="oauth-verification-link"]').exists()).toBe(true);
+		w.unmount();
+	});
+
+	test('pending shows a spinning loader next to the waiting hint', async () => {
+		const ctl = makeLogin();
+		const w = makeWrapper({ loginOauth: ctl.loginOauth });
+		ctl.onAccepted(accepted());
+		await w.vm.$nextTick();
+		const spinner = w.find('[data-icon="i-lucide-loader-2"]');
+		expect(spinner.exists()).toBe(true);
+		expect(spinner.classes()).toContain('animate-spin');
 		w.unmount();
 	});
 });
@@ -278,7 +296,7 @@ describe('ProviderOAuthLoginStep — phase-2 terminal', () => {
 		w.unmount();
 	});
 
-	test('error without object code → generic failed key', async () => {
+	test('error without object code → generic failed key; no detail line (no usable message)', async () => {
 		const ctl = makeLogin();
 		const w = makeWrapper({ loginOauth: ctl.loginOauth });
 		ctl.onAccepted(accepted());
@@ -286,6 +304,23 @@ describe('ProviderOAuthLoginStep — phase-2 terminal', () => {
 		ctl.reject('string error');
 		await flushPromises();
 		expect(w.find('[data-testid="oauth-error"]').text()).toBe('modelConfig.providerAuth.oauth.failed');
+		// 非对象 reject 无 message → 不渲染原始详情行
+		expect(w.find('[data-testid="oauth-error-detail"]').exists()).toBe(false);
+		w.unmount();
+	});
+
+	test('failure renders the raw error message as a muted detail line (no translation)', async () => {
+		const ctl = makeLogin();
+		const w = makeWrapper({ loginOauth: ctl.loginOauth });
+		ctl.onAccepted(accepted());
+		await w.vm.$nextTick();
+		const raw = 'device-code login for github-copilot returned no credentials';
+		ctl.reject(Object.assign(new Error(raw), { code: 'OAUTH_FAILED' }));
+		await flushPromises();
+		const detail = w.find('[data-testid="oauth-error-detail"]');
+		expect(detail.exists()).toBe(true);
+		// 原始 message 原文展示、不经 $t 翻译（供用户截屏反馈定位）
+		expect(detail.text()).toBe(raw);
 		w.unmount();
 	});
 
@@ -423,6 +458,8 @@ describe('ProviderOAuthLoginStep — retry + missing channel', () => {
 		const w = makeWrapper({ loginOauth: null });
 		await w.vm.$nextTick();
 		expect(w.find('[data-testid="oauth-error"]').text()).toBe('modelConfig.common.connError');
+		// 通道缺失非后端报错，无原始 message → 不渲染详情行
+		expect(w.find('[data-testid="oauth-error-detail"]').exists()).toBe(false);
 		expect(mockNotify.error).not.toHaveBeenCalled();
 		w.unmount();
 	});
