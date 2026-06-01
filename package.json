@@ -47,6 +47,9 @@
 			"@prisma/client",
 			"@prisma/engines",
 			"prisma"
-		]
+		],
+		"overrides": {
+			"openclaw": "link:./tools/openclaw-peer-stub"
+		}
 	}
 }

@@ -1,0 +1,6 @@
+# 这是 pnpm peer 占位空壳（见 README.md）。只跟踪两个真文件；
+# pnpm/脚本若在此目录生成 openclaw 软链或 node_modules，一律不进 git。
+/*
+!.gitignore
+!package.json
+!README.md

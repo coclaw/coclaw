@@ -1,0 +1,7 @@
+{
+  "name": "openclaw",
+  "version": "9999.0.0",
+  "private": true,
+  "type": "module",
+  "description": "pnpm peer 占位包，运行时永不加载。见同目录 README.md。"
+}

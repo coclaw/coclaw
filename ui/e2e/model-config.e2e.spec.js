@@ -100,7 +100,7 @@ test('模型配置 S1：首次接入——橙条引导→配 key→选主模型�
 	await page.getByTestId('add-provider-submit').click();
 	await expect(page.getByTestId('add-provider-dialog')).not.toBeVisible({ timeout: 15_000 });
 	// 凭据行出现
-	await expect(page.getByText('Groq', { exact: true })).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByText('groq', { exact: true })).toBeVisible({ timeout: 10_000 });
 
 	// 等 add 触发的外层 dashboard 重拉落定后再 pick：否则 add(primary=null) 的飞行刷新
 	// 会被 pick 的 loadDashboard(force) 去重命中，外层卡在陈旧的"未配主模型"
@@ -163,21 +163,21 @@ test('模型配置 S2：撤销主模型载体 provider——强提示分支→�
 	await expect(firstRemove).toBeEnabled({ timeout: 30_000 });
 	await firstRemove.click();
 
-	// 强提示分支：确认按钮文案 = "Remove anyway"，正文含"runs on Groq" + 当前 primary 串
+	// 强提示分支：确认按钮文案 = "Remove anyway"，正文含"runs on groq" + 当前 primary 串
 	const confirm = page.getByTestId('btn-remove-confirm');
 	await expect(confirm).toBeVisible({ timeout: 10_000 });
 	// 强提示分支：确认按钮是"仍然撤销"变体 + 正文出现强提示文案（含当前 primary 串）
 	await expect(confirm).toHaveText(await tr(page, 'modelConfig.providerAuth.remove.confirmButtonStrong'));
 	const dialog = page.getByRole('dialog');
 	await expect(dialog).toContainText(
-		await tr(page, 'modelConfig.providerAuth.remove.descAffectPrimary', { primary: GROQ_PRIMARY, provider: 'Groq' })
+		await tr(page, 'modelConfig.providerAuth.remove.descAffectPrimary', { primary: GROQ_PRIMARY, provider: 'groq' })
 	);
 	await confirm.click();
 	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
 
 	// 子页：groq 行消失、anthropic 保留、主模型区切"失效"
-	await expect(page.getByText('Groq', { exact: true })).toHaveCount(0, { timeout: 15_000 });
-	await expect(page.getByText('Anthropic Claude')).toBeVisible();
+	await expect(page.getByText('groq', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+	await expect(page.getByText('anthropic', { exact: true })).toBeVisible();
 	await expect(page.getByTestId('primary-warning')).toBeVisible({ timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toContainText(await tr(page, 'modelConfig.primary.invalidWarning'));
 
@@ -395,10 +395,10 @@ test('模型配置 S6：内联 key 列出可撤（强提示）、env 行只读�
 	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
 
 	// 内联 groq 行消失、主模型切失效；env anthropic 行仍在（不可撤）
-	await expect(page.getByText('Groq', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+	await expect(page.getByText('groq', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toBeVisible({ timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toContainText(await tr(page, 'modelConfig.primary.invalidWarning'));
-	await expect(page.getByText('Anthropic Claude')).toBeVisible();
+	await expect(page.getByText('anthropic', { exact: true })).toBeVisible();
 });
 
 // ================================================================

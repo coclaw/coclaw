@@ -99,6 +99,41 @@ verify_install() {
 	openclaw gateway status
 }
 
+# 解析本机 openclaw 包根目录。子 shell 里调用，失败 return 1（不能用 exit——
+# 命令替换的 exit 只杀子 shell，主脚本会带空值继续）。
+resolve_openclaw_root() {
+	local bin root
+	bin="$(command -v openclaw 2>/dev/null || true)"
+	if [[ -z "$bin" ]]; then
+		echo "[ERROR] 未找到 openclaw CLI，无法为 link-stage 建 node_modules/openclaw 软链" >&2
+		echo "[HINT] 确认 openclaw 已安装且在 PATH 上" >&2
+		return 1
+	fi
+	# openclaw.mjs 位于包根，bin 多为指向它的软链；逐层解析后取其所在目录
+	root="$(dirname "$(readlink -f "$bin")")"
+	if [[ "$(node -p "require('$root/package.json').name" 2>/dev/null)" != "openclaw" ]]; then
+		echo "[ERROR] openclaw 包根解析异常：$root 非 openclaw 包目录" >&2
+		echo "[HINT] openclaw CLI 入口布局可能变更，请检查 $bin 的真实指向" >&2
+		return 1
+	fi
+	echo "$root"
+}
+
+# 在 stage 的 node_modules 下建 openclaw → host 包根软链，供 runtime 原生解析
+# import('openclaw/plugin-sdk/*')。**必须在 `openclaw plugins install` 之后调用**：
+# install 期安全扫描拒绝 node_modules 下任何外指软链（见 link.sh 头注），而 gateway
+# 重启 / 加载 plugins.load.paths 插件时**不再重扫**，故 install 后补链可长期存活。
+# --link 安装器自身不建此链（dryRun 探针跳过建链的 afterInstall），故由我们补。idempotent。
+ensure_openclaw_link() {
+	local oc_root
+	if ! oc_root="$(resolve_openclaw_root)"; then
+		exit 1
+	fi
+	rm -rf "$STAGE_DIR/node_modules/openclaw"
+	ln -s "$oc_root" "$STAGE_DIR/node_modules/openclaw"
+	echo "[STEP] 建 node_modules/openclaw → $oc_root（runtime 解析 plugin-sdk）"
+}
+
 # 构建扁平依赖 stage（pnpm deploy）+ 把 src/ 换成回指源目录的 symlink。
 # 被 link.sh 与 worktree-gateway.sh 共用。详见 link.sh 顶部注释与
 # docs/local-plugin-update-sop.md（为何只软链 src/、为何要扁平依赖）。
@@ -114,6 +149,12 @@ build_stage() {
 	if [[ -L "$self_ref" ]]; then
 		rm -f "$self_ref"
 	fi
+
+	# 根 pnpm.overrides 把 openclaw peer 重定向到 tools/openclaw-peer-stub 空壳（摁锁膨胀），
+	# pnpm deploy 据此在 stage 建一条 node_modules/openclaw → 空壳的外指软链——它既会被下面
+	# 的 leak 自检判为外指、也会被 install 安全扫描拒（指向非 host openclaw）。直接删；runtime
+	# 真要用的 openclaw 链由 ensure_openclaw_link 在 install 之后另建。
+	rm -rf "$STAGE_DIR/node_modules/openclaw"
 
 	# 把 src/ 换成回指真源目录的 symlink，保留“改代码 → restart gateway”热更新。
 	#

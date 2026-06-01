@@ -111,6 +111,9 @@ cmd_up() {
 	build_stage
 	echo "[STEP] 装 stage 到隔离 profile：$PROFILE"
 	openclaw --profile "$PROFILE" plugins install --link --dangerously-force-unsafe-install "$STAGE_DIR"
+	# install 期安全扫描已过，补 node_modules/openclaw 软链供 runtime 解析 plugin-sdk
+	# （reload 不重建 stage，此链跨 reload 存活）。
+	ensure_openclaw_link
 	local port; port="$(__pick_port)"
 	mkdir -p "$STATE_DIR"; echo "$port" > "$PORT_FILE"
 	echo "[STEP] 起隔离网关：--profile $PROFILE --port $port"

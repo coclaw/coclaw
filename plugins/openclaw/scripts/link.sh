@@ -35,8 +35,28 @@ build_stage
 echo "[STEP] openclaw plugins install --link --dangerously-force-unsafe-install $STAGE_DIR"
 openclaw plugins install --link --dangerously-force-unsafe-install "$STAGE_DIR"
 
+# install 期安全扫描已过，补 node_modules/openclaw 软链供 runtime 解析 plugin-sdk
+# （install 时不能存在，重启加载时不再重扫，故此时补、可长期存活）。
+ensure_openclaw_link
+
+# install 触发的 chokidar 自动重启可能在建链前就加载了插件、缓存了 broken 的
+# import('openclaw/...') 解析；建链后显式再重启一次，确保网关带软链重新加载。
+echo "[STEP] openclaw gateway restart（建链后重载，确保 plugin-sdk 可解析）"
+openclaw gateway restart
+
 wait_gateway_restart
 verify_install
+
+# 冒烟：调一个会 lazy import plugin-sdk 的 RPC，确认 openclaw 软链真能解析
+# （doctor/status 不碰插件 RPC，这类「插件加载了但 plugin-sdk 解析坏」会静默漏过）。
+echo ""
+echo "[VERIFY] coclaw.providerAuth.list（plugin-sdk 解析冒烟）"
+if openclaw gateway call coclaw.providerAuth.list --json >/dev/null 2>&1; then
+	echo "[OK] plugin-sdk 可解析"
+else
+	echo "[ERROR] coclaw.providerAuth.list 调用失败——openclaw 软链可能未生效，看 $STAGE_DIR/node_modules/openclaw" >&2
+	exit 1
+fi
 
 echo ""
 echo "[DONE] 已切换到 link 开发模式（stage: $STAGE_DIR）"
