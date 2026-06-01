@@ -419,8 +419,12 @@ export default {
 		filteredProviders() {
 			const q = this.searchText.trim().toLowerCase();
 			if (!q) return this.availableProviders;
+			// hasOauth 的项把字面量 "oauth"（列表里那枚 oauth 徽章的文字）也当可搜文本，
+			// 否则搜 "oauth" 命中为空，与界面上明明贴着的 oauth 徽章割裂
 			return this.availableProviders.filter(p =>
-				p.id.toLowerCase().includes(q) || p.displayName.toLowerCase().includes(q)
+				p.id.toLowerCase().includes(q) ||
+				p.displayName.toLowerCase().includes(q) ||
+				(p.hasOauth && 'oauth'.includes(q))
 			);
 		},
 		popularList() {

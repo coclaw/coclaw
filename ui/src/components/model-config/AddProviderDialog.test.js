@@ -203,6 +203,17 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		expect(w.find('[data-testid="add-provider-empty"]').exists()).toBe(true);
 	});
 
+	test('search "oauth" surfaces oauth-capable providers, hides api-key-only ones', async () => {
+		const w = makeWrapper({ catalog: [
+			{ provider: 'openai-codex', authMethods: ['oauth-device-code'], hasCred: false },
+			{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+		] });
+		await w.find('[data-testid="add-provider-search"]').setValue('oauth');
+		// "oauth" 是徽章字面量、不进 id/displayName，但 hasOauth 项应被当作可搜文本命中
+		expect(w.find('[data-testid="add-provider-item-openai-codex"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
+	});
+
 	test('clicking a provider transitions to Step 2 (configure)', async () => {
 		const w = makeWrapper();
 		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
