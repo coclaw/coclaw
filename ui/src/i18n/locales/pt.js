@@ -502,7 +502,7 @@ export const ptMessages = {
 			title: 'Chaves de API',
 			addButton: 'Adicionar',
 			removeButton: 'Remover',
-			emptyState: 'Nenhum provedor configurado ainda. Adicione uma chave de API para começar.',
+			emptyState: 'Nenhum provedor configurado ainda. Adicione um para começar.',
 			loadFailed: 'Falha ao carregar. Tente novamente.',
 			removeFailed: 'Falha ao remover {provider}.',
 			source: {
@@ -537,9 +537,9 @@ export const ptMessages = {
 				back: 'Voltar',
 			},
 			oauth: {
-				starting: 'Solicitando um código de autorização…',
-				instructions: 'Abra o link abaixo para autorizar.',
-				codeLabel: 'Código de autorização',
+				starting: 'Solicitando autorização…',
+				instructions: 'Abra o link abaixo para autorizar:',
+				codeLabel: 'Código',
 				copy: 'Copiar',
 				copied: 'Copiado',
 				rawTextLabel: 'Instruções de autorização',
@@ -547,7 +547,7 @@ export const ptMessages = {
 				failed: 'A autorização falhou. Tente novamente.',
 				errors: {
 					OAUTH_FAILED: 'A autorização falhou. Tente novamente.',
-					OAUTH_TIMEOUT: 'O código de autorização expirou. Comece de novo.',
+					OAUTH_TIMEOUT: 'O tempo de autorização esgotou. Comece de novo.',
 					IO_FAILED: 'Autorizado, mas falha ao salvar a credencial. Tente novamente.',
 					NOT_FOUND: 'Este provedor não suporta autorização da conta.',
 				},

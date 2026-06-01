@@ -502,7 +502,7 @@ export const frMessages = {
 			title: 'Clés API',
 			addButton: 'Ajouter',
 			removeButton: 'Supprimer',
-			emptyState: 'Aucun fournisseur configuré pour l\'instant. Ajoutez une clé API pour commencer.',
+			emptyState: 'Aucun fournisseur configuré pour l\'instant. Ajoutez-en un pour commencer.',
 			loadFailed: 'Échec du chargement. Veuillez réessayer.',
 			removeFailed: 'Échec de la suppression de {provider}.',
 			source: {
@@ -537,9 +537,9 @@ export const frMessages = {
 				back: 'Retour',
 			},
 			oauth: {
-				starting: 'Demande d’un code d’autorisation…',
-				instructions: 'Ouvrez le lien ci-dessous pour autoriser.',
-				codeLabel: 'Code d’autorisation',
+				starting: 'Demande d’autorisation…',
+				instructions: 'Ouvrez le lien ci-dessous pour autoriser :',
+				codeLabel: 'Code',
 				copy: 'Copier',
 				copied: 'Copié',
 				rawTextLabel: 'Instructions d’autorisation',
@@ -547,7 +547,7 @@ export const frMessages = {
 				failed: 'L’autorisation a échoué. Veuillez réessayer.',
 				errors: {
 					OAUTH_FAILED: 'L’autorisation a échoué. Veuillez réessayer.',
-					OAUTH_TIMEOUT: 'Le code d’autorisation a expiré. Veuillez recommencer.',
+					OAUTH_TIMEOUT: 'Délai d’autorisation dépassé. Veuillez recommencer.',
 					IO_FAILED: 'Autorisé, mais l’enregistrement des identifiants a échoué. Veuillez réessayer.',
 					NOT_FOUND: 'Ce fournisseur ne prend pas en charge l’autorisation du compte.',
 				},

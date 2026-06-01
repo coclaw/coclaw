@@ -502,7 +502,7 @@ export const zhCNMessages = {
 			title: 'API 密钥',
 			addButton: '添加',
 			removeButton: '撤销',
-			emptyState: '还没配任何模型服务商，先添加一个 API key',
+			emptyState: '还没配任何模型服务商，先添加一个',
 			loadFailed: '加载失败，请重试',
 			removeFailed: '撤销 {provider} 失败',
 			source: {
@@ -537,8 +537,8 @@ export const zhCNMessages = {
 				back: '返回',
 			},
 			oauth: {
-				starting: '正在获取授权码…',
-				instructions: '点击下方链接进行授权。',
+				starting: '正在请求授权…',
+				instructions: '点击下方链接进行授权：',
 				codeLabel: '授权码',
 				copy: '复制',
 				copied: '已复制',
@@ -547,7 +547,7 @@ export const zhCNMessages = {
 				failed: '授权失败，请重试。',
 				errors: {
 					OAUTH_FAILED: '授权失败，请重试。',
-					OAUTH_TIMEOUT: '授权码已过期，请重新开始。',
+					OAUTH_TIMEOUT: '授权已超时，请重新开始。',
 					IO_FAILED: '已授权，但保存凭据失败，请重试。',
 					NOT_FOUND: '该 provider 不支持账号授权。',
 				},

@@ -502,7 +502,7 @@ export const zhTWMessages = {
 			title: 'API 金鑰',
 			addButton: '新增',
 			removeButton: '撤銷',
-			emptyState: '尚未設定任何模型服務商，先新增一個 API key',
+			emptyState: '尚未設定任何模型服務商，先新增一個',
 			loadFailed: '載入失敗，請重試',
 			removeFailed: '撤銷 {provider} 失敗',
 			source: {
@@ -537,8 +537,8 @@ export const zhTWMessages = {
 				back: '返回',
 			},
 			oauth: {
-				starting: '正在取得授權碼…',
-				instructions: '點擊下方連結進行授權。',
+				starting: '正在請求授權…',
+				instructions: '點擊下方連結進行授權：',
 				codeLabel: '授權碼',
 				copy: '複製',
 				copied: '已複製',
@@ -547,7 +547,7 @@ export const zhTWMessages = {
 				failed: '授權失敗，請重試。',
 				errors: {
 					OAUTH_FAILED: '授權失敗，請重試。',
-					OAUTH_TIMEOUT: '授權碼已過期，請重新開始。',
+					OAUTH_TIMEOUT: '授權已逾時，請重新開始。',
 					IO_FAILED: '已授權，但儲存憑證失敗，請重試。',
 					NOT_FOUND: '此 provider 不支援帳號授權。',
 				},

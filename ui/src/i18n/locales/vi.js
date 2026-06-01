@@ -502,7 +502,7 @@ export const viMessages = {
 			title: 'Khóa API',
 			addButton: 'Thêm',
 			removeButton: 'Gỡ',
-			emptyState: 'Chưa có nhà cung cấp nào. Thêm khóa API để bắt đầu.',
+			emptyState: 'Chưa có nhà cung cấp nào. Thêm nhà cung cấp để bắt đầu.',
 			loadFailed: 'Tải thất bại. Vui lòng thử lại.',
 			removeFailed: 'Gỡ {provider} thất bại.',
 			source: {
@@ -537,8 +537,8 @@ export const viMessages = {
 				back: 'Quay lại',
 			},
 			oauth: {
-				starting: 'Đang yêu cầu mã ủy quyền…',
-				instructions: 'Mở liên kết bên dưới để cấp quyền.',
+				starting: 'Đang yêu cầu ủy quyền…',
+				instructions: 'Mở liên kết bên dưới để cấp quyền:',
 				codeLabel: 'Mã ủy quyền',
 				copy: 'Sao chép',
 				copied: 'Đã sao chép',
@@ -547,7 +547,7 @@ export const viMessages = {
 				failed: 'Cấp quyền thất bại. Vui lòng thử lại.',
 				errors: {
 					OAUTH_FAILED: 'Cấp quyền thất bại. Vui lòng thử lại.',
-					OAUTH_TIMEOUT: 'Mã ủy quyền đã hết hạn. Vui lòng bắt đầu lại.',
+					OAUTH_TIMEOUT: 'Đã hết thời gian ủy quyền. Vui lòng bắt đầu lại.',
 					IO_FAILED: 'Đã cấp quyền, nhưng lưu thông tin xác thực thất bại. Vui lòng thử lại.',
 					NOT_FOUND: 'Nhà cung cấp này không hỗ trợ cấp quyền bằng tài khoản.',
 				},

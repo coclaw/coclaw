@@ -502,7 +502,7 @@ export const deMessages = {
 			title: 'API-Schlüssel',
 			addButton: 'Hinzufügen',
 			removeButton: 'Entfernen',
-			emptyState: 'Noch kein Provider konfiguriert. Füge einen API-Schlüssel hinzu, um zu beginnen.',
+			emptyState: 'Noch kein Provider konfiguriert. Füge einen hinzu, um zu beginnen.',
 			loadFailed: 'Laden fehlgeschlagen. Bitte erneut versuchen.',
 			removeFailed: 'Entfernen von {provider} fehlgeschlagen.',
 			source: {
@@ -537,9 +537,9 @@ export const deMessages = {
 				back: 'Zurück',
 			},
 			oauth: {
-				starting: 'Autorisierungscode wird angefordert …',
-				instructions: 'Öffne den Link unten, um die Autorisierung durchzuführen.',
-				codeLabel: 'Autorisierungscode',
+				starting: 'Autorisierung wird angefordert …',
+				instructions: 'Öffne den Link unten, um die Autorisierung durchzuführen:',
+				codeLabel: 'Auth-Code',
 				copy: 'Kopieren',
 				copied: 'Kopiert',
 				rawTextLabel: 'Autorisierungshinweise',
@@ -547,7 +547,7 @@ export const deMessages = {
 				failed: 'Autorisierung fehlgeschlagen. Bitte erneut versuchen.',
 				errors: {
 					OAUTH_FAILED: 'Autorisierung fehlgeschlagen. Bitte erneut versuchen.',
-					OAUTH_TIMEOUT: 'Der Autorisierungscode ist abgelaufen. Bitte von vorn beginnen.',
+					OAUTH_TIMEOUT: 'Zeitüberschreitung bei der Autorisierung. Bitte von vorn beginnen.',
 					IO_FAILED: 'Autorisiert, aber das Speichern der Anmeldedaten ist fehlgeschlagen. Bitte erneut versuchen.',
 					NOT_FOUND: 'Dieser Anbieter unterstützt die Kontoautorisierung nicht.',
 				},

@@ -502,7 +502,7 @@ export const esMessages = {
 			title: 'Claves de API',
 			addButton: 'Añadir',
 			removeButton: 'Eliminar',
-			emptyState: 'Aún no hay ningún proveedor configurado. Añade una clave de API para empezar.',
+			emptyState: 'Aún no hay ningún proveedor configurado. Añade uno para empezar.',
 			loadFailed: 'Error al cargar. Por favor reintenta.',
 			removeFailed: 'Error al eliminar {provider}.',
 			source: {
@@ -537,9 +537,9 @@ export const esMessages = {
 				back: 'Atrás',
 			},
 			oauth: {
-				starting: 'Solicitando un código de autorización…',
-				instructions: 'Abre el enlace de abajo para autorizar.',
-				codeLabel: 'Código de autorización',
+				starting: 'Solicitando autorización…',
+				instructions: 'Abre el enlace de abajo para autorizar:',
+				codeLabel: 'Código',
 				copy: 'Copiar',
 				copied: 'Copiado',
 				rawTextLabel: 'Instrucciones de autorización',
@@ -547,7 +547,7 @@ export const esMessages = {
 				failed: 'La autorización falló. Inténtalo de nuevo.',
 				errors: {
 					OAUTH_FAILED: 'La autorización falló. Inténtalo de nuevo.',
-					OAUTH_TIMEOUT: 'El código de autorización caducó. Empieza de nuevo.',
+					OAUTH_TIMEOUT: 'Se agotó el tiempo de autorización. Empieza de nuevo.',
 					IO_FAILED: 'Autorizado, pero no se pudo guardar la credencial. Inténtalo de nuevo.',
 					NOT_FOUND: 'Este proveedor no admite la autorización de la cuenta.',
 				},

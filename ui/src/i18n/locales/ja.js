@@ -502,7 +502,7 @@ export const jaMessages = {
 			title: 'API キー',
 			addButton: '追加',
 			removeButton: '削除',
-			emptyState: 'まだプロバイダが設定されていません。API キーを追加して始めましょう。',
+			emptyState: 'まだプロバイダが設定されていません。追加して始めましょう。',
 			loadFailed: '読み込みに失敗しました。もう一度お試しください。',
 			removeFailed: '{provider} の削除に失敗しました。',
 			source: {
@@ -537,8 +537,8 @@ export const jaMessages = {
 				back: '戻る',
 			},
 			oauth: {
-				starting: '認可コードを取得しています…',
-				instructions: '下のリンクを開いて認可してください。',
+				starting: '認可をリクエストしています…',
+				instructions: '下のリンクを開いて認可してください：',
 				codeLabel: '認可コード',
 				copy: 'コピー',
 				copied: 'コピーしました',
@@ -547,7 +547,7 @@ export const jaMessages = {
 				failed: '認可に失敗しました。もう一度お試しください。',
 				errors: {
 					OAUTH_FAILED: '認可に失敗しました。もう一度お試しください。',
-					OAUTH_TIMEOUT: '認可コードの有効期限が切れました。最初からやり直してください。',
+					OAUTH_TIMEOUT: '認可がタイムアウトしました。最初からやり直してください。',
 					IO_FAILED: '認可しましたが、認証情報の保存に失敗しました。もう一度お試しください。',
 					NOT_FOUND: 'このプロバイダーはアカウント認可に対応していません。',
 				},

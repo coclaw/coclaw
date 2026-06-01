@@ -502,7 +502,7 @@ export const enMessages = {
 			title: 'API keys',
 			addButton: 'Add',
 			removeButton: 'Remove',
-			emptyState: 'No provider configured yet. Add an API key to get started.',
+			emptyState: 'No provider configured yet. Add one to get started.',
 			loadFailed: 'Failed to load. Please retry.',
 			removeFailed: 'Failed to remove {provider}.',
 			source: {
@@ -537,9 +537,9 @@ export const enMessages = {
 				back: 'Back',
 			},
 			oauth: {
-				starting: 'Requesting an authorization code…',
-				instructions: 'Open the link below to authorize.',
-				codeLabel: 'Authorization code',
+				starting: 'Requesting authorization…',
+				instructions: 'Open the link below to authorize:',
+				codeLabel: 'Auth code',
 				copy: 'Copy',
 				copied: 'Copied',
 				rawTextLabel: 'Authorization instructions',
@@ -547,7 +547,7 @@ export const enMessages = {
 				failed: 'Authorization failed. Please try again.',
 				errors: {
 					OAUTH_FAILED: 'Authorization failed. Please try again.',
-					OAUTH_TIMEOUT: 'The authorization code expired. Please start over.',
+					OAUTH_TIMEOUT: 'Authorization timed out. Please start over.',
 					IO_FAILED: 'Authorized, but saving the credential failed. Please try again.',
 					NOT_FOUND: 'This provider does not support account authorization.',
 				},
