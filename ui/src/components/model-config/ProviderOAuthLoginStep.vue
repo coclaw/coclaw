@@ -9,12 +9,8 @@
 			{{ $t('modelConfig.providerAuth.oauth.starting') }}
 		</div>
 
-		<!-- pending：拿到受理帧，先展示授权码（多数流程第一步是复制码）再展示授权链接（rawText 在结构化字段抠不到时兜底） -->
+		<!-- pending：拿到受理帧，先展示授权码（多数流程第一步是复制码），指引紧贴其所指的授权链接、置于链接正上方（rawText 在结构化字段抠不到时兜底） -->
 		<template v-else-if="phase === 'pending'">
-			<p class="text-sm text-muted">
-				{{ $t('modelConfig.providerAuth.oauth.instructions') }}
-			</p>
-
 			<!-- 授权码：inline 等宽小块 + icon 复制按钮（样式同用户信息复制登录名）；
 			     码已嵌进授权链接（如 minimax-portal）时不再单列，用户直接点链接即可（见 showUserCode） -->
 			<div v-if="showUserCode" class="flex items-center gap-2">
@@ -35,6 +31,11 @@
 					{{ $t('modelConfig.providerAuth.oauth.copied') }}
 				</span>
 			</div>
+
+			<!-- 指引“点击下方链接进行授权”紧贴其所指链接：放在授权码之后、链接正上方，免被授权码隔开造成“下方链接”指代错位 -->
+			<p class="text-sm text-muted">
+				{{ $t('modelConfig.providerAuth.oauth.instructions') }}
+			</p>
 
 			<!-- 结构化授权链接：远端用户在自己设备打开（走平台外链）。指引已说“下方链接”、URL 自明，不再加标签/按钮 -->
 			<a
