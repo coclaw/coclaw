@@ -49,24 +49,7 @@
 										<p class="text-xs text-muted">{{ $t('dashboard.monthlyCost') }}</p>
 									</div>
 								</div>
-								<!-- 模型行：当前默认模型，整行可点 → 模型配置页；数据没到不渲染（入口交给三点菜单） -->
-								<button
-									v-if="modelView"
-									type="button"
-									:data-testid="`claw-model-${claw.id}`"
-									class="mt-2 flex w-full items-center justify-between gap-2 text-start cursor-pointer"
-									@click="goToModels(claw.id)"
-								>
-									<span class="min-w-0 flex-1">
-										<template v-if="modelView.kind === 'model'">
-											<span v-if="modelView.provider" class="block truncate text-xs text-muted">{{ modelView.provider }}</span>
-											<span class="block truncate font-mono text-sm">{{ modelView.model }}</span>
-										</template>
-										<span v-else :data-testid="`claw-model-cta-${claw.id}`" class="block truncate text-sm text-muted">{{ $t(modelView.textKey) }}</span>
-									</span>
-									<UIcon name="i-lucide-chevron-right" class="size-4 shrink-0 text-muted" />
-								</button>
-								<div class="mt-3 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+								<div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
 									<span v-if="dashboard.instance.pluginVersion">{{ $t('claws.pluginVersion') }}{{ dashboard.instance.pluginVersion }}</span>
 									<span v-if="dashboard.instance.clawVersion">{{ $t('claws.clawVersion') }}{{ dashboard.instance.clawVersion }}</span>
 									<span v-if="dashboard.instance.channels?.length" class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
@@ -76,6 +59,24 @@
 										</span>
 									</span>
 								</div>
+								<!-- 模型行：当前默认模型，整块可点 → 模型配置页；› 紧跟文字、hover/active 高亮示可点；放在版本之后贴近底部橙条；数据没到不渲染（入口交给三点菜单） -->
+								<!-- 取内容宽度(inline-flex,非 w-full)：空白区不参与高亮，观感更收敛；max-w-full + 文字 min-w-0 仍保长模型名截断不溢出 -->
+								<button
+									v-if="modelView"
+									type="button"
+									:data-testid="`claw-model-${claw.id}`"
+									class="mt-2 -mx-1.5 inline-flex max-w-full items-center gap-2 rounded-lg pl-1.5 pr-0.5 py-1 text-start cursor-pointer transition-colors hover:bg-accented active:bg-accented"
+									@click="goToModels(claw.id)"
+								>
+									<span class="min-w-0">
+										<template v-if="modelView.kind === 'model'">
+											<span v-if="modelView.provider" class="block truncate text-xs text-muted">{{ modelView.provider }}</span>
+											<span class="block truncate font-mono text-sm">{{ modelView.model }}</span>
+										</template>
+										<span v-else :data-testid="`claw-model-cta-${claw.id}`" class="block truncate text-sm text-muted">{{ $t(modelView.textKey) }}</span>
+									</span>
+									<UIcon name="i-lucide-chevron-right" class="size-5 shrink-0 text-primary" />
+								</button>
 							</template>
 							<template v-else>
 								<div class="flex items-center gap-2 min-w-0">
