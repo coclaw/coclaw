@@ -1,5 +1,13 @@
 # @coclaw/ui
 
+## 0.31.3
+
+### Patch Changes
+
+- cc6bf35: Rework the claw card model entry. The current default model is now shown as a clickable row that opens the model-config page (provider and model on two truncated lines, or a quiet CTA when no primary model is set), and the rename / remove / manage-model actions fold into a three-dot menu so the card sheds its always-visible pencil, gear, and red unbind button. The orange guidance bar stays as a pure warning — its now-redundant inline link is removed. A shared `parseModelId` helper unifies the model-id parsing previously duplicated in the picker and model-config page. Channel status keeps its place in the metadata row, now with a wrap fallback so many channels no longer risk overflowing the card on narrow screens.
+- ea2fa5b: Nudge popover menu item padding to `pl-4 pr-5` across the topic, agent, web-agent, main-list add, and slash-command menus. The lucide icon glyphs render narrower than their box, so the extra right padding keeps each row's whitespace visually balanced.
+- 969c725: Show raw OpenClaw provider ids consistently across the model-config page. The API-key list and the remove-credential confirm dialog previously rendered hardcoded brand names (e.g. `DeepSeek`, `OpenAI`) while unmapped providers like `minimax-portal` fell back to their id, leaving a mixed id/name list. They now display the native provider id, matching the add-provider and primary-model pickers. Both pickers also sort by id instead of brand name, so the visible order matches the labels. The `displayName` map in `provider-meta.js` is kept (still carries `popular` / `dashboardUrl`) for a possible future brand-name surface, but is no longer consumed for display or sorting.
+
 ## 0.31.2
 
 ### Patch Changes
