@@ -4,7 +4,7 @@
 		<div
 			v-if="phase === 'starting'"
 			data-testid="oauth-starting"
-			class="px-2 py-6 text-center text-sm text-muted"
+			class="px-2 py-6 flex justify-center items-center text-sm text-muted"
 		>
 			{{ $t('modelConfig.providerAuth.oauth.starting') }}
 		</div>

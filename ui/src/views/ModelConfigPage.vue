@@ -111,7 +111,7 @@
 						<div v-if="!loadOk.profiles && !profiles.length" data-testid="provider-load-failed" class="px-3 py-6 text-center text-sm text-muted">
 							—
 						</div>
-						<div v-else-if="!profiles.length" data-testid="provider-empty" class="px-3 py-6 text-center text-sm text-muted">
+						<div v-else-if="!profiles.length" data-testid="provider-empty" class="px-3 py-6 flex justify-center items-center text-sm text-muted">
 							{{ $t('modelConfig.providerAuth.emptyState') }}
 						</div>
 						<div v-else>
