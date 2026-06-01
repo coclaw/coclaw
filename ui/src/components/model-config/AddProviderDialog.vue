@@ -219,16 +219,17 @@
 					</UButton>
 				</template>
 
-				<!-- api-key：取消 + 提交（双按钮） -->
+				<!-- api-key：返回 + 提交（双按钮）。返回走 onMethodBack：从方式选择器进来的回选择器、
+				     从列表直达的回 provider 选择屏；关闭对话框交给 X / Esc / 遮罩（与方式选择器那步一致）。 -->
 				<template v-else-if="footerMode === 'api-key'">
 					<UButton
-						data-testid="add-provider-cancel"
+						data-testid="add-provider-back"
 						variant="ghost"
 						color="neutral"
 						:disabled="submitting"
-						@click="onCancel"
+						@click="onMethodBack"
 					>
-						{{ $t('common.cancel') }}
+						{{ $t('modelConfig.providerAuth.add.back') }}
 					</UButton>
 					<UButton
 						data-testid="add-provider-submit"
@@ -524,11 +525,6 @@ export default {
 		},
 		closeAll() {
 			this.$emit('update:open', false);
-		},
-		onCancel() {
-			// footer 取消按钮：等价于关闭；submitting 期间忽略，避免对话框消失而后台仍跑
-			if (this.submitting) return;
-			this.closeAll();
 		},
 		onModalOpenChange(value) {
 			// UModal close（X / 遮罩 / Esc）等价于取消；submitting 期间忽略

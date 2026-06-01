@@ -296,27 +296,28 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		expect(w.vm.$props.setApiKey).not.toHaveBeenCalled();
 	});
 
-	test('footer Cancel button closes the dialog without calling RPC', async () => {
+	test('footer Back button (single-method) returns to provider select without calling RPC or closing', async () => {
 		const setApiKey = vi.fn().mockResolvedValue({});
+		// groq 是纯 api-key（单方式）：从列表直达 key 表单，返回应回到 provider 选择屏（而非关闭对话框）
 		const w = await goToStep2(makeWrapper({ setApiKey }));
-		await w.find('[data-testid="add-provider-cancel"]').trigger('click');
+		await w.find('[data-testid="add-provider-back"]').trigger('click');
 		expect(setApiKey).not.toHaveBeenCalled();
-		const openEvents = w.emitted('update:open');
-		expect(openEvents[openEvents.length - 1]).toEqual([false]);
+		expect(w.vm.step).toBe('select');
+		// key 表单已卸载、对话框未关闭
+		expect(w.find('[data-testid="add-provider-key-input"]').exists()).toBe(false);
+		expect(w.emitted('update:open')?.some(e => e[0] === false)).not.toBe(true);
 	});
 
-	test('footer Cancel is ignored while submitting (RPC in-flight)', async () => {
+	test('footer Back is disabled while submitting (RPC in-flight), so user cannot navigate away mid-submit', async () => {
 		let resolveSet;
 		const setApiKey = vi.fn(() => new Promise(res => { resolveSet = res; }));
 		const w = await goToStep2(makeWrapper({ setApiKey }));
 		await w.find('[data-testid="add-provider-key-input"]').setValue('gsk_abc');
 		await w.find('[data-testid="add-provider-submit"]').trigger('click');
 		await Promise.resolve();
-		// 提交中点取消：应被 submitting 守卫挡下
-		await w.find('[data-testid="add-provider-cancel"]').trigger('click');
-		await Promise.resolve();
-		const openEvents = w.emitted('update:open');
-		expect(openEvents?.some(e => e[0] === false)).not.toBe(true);
+		// 提交中：返回按钮 disabled（真实浏览器不触发其 click），无法中途导航离开
+		expect(w.find('[data-testid="add-provider-back"]').attributes('disabled')).toBeDefined();
+		expect(w.vm.step).toBe('configure');
 		// settle 让 unmount 别孤儿
 		resolveSet({ profileId: 'groq:default' });
 		await flushPromises();
@@ -710,6 +711,19 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		await w.find('[data-testid="add-method-api-key"]').trigger('click');
 		expect(w.find('[data-testid="add-provider-key-input"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);
+	});
+
+	test('chooser → pick api-key → Back returns to the method chooser (multi-method), without closing', async () => {
+		const w = makeWrapper({ catalog: multiCatalog });
+		await w.find('[data-testid="add-provider-item-openai-codex"]').trigger('click');
+		await w.find('[data-testid="add-method-api-key"]').trigger('click');
+		expect(w.find('[data-testid="add-provider-key-input"]').exists()).toBe(true);
+		// 返回：多方式 provider 回到方式选择器（chooser），仍在 configure 步、对话框未关闭
+		await w.find('[data-testid="add-provider-back"]').trigger('click');
+		expect(w.find('[data-testid="add-method-chooser"]').exists()).toBe(true);
+		expect(w.vm.selectedMethod).toBe('');
+		expect(w.vm.step).toBe('configure');
+		expect(w.emitted('update:open')?.some(e => e[0] === false)).not.toBe(true);
 	});
 
 	test('chooser → pick device-code mounts ProviderOAuthLoginStep', async () => {
