@@ -241,6 +241,14 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		return w;
 	}
 
+	test('keeps the Step 1 list mounted (v-show, not v-if) when in configure, so scroll position survives a back trip', async () => {
+		const w = await goToStep2(makeWrapper());
+		// Step 1 用 v-show 隐藏而非 v-if 销毁：DOM 仍在、只是 display:none，浏览器保留 scrollTop，返回即原位
+		const list = w.find('[data-testid="add-provider-list"]');
+		expect(list.exists()).toBe(true);
+		expect(list.isVisible()).toBe(false);
+	});
+
 	test('renders the API key field as a masked text input, not type=password (keeps the browser password manager out)', async () => {
 		const w = await goToStep2(makeWrapper());
 		const input = w.find('[data-testid="add-provider-key-input"]');

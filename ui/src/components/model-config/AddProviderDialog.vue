@@ -9,8 +9,9 @@
 	>
 		<template #body>
 			<div data-testid="add-provider-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
-				<!-- Step 1: 选 provider（全屏下 flex-1 填满，桌面端 md:flex-none 维持紧凑） -->
-				<div v-if="step === 'select'" class="flex min-h-0 flex-1 flex-col gap-3 md:flex-none">
+				<!-- Step 1: 选 provider（全屏下 flex-1 填满，桌面端 md:flex-none 维持紧凑）
+				     用 v-show 而非 v-if：进 Step 2 时只隐藏不销毁，返回时列表滚动位置由浏览器保留（避免回到顶部） -->
+				<div v-show="step === 'select'" class="flex min-h-0 flex-1 flex-col gap-3 md:flex-none">
 					<!-- 搜索框两端各冒出 2px：外层块级 div 用 -mx-0.5 自动撑出 4px，内层 input w-full 填满（同列表 -mx-2 的做法） -->
 					<div class="-mx-0.5">
 						<UInput
@@ -91,8 +92,9 @@
 					</div>
 				</div>
 
-				<!-- Step 2: 配置（按 catalog authMethods 多入口；零特判，OpenClaw 给什么列什么） -->
-				<div v-else class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
+				<!-- Step 2: 配置（按 catalog authMethods 多入口；零特判，OpenClaw 给什么列什么）
+				     保持 v-if（销毁）：内含 ProviderOAuthLoginStep，离开时须真卸载以停掉在途轮询；v-show 隐藏会让计时器继续 -->
+				<div v-if="step === 'configure'" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
 					<!-- 多方式时先选入口（单方式 onPickProvider 已直接进对应入口，不显示 chooser） -->
 					<div v-if="!selectedMethod" data-testid="add-method-chooser" class="flex flex-col gap-3">
 						<button
