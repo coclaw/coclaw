@@ -54,7 +54,7 @@
 									type="button"
 									role="menuitem"
 									:data-testid="`cap-header-add-${item.id}`"
-									class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
+									class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 									@click="onAddAction(item.id)"
 								>
 									<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-[18px] shrink-0" :class="item.iconClass" aria-hidden="true" />

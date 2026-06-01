@@ -13,14 +13,14 @@
 			<template #content>
 				<div class="flex max-w-60 flex-col py-1">
 					<button
-						class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
+						class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 						@click="onChat"
 					>
 						<UIcon name="i-lucide-message-square" class="size-[18px] shrink-0" />
 						<span class="truncate">{{ $t('agents.chat') }}</span>
 					</button>
 					<button
-						class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
+						class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 						@click="onFiles"
 					>
 						<UIcon name="i-lucide-folder" class="size-[18px] shrink-0" />

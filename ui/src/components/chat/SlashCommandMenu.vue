@@ -12,14 +12,14 @@
 			<template #content>
 				<div class="flex max-w-60 flex-col py-1">
 					<button
-						class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
+						class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 						@click="onCommand('/compact')"
 					>
 						<UIcon name="i-lucide-archive" class="size-[18px] shrink-0" />
 						<span class="truncate">{{ $t('slashCmd.compact') }}</span>
 					</button>
 					<button
-						class="flex min-h-11 items-center gap-2.5 px-3.5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
+						class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
 						@click="onCommand('/new')"
 					>
 						<UIcon name="i-lucide-refresh-cw" class="size-[18px] shrink-0" />
