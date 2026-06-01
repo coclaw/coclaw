@@ -9,10 +9,10 @@
 	>
 		<template #body>
 			<div data-testid="add-provider-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
-				<!-- Step 1: 选 provider。固定高度放在「列表屏容器」上（桌面 md:h-[27rem]，只锁本屏、不波及 Step2 配置表单），
+				<!-- Step 1: 选 provider。固定高度放在「列表屏容器」上（桌面 md:h-[28rem]，只锁本屏、不波及 Step2 配置表单），
 				     列表用 flex-1 填充 → 移动/桌面统一、不再切 flex-none；md:max-h vh 上限让矮窗口自缩（无外层滚动条）+ vh 基线安全。N 值需在矮窗口目测。
 				     用 v-show 而非 v-if：进 Step 2 时只隐藏不销毁，返回时列表滚动位置由浏览器保留（避免回到顶部） -->
-				<div v-show="step === 'select'" class="flex min-h-0 flex-1 flex-col gap-3 md:flex-none md:h-[27rem] md:max-h-[calc(100vh-10rem)]">
+				<div v-show="step === 'select'" class="flex min-h-0 flex-1 flex-col gap-3 md:flex-none md:h-[28rem] md:max-h-[calc(100vh-10rem)]">
 					<!-- 搜索框两端各冒出 2px：外层块级 div 用 -mx-0.5 自动撑出 4px，内层 input w-full 填满（同列表 -mx-2 的做法） -->
 					<div class="-mx-0.5">
 						<UInput
@@ -25,7 +25,7 @@
 						/>
 					</div>
 
-					<!-- 列表区：flex-1 填满本屏容器（高度由上层 Step1 容器的 md:h-[27rem] 决定），项少留白、超出内部滚动；隐藏滚动条（与主列表一致） -->
+					<!-- 列表区：flex-1 填满本屏容器（高度由上层 Step1 容器的 md:h-[28rem] 决定），项少留白、超出内部滚动；隐藏滚动条（与主列表一致） -->
 					<div data-testid="add-provider-list" class="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hide">
 						<template v-if="popularList.length">
 							<p class="px-2 pt-1 pb-1 text-xs font-medium text-muted">
