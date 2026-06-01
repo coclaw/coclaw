@@ -224,6 +224,12 @@ export default {
 			this.rawText = '';
 			this.errorKey = '';
 			this.errorDetail = '';
+			// 复位复制态：上一轮“已复制”+计时器不能残留到新一轮授权码上（pending→复制→失败→重试 窄路径）
+			this.codeCopied = false;
+			if (this.__copyTimer) {
+				clearTimeout(this.__copyTimer);
+				this.__copyTimer = null;
+			}
 			const token = (this.__runToken || 0) + 1;
 			this.__runToken = token;
 			if (!this.loginOauth) {

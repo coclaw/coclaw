@@ -425,6 +425,29 @@ describe('ProviderOAuthLoginStep — retry + missing channel', () => {
 		w.unmount();
 	});
 
+	test('start() resets a lingering copied state so the fresh code is copyable', async () => {
+		// pending→复制(已复制)→失败→重试 窄路径：重发起须复位 codeCopied，否则新码错显“已复制”
+		const ctl = makeLogin();
+		const w = makeWrapper({ loginOauth: ctl.loginOauth });
+		ctl.onAccepted(accepted());
+		await w.vm.$nextTick();
+		await w.find('[data-testid="oauth-copy-code"]').trigger('click');
+		await flushPromises();
+		expect(w.vm.codeCopied).toBe(true);
+		ctl.reject(Object.assign(new Error('boom'), { code: 'OAUTH_FAILED' }));
+		await flushPromises();
+		// 重发起即复位（无需等 3s 计时器自愈）
+		w.vm.start();
+		await w.vm.$nextTick();
+		expect(w.vm.codeCopied).toBe(false);
+		// 新一轮拿到码后是可复制态，不是残留的“已复制”
+		ctl.onAccepted(accepted());
+		await w.vm.$nextTick();
+		expect(w.find('[data-testid="oauth-copy-code"]').exists()).toBe(true);
+		expect(w.find('[data-testid="oauth-code-copied"]').exists()).toBe(false);
+		w.unmount();
+	});
+
 	test('onBack() from error emits cancel', async () => {
 		// 返回按钮已上移到父对话框 footer，footer 经 $refs 调本组件 onBack()
 		const ctl = makeLogin();
