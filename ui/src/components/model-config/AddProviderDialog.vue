@@ -395,7 +395,7 @@ export default {
 		},
 		/**
 		 * catalog 派生的可加 provider 集合：按 provider 去重、剔除已配（existingProviders）。
-		 * 返回 [{ id, displayName, popular, hasOauth }]，按 displayName 字典序排。
+		 * 返回 [{ id, popular, hasOauth }]，按 id 字典序排。
 		 * hasOauth：authMethods 含任一 oauth 入口（device-code / login）即真，驱动列表项 oauth 徽章
 		 * （api-key 默认不贴，降噪；与 selectedProviderMethods 同口径——防御性合并同 provider 多条目）。
 		 */
@@ -409,7 +409,7 @@ export default {
 				let entry = byId.get(id);
 				if (!entry) {
 					const meta = getProviderMeta(id);
-					entry = { id, displayName: meta.displayName, popular: !!meta.popular, hasOauth: false };
+					entry = { id, popular: !!meta.popular, hasOauth: false };
 					byId.set(id, entry);
 				}
 				if (Array.isArray(m.authMethods) &&
@@ -418,7 +418,7 @@ export default {
 				}
 			}
 			const out = Array.from(byId.values());
-			out.sort((a, b) => a.displayName.localeCompare(b.displayName));
+			out.sort((a, b) => a.id.localeCompare(b.id));
 			return out;
 		},
 		filteredProviders() {
@@ -428,7 +428,6 @@ export default {
 			// 否则搜 "oauth" 命中为空，与界面上明明贴着的 oauth 徽章割裂
 			return this.availableProviders.filter(p =>
 				p.id.toLowerCase().includes(q) ||
-				p.displayName.toLowerCase().includes(q) ||
 				(p.hasOauth && 'oauth'.includes(q))
 			);
 		},

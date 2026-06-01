@@ -27,14 +27,14 @@ function makeWrapper(profile, extraProps = {}) {
 }
 
 describe('ProviderAuthRow', () => {
-	test('renders mapped displayName for known provider + keyPreview as secondary', () => {
+	test('renders raw provider id + keyPreview as secondary', () => {
 		const w = makeWrapper({ provider: 'groq', type: 'api_key', keyPreview: 'gsk_…ABCD', profileId: 'groq:default', source: 'profile', removable: true });
 		const text = w.text();
-		expect(text).toContain('Groq');
+		expect(text).toContain('groq');
 		expect(text).toContain('gsk_…ABCD');
 	});
 
-	test('falls back to provider id for unknown provider', () => {
+	test('renders provider id verbatim for any provider (no brand-name mapping)', () => {
 		const w = makeWrapper({ provider: 'mystery', type: 'api_key', keyPreview: 'k…1', profileId: 'mystery:default', source: 'profile', removable: true });
 		expect(w.text()).toContain('mystery');
 	});

@@ -1,10 +1,15 @@
 /**
  * provider 元数据映射表（UI 端硬编码）
  *
+ * displayName 现状：暂无消费点。模型设置页所有界面（API 密钥列表、撤销弹窗、
+ * 添加 provider 选择器、主模型选择器）统一直接展示 OpenClaw 原生 provider id，
+ * 排序也按 id——这张表只覆盖少数常用 provider，混用 id/品牌名既不一致又是维护负担。
+ * 本字段保留、不删，待将来真要做品牌名展示时再启用（删除前请确认仍无引用）。
+ *
  * 字段说明：
- * - displayName：品牌官方名，不进 i18n（品牌不翻译）
- * - popular：是否在"添加 provider"流程的"常用"分组里
- * - dashboardUrl：去 provider 官网创建 key 的入口；缺省则不显示"去官网"链接
+ * - displayName：品牌官方名，不进 i18n（品牌不翻译）；当前无消费点（见上）
+ * - popular：是否在"添加 provider"流程的"常用"分组里（仍在用）
+ * - dashboardUrl：去 provider 官网创建 key 的入口；缺省则不显示"去官网"链接（仍在用）
  *
  * 未在表中的 provider：fallback 为 { displayName: <id>, popular: false }，
  * 不显示"去官网"链接。完整 provider 清单由 `coclaw.providerAuth.catalog` 运行时拿。

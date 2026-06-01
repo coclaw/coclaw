@@ -184,14 +184,16 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		expect(w.find('[data-testid="add-provider-oauth-tag-openai"]').exists()).toBe(true);
 	});
 
-	test('search filters by id and displayName (case-insensitive)', async () => {
+	test('search filters by provider id only (case-insensitive; brand name not searched)', async () => {
 		const w = makeWrapper();
 		const search = w.find('[data-testid="add-provider-search"]');
+		// 品牌名（displayName）不再参与搜索：搜 "claude" 不命中 anthropic（其 id 不含 claude）
 		await search.setValue('claude');
-		// Anthropic 的 displayName 是 "Anthropic Claude"，应命中
+		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(false);
+		// 按原生 id 命中（大小写不敏感）
+		await search.setValue('ANTHRO');
 		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
-		// 切搜索词
 		await search.setValue('GroQ');
 		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(false);

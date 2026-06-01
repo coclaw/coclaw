@@ -196,7 +196,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - 列表数据源：`coclaw.providerAuth.catalog` 返回的 provider 中 **`hasCred === false`** 的那些（即"还没配过、可加"的）；不再从 `models.list view:"all"` distinct provider 取（已去 view:all）
 - **排除已配 provider 用别名归一名（修订 6，#8 闭合）**：列表里要排掉用户已有凭据的 provider，排除口径**两侧都按别名基座名归一**（`resolveProviderIdForAuth`，插件侧做——UI 拿不到该函数）。否则套餐用户持 `volcengine` 基座 key，仍被提供去重复加 `volcengine`/`volcengine-plan`。归一后的"已配 provider"集由插件随凭据信号或专门字段给 UI
 - "常用"分组的 provider 由 UI 端硬编码（一期人工维护一份"热门 provider"清单，按用户分布 + 国内外平衡选取）
-- displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**展示暂缓**：provider 选择列表 / 主模型选择器当前直接用原生 provider id 占位，displayName 映射暂未接入这两处展示；displayName 仍是最终目标，后续接入
+- displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**当前无消费点**：模型设置页所有界面（API 密钥列表 / 撤销弹窗 / provider 选择列表 / 主模型选择器）统一直接展示原生 provider id，排序也按 id——映射表只覆盖少数常用 provider，混用 id/品牌名既不一致又是维护负担。displayName 字段保留、不删，待将来真要做品牌名展示时再启用
 
 **Step 2 输入 API key**（移动端为居中 confirm 小卡片、非全屏；桌面端为模态。输 key 步套用项目统一 confirm 弹窗样式，不随 Step 1 全屏）：
 

@@ -46,11 +46,11 @@ function makeWrapper(props = {}) {
 }
 
 describe('RemoveProviderConfirmDialog', () => {
-	test('renders normal text variant when not primary carrier (uses displayName)', () => {
+	test('renders normal text variant when not primary carrier (uses raw provider id)', () => {
 		const w = makeWrapper({ isPrimaryCarrier: false });
 		const text = w.text();
-		expect(text).toContain('modelConfig.providerAuth.remove.title:provider=Groq');
-		expect(text).toContain('modelConfig.providerAuth.remove.descNormal:provider=Groq');
+		expect(text).toContain('modelConfig.providerAuth.remove.title:provider=groq');
+		expect(text).toContain('modelConfig.providerAuth.remove.descNormal:provider=groq');
 		expect(text).not.toContain('descAffectPrimary');
 	});
 
@@ -62,7 +62,7 @@ describe('RemoveProviderConfirmDialog', () => {
 		const text = w.text();
 		expect(text).toContain('descAffectPrimary');
 		expect(text).toContain('primary=groq/llama-3.3-70b-versatile');
-		expect(text).toContain('provider=Groq');
+		expect(text).toContain('provider=groq');
 	});
 
 	test('confirm button label changes between normal and strong', () => {
@@ -133,7 +133,7 @@ describe('RemoveProviderConfirmDialog', () => {
 		expect(w.find('.modal-title').exists()).toBe(false);
 	});
 
-	test('falls back to provider id when not in PROVIDER_META', () => {
+	test('renders raw provider id verbatim (no brand-name mapping)', () => {
 		const w = makeWrapper({ provider: 'mystery' });
 		expect(w.text()).toContain('provider=mystery');
 	});

@@ -1,7 +1,7 @@
 <template>
 	<UModal
 		:open="open"
-		:title="$t('modelConfig.providerAuth.remove.title', { provider: displayName })"
+		:title="$t('modelConfig.providerAuth.remove.title', { provider: providerLabel })"
 		description=" "
 		:ui="promptUi"
 		@update:open="onOpenChange"
@@ -34,7 +34,6 @@
 </template>
 
 <script>
-import { getProviderMeta } from '../../constants/provider-meta.js';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 
 export default {
@@ -44,7 +43,7 @@ export default {
 			type: Boolean,
 			default: false,
 		},
-		/** 待撤的 provider id（用 displayName 渲染） */
+		/** 待撤的 provider id（直接展示，不映射品牌名） */
 		provider: {
 			type: String,
 			default: '',
@@ -70,8 +69,9 @@ export default {
 		return { promptUi: promptModalUi };
 	},
 	computed: {
-		displayName() {
-			return getProviderMeta(this.provider).displayName;
+		/** 直接展示原生 provider id（统一不用映射品牌名，见 provider-meta.js 顶部说明） */
+		providerLabel() {
+			return this.provider;
 		},
 		description() {
 			// 撤内联不再单独提示"会改配置文件"：来源已由列表行标签表达，弹窗与普通删除一致（2026-05-28 拍板）。
@@ -79,9 +79,9 @@ export default {
 			return this.isPrimaryCarrier
 				? this.$t('modelConfig.providerAuth.remove.descAffectPrimary', {
 					primary: this.currentPrimary,
-					provider: this.displayName,
+					provider: this.providerLabel,
 				})
-				: this.$t('modelConfig.providerAuth.remove.descNormal', { provider: this.displayName });
+				: this.$t('modelConfig.providerAuth.remove.descNormal', { provider: this.providerLabel });
 		},
 		confirmLabel() {
 			return this.isPrimaryCarrier

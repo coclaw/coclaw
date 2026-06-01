@@ -3,12 +3,12 @@
 		class="flex min-h-12 items-center gap-3 px-3 py-2 border-b border-default last:border-b-0"
 		:class="{ 'opacity-75': source === 'env' }"
 	>
-		<!-- 品牌名 + oauth 徽章 + 来源小标签 + 凭据预览。
+		<!-- provider id + oauth 徽章 + 来源小标签 + 凭据预览。
 		     徽章字号提到 sm 后整体高度≈文本，items-end 底边对齐已失效；改 items-center
 		     + 文本 -mt-0.5 上浮，做纵向视觉居中。 -->
 		<div class="min-w-0 flex-1">
 			<div class="flex items-center gap-1.5">
-				<p class="truncate text-sm font-medium -mt-0.5">{{ displayName }}</p>
+				<p class="truncate text-sm font-medium -mt-0.5">{{ providerLabel }}</p>
 				<!-- oauth 类型徽章：字面量 oauth 不进 i18n（与 provider id 同属技术标识，不翻译） -->
 				<UBadge
 					v-if="isOauth"
@@ -49,8 +49,6 @@
 </template>
 
 <script>
-import { getProviderMeta } from '../../constants/provider-meta.js';
-
 export default {
 	name: 'ProviderAuthRow',
 	props: {
@@ -67,8 +65,12 @@ export default {
 	},
 	emits: ['remove'],
 	computed: {
-		displayName() {
-			return getProviderMeta(this.profile?.provider ?? '').displayName;
+		/**
+		 * 直接展示 OpenClaw 原生 provider id：管理界面与选择器统一显示原生 id，
+		 * 不用 provider-meta 的映射品牌名（见 constants/provider-meta.js 顶部说明）。
+		 */
+		providerLabel() {
+			return this.profile?.provider ?? '';
 		},
 		/**
 		 * 凭据来源：profile（账本）/ inline（配置文件）/ env（环境变量）。

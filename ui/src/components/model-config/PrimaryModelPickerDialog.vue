@@ -47,7 +47,7 @@
 						:key="g.provider"
 					>
 						<!-- 所有分组标题统一 pt-1：分组名本身已起分隔作用，不再按首组/其余区别加间距 -->
-						<!-- 直接显示原生 provider id（与 AddProviderDialog 一致，暂不用映射 displayName；排序仍按 displayName） -->
+						<!-- 直接显示原生 provider id（与 AddProviderDialog 一致，不用映射 displayName；排序也按 provider id） -->
 						<p
 							class="px-2 pt-1 pb-1 text-xs font-medium text-muted"
 							:data-testid="`primary-picker-group-${g.provider}`"
@@ -93,7 +93,6 @@
 </template>
 
 <script>
-import { getProviderMeta } from '../../constants/provider-meta.js';
 import { mapModelConfigErrorKey, isCanceledError } from '../../utils/model-config-errors.js';
 import { parseModelId } from '../../utils/model-id.js';
 import { useEnvStore } from '../../stores/env.store.js';
@@ -171,9 +170,9 @@ export default {
 		},
 		/**
 		 * 按 provider 分组：直接吃 listAvailable 的 byProvider（含别名变体，已是干净目录∩别名感知凭据，无幽灵）。
-		 * 每个 group 内按 model id 字典序；搜索词过滤 model id（命中 provider 名也算）；group 间按 displayName 排序。
+		 * 每个 group 内按 model id 字典序；搜索词过滤 model id（命中 provider id 也算）；group 间按 provider id 排序。
 		 *
-		 * @returns {{ provider: string, displayName: string, models: { id: string }[] }[]}
+		 * @returns {{ provider: string, models: { id: string }[] }[]}
 		 */
 		groups() {
 			const q = this.searchText.trim().toLowerCase();
@@ -195,11 +194,10 @@ export default {
 			}
 			const out = [];
 			for (const [provider, models] of byProvider.entries()) {
-				const meta = getProviderMeta(provider);
 				const sorted = models.slice().sort((a, b) => a.id.localeCompare(b.id));
-				out.push({ provider, displayName: meta.displayName, models: sorted });
+				out.push({ provider, models: sorted });
 			}
-			out.sort((a, b) => a.displayName.localeCompare(b.displayName));
+			out.sort((a, b) => a.provider.localeCompare(b.provider));
 			return out;
 		},
 	},
