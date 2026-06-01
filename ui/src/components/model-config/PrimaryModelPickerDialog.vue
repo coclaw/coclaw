@@ -7,7 +7,9 @@
 		@update:open="onModalOpenChange"
 	>
 		<template #body>
-			<div data-testid="primary-picker-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-auto">
+			<!-- 固定高度放在容器上（桌面 md:h-[27rem]），列表用 flex-1 填充 → 移动/桌面统一、不再切 flex-none；
+			     md:max-h vh 上限让矮窗口下容器自缩（列表随之缩、走内部已隐藏滚动条，不冒外层滚动条）+ vh 基线安全（兜 dvh 不支持时的裁切）。N 值需在矮窗口目测 -->
+			<div data-testid="primary-picker-dialog" class="flex h-full min-h-0 flex-col gap-3 md:h-[27rem] md:max-h-[calc(100vh-13rem)]">
 				<!-- 搜索框两端各冒出 2px：外层块级 div 用 -mx-0.5 自动撑出 4px，内层 input w-full 填满（同列表 -mx-2 的做法） -->
 				<div class="-mx-0.5">
 					<UInput
@@ -21,7 +23,7 @@
 					/>
 				</div>
 
-				<div data-testid="primary-picker-list" class="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hide md:max-h-96 md:flex-none">
+				<div data-testid="primary-picker-list" class="-mx-2 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hide">
 					<div
 						v-if="!groups.length"
 						data-testid="primary-picker-empty"
