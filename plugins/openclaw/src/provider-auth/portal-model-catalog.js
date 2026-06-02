@@ -15,15 +15,18 @@
  *   返回的 proper-case，name 用展示名。
  * - 只维护**最必须的运行元数据**：`reasoning`（是否推理模型——缺省会被当成 false，导致推理
  *   模型被按普通模型处理、思考模式出错）、`contextWindow`、`maxTokens`。**不写 `cost`**：
- *   portal 走 token plan、不按量计费，价格无意义；`input` 也不写（系统默认即 `['text']`）。
+ *   portal 走 token plan、不按量计费，价格无意义；`input` 默认不写（系统默认即 `['text']`），
+ *   除非该型号多模态（如 M3 支持 `['text', 'image']`）才显式写出。
  *   这几个值与上游 `model-definitions.ts`（DEFAULT_MINIMAX_CONTEXT_WINDOW=204800 /
- *   DEFAULT_MINIMAX_MAX_TOKENS=131072）+ `provider-models.ts`（reasoning 标记）对齐。
+ *   MINIMAX_M3_CONTEXT_WINDOW=1_000_000 / DEFAULT_MINIMAX_MAX_TOKENS=131072）+
+ *   `provider-models.ts`（reasoning / input 标记）对齐。
  */
 
 export const PORTAL_MODEL_CATALOG = {
-	// 与 openclaw-repo/extensions/minimax/ 的 provider-models.ts(reasoning) +
-	// model-definitions.ts(contextWindow/maxTokens) 对齐
+	// 与 openclaw-repo/extensions/minimax/ 的 provider-models.ts(reasoning/input) +
+	// model-definitions.ts(contextWindow/maxTokens) 对齐；M3 起为上游默认型号、放首位
 	'minimax-portal': [
+		{ id: 'MiniMax-M3', name: 'MiniMax M3', reasoning: true, input: ['text', 'image'], contextWindow: 1000000, maxTokens: 131072 },
 		{ id: 'MiniMax-M2.7', name: 'MiniMax M2.7', reasoning: true, contextWindow: 204800, maxTokens: 131072 },
 		{ id: 'MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed', reasoning: true, contextWindow: 204800, maxTokens: 131072 },
 	],
@@ -31,15 +34,16 @@ export const PORTAL_MODEL_CATALOG = {
 
 /**
  * 取某 provider 的静态清单。返回**深拷贝**，避免调用方改到共享常量。
- * 未知 provider → 空数组。条目字段为扁平基本类型，`{ ...m }` 即为完整深拷贝。
+ * 未知 provider → 空数组。用 `structuredClone` 而非 `{ ...m }`：条目含嵌套字段（如 M3 的
+ * `input` 数组），浅拷贝会让返回值与共享常量复用同一个数组引用，调用方 push/splice 即污染原表。
  *
  * @param {string} providerId
- * @returns {{id:string, name:string, reasoning?:boolean, contextWindow?:number, maxTokens?:number}[]}
+ * @returns {{id:string, name:string, reasoning?:boolean, input?:string[], contextWindow?:number, maxTokens?:number}[]}
  */
 export function getPortalModels(providerId) {
 	const list = PORTAL_MODEL_CATALOG[providerId];
 	if (!Array.isArray(list)) return [];
-	return list.map((m) => ({ ...m }));
+	return list.map((m) => structuredClone(m));
 }
 
 /**

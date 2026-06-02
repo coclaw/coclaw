@@ -1109,9 +1109,9 @@ test('loginOauth phase-2 success: writes oauth credential + provider cfg (static
 	await handlers.loginOauth({ params: { region: 'cn' }, respond });
 	await Promise.all(bg);
 
-	// 终态打了一条 ok 诊断（终态级、低频；带写入的模型数 = 静态表 2 个）
+	// 终态打了一条 ok 诊断（终态级、低频；带写入的模型数 = 静态表条目数）
 	assert.equal(logs.length, 1);
-	assert.match(logs[0], /^providerAuth\.oauth\.ok loginId=LOGIN-1 profileId=.* models=2$/);
+	assert.match(logs[0], new RegExp(`^providerAuth\\.oauth\\.ok loginId=LOGIN-1 profileId=.* models=${EXPECTED_PORTAL_MODELS.length}$`));
 
 	// 写凭据：oauth 形态 + 共享锁入口 + main agentDir
 	assert.equal(upsertCalls.length, 1);

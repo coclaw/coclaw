@@ -208,10 +208,10 @@ const plugin = {
 		// 防"写配置触发重启"时的反复重启）。升级补了新模型靠这条让老用户重启后自动同步。
 		// config-mutation 字面量 specifier 必须出现在本入口源码里（loader 只扫入口识别 jiti alias）。
 		const portalSyncP = import('openclaw/plugin-sdk/config-mutation')
-			.then(({ mutateConfigFile }) => reconcilePortalModels({ getConfig: getClawConfig, mutateConfigFile }))
-			.then((r) => { if (r.changed) logger.info?.('[coclaw] minimax-portal model list synced from plugin catalog'); })
+			.then(({ mutateConfigFile }) => reconcilePortalModels({ getConfig: getClawConfig, mutateConfigFile, logger, remoteLog }))
 			.catch((err) => {
 				logger.warn?.(`[coclaw] minimax-portal model reconcile failed: ${String(err?.message ?? err)}`);
+				remoteLog(`providerAuth.portalReconcile.failed reason=${String(err?.message ?? err)}`);
 			});
 		__pluginInitDone = Promise.all([topicLoadP, chatHistoryLoadP, portalSyncP]);
 

@@ -21,25 +21,35 @@ import { getPortalModels, portalModelsCoveredById } from './portal-model-catalog
  * @param {Function} opts.getConfig - () → 当前 cfg 快照（getClawConfig）；null/缺时跳过
  * @param {Function} opts.mutateConfigFile - openclaw/plugin-sdk/config-mutation 的写盘入口
  * @param {string} [opts.providerId] - 默认 minimax-portal
+ * @param {object} [opts.logger] - gateway 注入的 pino 风格 logger（本地诊断）
+ * @param {Function} [opts.remoteLog] - remoteLog(text)（远程诊断；启动一次、低频）
  * @returns {Promise<{changed:boolean, reason:string}>} reason: no-config|not-bound|no-catalog|in-sync|updated
  */
-export async function reconcilePortalModels({ getConfig, mutateConfigFile, providerId = PORTAL_PROVIDER_ID }) {
+export async function reconcilePortalModels({ getConfig, mutateConfigFile, providerId = PORTAL_PROVIDER_ID, logger, remoteLog }) {
 	const cfg = getConfig?.();
-	// runtime 未注入 / config 不可读：跳过，下次启动再对
+	// runtime 未注入 / config 不可读：跳过，下次启动再对（非事件，不记诊断）
 	if (!cfg || typeof cfg !== 'object') return { changed: false, reason: 'no-config' };
 	const node = cfg.models?.providers?.[providerId];
-	// 未绑定（无 provider 节点）→ 不碰。登录成功时已写过节点 + 清单，绑定后才谈得上对账
+	// 未绑定（无 provider 节点）→ 不碰。登录成功时已写过节点 + 清单，绑定后才谈得上对账。
+	// 同属非事件（未用该 provider 的网关每次启动都会到这）→ 不记诊断，避免刷屏
 	if (!node || typeof node !== 'object' || Array.isArray(node)) return { changed: false, reason: 'not-bound' };
+	// 到这里 provider 已绑定，"模型清单是否需要注入"才成立——后续每个结果都记诊断（本地 log + remoteLog）。
+	// remoteLog 一次启动一条、低频，符合约定。
 	const target = getPortalModels(providerId);
+	const finish = (changed, reason, count) => {
+		logger?.info?.(`[coclaw] ${providerId} model reconcile: ${changed ? 'synced' : 'no write'} (reason=${reason}, models=${count})`);
+		remoteLog?.(`providerAuth.portalReconcile reason=${reason} changed=${changed} provider=${providerId} models=${count}`);
+		return { changed, reason };
+	};
 	// 表里没这个 provider（理论不该发生）→ 不动用户已有清单
-	if (target.length === 0) return { changed: false, reason: 'no-catalog' };
+	if (target.length === 0) return finish(false, 'no-catalog', 0);
 	// 只按 id 判"已覆盖"：目标里每个 model id 都已在配置现有清单出现 → 视为已同步、零写入。
 	// 比"全等"宽容——配置是我们的超集（别的来源，如官方 MiniMax 插件，多写了几个模型）时也判已覆盖、
 	// 不去动它，避免和它来回覆盖、反复重启。仅当配置缺了我们某个 id（升级新增模型 / 老配置不全）才写。
 	// 顺带说清读/写不对称：getConfig 读「解析后」配置（config.current()），mutateConfigFile 默认写
 	// 「源」配置。即便上游将来在解析期给第三方 portal 注入额外模型，那也只是让配置成超集、我们的 id 仍在
 	// → 判已覆盖 → 不写，不会触发"永远判不一致、每次启动都写"的循环。
-	if (portalModelsCoveredById(node.models, target)) return { changed: false, reason: 'in-sync' };
+	if (portalModelsCoveredById(node.models, target)) return finish(false, 'in-sync', target.length);
 
 	await mutateConfigFile({
 		afterWrite: { mode: 'auto' },
@@ -50,5 +60,5 @@ export async function reconcilePortalModels({ getConfig, mutateConfigFile, provi
 			p.models = getPortalModels(providerId);
 		},
 	});
-	return { changed: true, reason: 'updated' };
+	return finish(true, 'updated', target.length);
 }

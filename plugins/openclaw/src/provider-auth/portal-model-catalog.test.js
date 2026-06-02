@@ -9,13 +9,14 @@ import {
 
 // 钉死与上游对齐的确切清单（含最必须运行元数据；不含 cost——portal 是 token plan）
 const EXPECTED = [
+	{ id: 'MiniMax-M3', name: 'MiniMax M3', reasoning: true, input: ['text', 'image'], contextWindow: 1000000, maxTokens: 131072 },
 	{ id: 'MiniMax-M2.7', name: 'MiniMax M2.7', reasoning: true, contextWindow: 204800, maxTokens: 131072 },
 	{ id: 'MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed', reasoning: true, contextWindow: 204800, maxTokens: 131072 },
 ];
 
 // === PORTAL_MODEL_CATALOG ===
 
-test('PORTAL_MODEL_CATALOG: minimax-portal holds the two current models with id/name + runtime metadata', () => {
+test('PORTAL_MODEL_CATALOG: minimax-portal holds the current models with id/name + runtime metadata', () => {
 	const list = PORTAL_MODEL_CATALOG['minimax-portal'];
 	assert.deepEqual(list, EXPECTED);
 	for (const m of list) {
@@ -33,6 +34,15 @@ test('PORTAL_MODEL_CATALOG: minimax-portal holds the two current models with id/
 	}
 });
 
+test('PORTAL_MODEL_CATALOG: M3 carries the multimodal input flag; text-only models omit it', () => {
+	const byId = Object.fromEntries(PORTAL_MODEL_CATALOG['minimax-portal'].map((m) => [m.id, m]));
+	// M3 多模态须显式标出，否则会被当纯文本、丢看图能力
+	assert.deepEqual(byId['MiniMax-M3'].input, ['text', 'image']);
+	// M2.7 系纯文本，沿用系统默认（不写 input）
+	assert.equal(byId['MiniMax-M2.7'].input, undefined);
+	assert.equal(byId['MiniMax-M2.7-highspeed'].input, undefined);
+});
+
 // === getPortalModels ===
 
 test('getPortalModels: returns the list for a known provider', () => {
@@ -48,6 +58,9 @@ test('getPortalModels: returns a deep copy (caller mutation cannot poison the sh
 	a[0].id = 'HACKED';
 	a[0].reasoning = false;
 	a.push({ id: 'X', name: 'X' });
+	// 嵌套字段也须隔离：M3 的 input 数组若与共享常量共引用，push/改元素会污染原表
+	a[0].input.push('audio');
+	a[0].input[0] = 'HACKED';
 	// 再取一次仍是原值
 	assert.deepEqual(getPortalModels('minimax-portal'), EXPECTED);
 });
@@ -73,11 +86,8 @@ test('portalModelsCoveredById: current is a superset (extra models from another 
 
 test('portalModelsCoveredById: matched by id only — different name/metadata still covered', () => {
 	const t = getPortalModels('minimax-portal');
-	// 别的来源用不同 name / 参数写了我们的 id：仍判已覆盖
-	const drift = [
-		{ id: t[0].id, name: 'OLD NAME', reasoning: false },
-		{ id: t[1].id, name: t[1].name, contextWindow: 1 },
-	];
+	// 别的来源用不同 name / 参数写了我们的全部 id：仍判已覆盖
+	const drift = t.map((m, i) => ({ id: m.id, name: `OLD NAME ${i}`, reasoning: false, contextWindow: 1 }));
 	assert.equal(portalModelsCoveredById(drift, t), true);
 });
 
@@ -102,7 +112,7 @@ test('portalModelsCoveredById: non-array current (missing / garbage) treated as 
 
 test('portalModelsCoveredById: dirty current entries (null/garbage) do not crash; matched by id', () => {
 	const t = getPortalModels('minimax-portal');
-	const dirty = [null, 'garbage', { id: t[0].id }, { id: t[1].id }];
+	const dirty = [null, 'garbage', ...t.map((m) => ({ id: m.id }))];
 	assert.equal(portalModelsCoveredById(dirty, t), true);
 });
 

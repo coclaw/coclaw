@@ -101,6 +101,7 @@ test('reconcile: config is a superset (our ids present + extras from another sou
 
 test('reconcile: config has our ids but drifted name/metadata → still in-sync (covered by id), no write', async () => {
 	const drifted = [
+		{ id: 'MiniMax-M3', name: 'Renamed M3', input: ['text'] },
 		{ id: 'MiniMax-M2.7', name: 'Different Name', reasoning: false },
 		{ id: 'MiniMax-M2.7-highspeed', name: 'Another', contextWindow: 1 },
 	];
@@ -176,4 +177,51 @@ test('reconcile: node vanished between read and write (TOCTOU) → mutate is a n
 	assert.equal(calls.length, 1);
 	// 但不无中生有重建节点
 	assert.equal(calls[0].draft.models.providers['minimax-portal'], undefined);
+});
+
+// === 诊断日志（本地 logger.info + remoteLog）===
+// 收集 logger.info / remoteLog 文本
+function makeSpies() {
+	const infos = [];
+	const remotes = [];
+	return { logger: { info: (m) => infos.push(m) }, remoteLog: (m) => remotes.push(m), infos, remotes };
+}
+
+test('reconcile log: updated → 本地 log + remoteLog 各一条，带 reason/changed/models 计数', async () => {
+	const stale = makeCfg([{ id: 'MiniMax-M2', name: 'MiniMax M2' }]); // 缺我们的 id → 触发写
+	const { mutateConfigFile } = makeMutate(() => structuredClone(stale));
+	const { logger, remoteLog, infos, remotes } = makeSpies();
+	await reconcilePortalModels({ getConfig: () => stale, mutateConfigFile, logger, remoteLog });
+	assert.equal(infos.length, 1);
+	assert.match(infos[0], /minimax-portal model reconcile: synced \(reason=updated, models=3\)/);
+	assert.deepEqual(remotes, [`providerAuth.portalReconcile reason=updated changed=true provider=minimax-portal models=${TARGET.length}`]);
+});
+
+test('reconcile log: in-sync → 也记诊断（确认对账跑过、判已覆盖、零写入）', async () => {
+	const { mutateConfigFile } = makeMutate(() => makeCfg());
+	const { logger, remoteLog, infos, remotes } = makeSpies();
+	await reconcilePortalModels({ getConfig: () => makeCfg(), mutateConfigFile, logger, remoteLog });
+	assert.equal(infos.length, 1);
+	assert.match(infos[0], /minimax-portal model reconcile: no write \(reason=in-sync, models=3\)/);
+	assert.deepEqual(remotes, [`providerAuth.portalReconcile reason=in-sync changed=false provider=minimax-portal models=${TARGET.length}`]);
+});
+
+test('reconcile log: no-catalog（已绑定但表为空）→ 记诊断，models=0', async () => {
+	const cfg = { models: { providers: { 'other-portal': { models: [] } } } };
+	const { mutateConfigFile } = makeMutate(() => cfg);
+	const { logger, remoteLog, infos, remotes } = makeSpies();
+	await reconcilePortalModels({ getConfig: () => cfg, mutateConfigFile, providerId: 'other-portal', logger, remoteLog });
+	assert.equal(infos.length, 1);
+	// 本地 log 也须带真实 providerId（不能硬编码 minimax-portal）——用别的 portal 调时不可错标
+	assert.match(infos[0], /^\[coclaw\] other-portal model reconcile: no write \(reason=no-catalog, models=0\)/);
+	assert.deepEqual(remotes, ['providerAuth.portalReconcile reason=no-catalog changed=false provider=other-portal models=0']);
+});
+
+test('reconcile log: not-bound / no-config 是非事件 → 不记任何诊断（不刷未用该 provider 的网关）', async () => {
+	const { mutateConfigFile } = makeMutate(() => makeCfg());
+	const { logger, remoteLog, infos, remotes } = makeSpies();
+	await reconcilePortalModels({ getConfig: () => ({ models: { providers: {} } }), mutateConfigFile, logger, remoteLog });
+	await reconcilePortalModels({ getConfig: () => null, mutateConfigFile, logger, remoteLog });
+	assert.equal(infos.length, 0);
+	assert.equal(remotes.length, 0);
 });
