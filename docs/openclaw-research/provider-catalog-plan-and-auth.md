@@ -127,9 +127,11 @@ popular 分组靠 `getProviderMeta(catalog.provider)` 严格匹配 catalog id，
 |---|---|---|
 | **独立 `-plan` provider id** | `stepfun-plan`（独立 provider id + 独立 auth choice 槽 `plan-api-key-cn/intl`，但 env 仍与基座共用 `STEPFUN_API_KEY`）；`volcengine-plan`/`byteplus-plan`（纯 auth 别名，`providerAuthAliases` 指向基座、共享基座 key） | 仅 `stepfun-plan` 出现；别名型的折叠进基座、不单独出现 |
 | **独立登录门户 provider id** | `minimax-portal`（device-code）、`github-copilot`（device-code）、`openai-codex`（oauth/device-code/api-key） | 出现，作为独立条目 |
-| **同 provider id 内多 auth 选项** | `qwen`（4 个 api_key choice：2 按量 + 2 套餐）、`openai`（api_key + oauth + device_code） | 出现一条基座；多选项被拍平（见第 4 节） |
+| **同 provider id 内多 auth 选项** | `qwen`（4 个 api_key choice：2 按量 + 2 套餐）、`zai`（5 个 choice，其中 `coding-global`/`coding-cn` 两个是 GLM Coding Plan 端点）、`openai`（api_key + oauth + device_code） | 出现一条基座；多选项被拍平（见第 4 节） |
 
-> **未确认**：智谱（`zai`）虽有 GLM Coding Plan（见 §3.1 厂商现实），但它在 OpenClaw 里的编码形态本轮**未核实**——catalog 仅见基座 `zai`、未见独立 `zai-plan`，不清楚套餐是独立 id、同 id 选项、还是尚未接入。MiniMax 套餐落在 `minimax`（api-key）还是 `minimax-portal`（device-code）也只是按现象归类、未逐字核 manifest。这两点待补。
+> **智谱与 MiniMax 编码形态（已核实）**：
+> - **智谱 `zai` = 形态 B**：单一 `zai` id 下 5 个 auth choice 共用一把 key（`zaiApiKey`），靠 `method` 切端点；其中 `coding-global`/`coding-cn` 落到 coding 端点（`api.z.ai` / `open.bigmodel.cn`）= GLM Coding Plan，与按量端点并列。**无**独立 `zai-plan`。
+> - **MiniMax = 混合**：`minimax`（api-key）**同时收按量 key `sk-api-` 和订阅 key `sk-cp-`**，靠 **key 前缀**区分（OpenClaw 不解析前缀、原样收；与 §3.2 第①拨一致），两者运行时都走 `/anthropic` 端点；`minimax-portal`（device-code）是 OAuth 登录门户取订阅 token。即 MiniMax 订阅有两条入口（粘 `sk-cp-` key 进 `minimax` / 经 `minimax-portal` 登录）。
 
 ---
 
@@ -142,8 +144,9 @@ OpenClaw 区分"同一家走按量还是走套餐"有三种机制，**没有一�
 | provider | 区分机制 |
 |---|---|
 | **openai** | 靠 **auth kind**：按量 = `api_key`，ChatGPT 套餐 = `oauth`/`device_code` |
-| **qwen** | 靠 **auth choice**（不是 kind）：同 id 下 4 个选项**全是 `api_key`**，靠 `methodId`/`choiceId` 区分，选哪个就路由到哪个端点 |
+| **qwen** / **zai** | 靠 **auth choice**（不是 kind）：同 id 下多个选项**全是 `api_key`**（qwen 4 个、zai 5 个），靠 `methodId`/`choiceId` 区分，选哪个就路由到哪个端点；落到 coding 端点的选项 = 套餐 |
 | volcengine / stepfun | 靠**拆成两个 provider id**（`-plan`） |
+| minimax | 靠 **key 前缀**：`minimax`（api-key）一条同收 `sk-api-`（按量）/ `sk-cp-`（订阅），OpenClaw 不解析、由服务商凭前缀辨别 |
 
 `qwen` 的 4 个 choice（`extensions/qwen/openclaw.plugin.json`）：
 
@@ -189,7 +192,7 @@ OpenClaw 区分"同一家走按量还是走套餐"有三种机制，**没有一�
 
 > **B 类内部成因其实分两种，别混**：
 > - **独立 `-plan` id 但被折叠**（`volcengine`/`byteplus`）：OpenClaw **有**独立套餐 id，区分本可干净落在 provider id 上、可追踪；它们"糊"纯粹是因为 **CoClaw 添加界面把这些 `-plan` 别名折叠进了基座、不单独露出**（见 §3.3），用户在添加界面只看得到按量基座。
-> - **同 id 多选项**（`qwen`/`openai`）：区分埋在一个 id 内的多个选项里，CoClaw 又把选项拍平（见 §4.2）——**这才是真正"记不下、事后分不出"的情形**。
+> - **同 id 多选项**（`qwen`/`zai`/`openai`）：区分埋在一个 id 内的多个选项里，CoClaw 又把选项拍平（见 §4.2）——**这才是真正"记不下、事后分不出"的情形**。`minimax`（api-key）同收 `sk-api-`/`sk-cp-` 也属此类（CoClaw 不解析 key 前缀，分不出按量还是订阅）。
 >
 > 一句话：**拆成独立 provider id 的厂商，区分本质是干净的；真正的缺口只在"同 id 多选项"那一类。**（阶跃 `stepfun-plan` 正因独立 id 且在添加界面单独露出，已归在上面的 A 类。）
 
