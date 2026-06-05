@@ -25,6 +25,17 @@ files:
 
 asar: true
 
+# Deep Link 协议注册（coclaw://）：
+#   - macOS：electron-builder 据此向打包 .app 的 Info.plist 注入 CFBundleURLTypes
+#     （LaunchServices 只认它；运行时 setAsDefaultProtocolClient 无法为已打包 app 注册）。
+#   - Windows：NSIS 不消费本字段；协议靠运行时 setAsDefaultProtocolClient 首次启动写
+#     HKCU 注册（electron/deep-link.js），首启后即生效。“安装即注册”（首启前的冷链接）
+#     需自定义 NSIS 脚本，见 ui/TODO.md。
+protocols:
+  - name: CoClaw Deep Link
+    schemes:
+      - coclaw
+
 # 自动更新源：走 CoClaw 自己的 CDN，规避 GitHub Releases 的国内访问不稳定。
 # Win / Mac 产物分别推送到 /releases/win/ 和 /releases/mac/，语义更清晰。
 # 发布流程：build 后把 dist-electron/ 下对应平台的 latest*.yml + 安装包 + blockmap
@@ -38,6 +49,11 @@ win:
     - target: portable
       arch: [x64]
   icon: build-resources/icon.ico
+  # 代码签名（占位）：设置 CSC_LINK（.pfx/.p12 路径或其 base64）+ CSC_KEY_PASSWORD
+  # 环境变量即自动签名；未设置时产出未签名安装包（会触发 SmartScreen 警告）。
+  # 硬件令牌 / Azure Trusted Signing 等高级场景在此用 signtoolOptions 配置：
+  # signtoolOptions:
+  #   sign: ./build-resources/win-sign.cjs
   publish:
     - provider: generic
       url: https://im.coclaw.net/releases/win/
@@ -61,6 +77,10 @@ mac:
   target:
     - target: dmg
       arch: [universal]
+    # zip 是 electron-updater 在 macOS 上应用更新所必需的产物（dmg 不参与差量更新）；
+    # 缺它则自动更新会抛 ERR_UPDATER_ZIP_FILE_NOT_FOUND。
+    - target: zip
+      arch: [universal]
   icon: build-resources/icon.icns
   category: public.app-category.social-networking
   darkModeSupport: true
@@ -68,6 +88,11 @@ mac:
   hardenedRuntime: true
   entitlements: build-resources/entitlements.mac.plist
   entitlementsInherit: build-resources/entitlements.mac.inherit.plist
+  # 公证：electron-builder 内置 notarytool，凭据从环境变量读取（APPLE_ID +
+  # APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID，或 APPLE_API_KEY 三件套；见 ../.env.example）。
+  # 未配凭据时自动静默跳过、未签名(.app 无 Developer ID)时也不公证 —— 构建仍成功；
+  # 正式分发须配齐，否则其它 Mac 的 Gatekeeper 会拦截下载到的 .app。
+  notarize: true
   extendInfo:
     NSMicrophoneUsageDescription: "CoClaw 需要使用麦克风来录制语音消息"
     NSCameraUsageDescription: "CoClaw 需要使用摄像头拍摄图片用于对话"

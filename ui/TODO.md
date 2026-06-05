@@ -2,6 +2,34 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## Windows NSIS 未在安装期注册 coclaw:// 协议（首启前的冷链接打不开）
+
+**发现日期**：2026-06-06
+**来源**：client-shell-parity 壳子完善的 deep-review；预存缺口（桌面壳从未在安装期注册协议）
+
+- 现状：electron-builder 26.8.1 的 NSIS target **不消费** `electron-builder.yaml` 的顶层 `protocols` 字段（该字段仅服务 macOS Info.plist、Linux .desktop、Windows-Store Appx；已读源码 `app-builder-lib/out/targets/nsis` 零引用证实）。Windows 上 `coclaw://` 仅靠运行时 `app.setAsDefaultProtocolClient`（`ui/electron/deep-link.js:42`，首次启动写 HKCU）注册。
+- 影响：app 首启后深链正常；但"装好还没启动过就点 coclaw:// 链接"这条冷路径打不开（绑定流程通常先启动再绑，影响面窄）。对照 Android（manifest intent-filter 安装即注册）属轻微 parity 缺口。
+- 修法方向：加自定义 NSIS 脚本（`nsis.include` 指向 `.nsh`，`!macro customInstall` 里 `WriteRegStr HKCU "Software\Classes\coclaw" ...`、`customUnInstall` 删）。perMachine:false 故写 HKCU 不需提权。
+- 为何暂不做：需 Windows 构建环境实测安装包注册表写入，本环境无法验证；盲写未测 NSIS 脚本有破坏 Windows 构建风险。待 Windows/打包环境就绪后实现+验证。
+
+## docs/designs/electron-desktop-shell.md 与现状脱节（旧脚本 + 死链）
+
+**发现日期**：2026-06-06
+**来源**：同上 deep-review；设计稿为过程文档、按约定归档不追新，登记备查
+
+- 内嵌 `electron:build:mac` 片段仍是旧的 `electron-builder --mac dmg`（已改为 `--mac`，产 dmg+zip）；mac target 示例仍只列 `dmg`，未含自动更新所需的 `zip`。
+- 两处指向 `deploy/static/releases/README.md` 为死链（`deploy/static/` 被 gitignore、磁盘无此文件）；canonical 发布说明已迁至 `deploy/docs/desktop-releases.md`。
+- 修法：按需更新这三处，或在稿头标注"以代码为准、部分示例已过时"。
+
+## deep-link.js flushPendingDeepLink 在窗口 null/destroyed 时不清 pendingUrl（陈旧链接可能滞留）
+
+**发现日期**：2026-06-06
+**来源**：同上 deep-review（`ui/electron/deep-link.js:65-70`）；预存边角，非本次引入
+
+- 现状：`flushPendingDeepLink` 仅在 win 存在且未 destroyed 时 send + 清空；若此刻窗口已销毁，`pendingUrl` 滞留，下个窗口加载后会投递这条可能已过期的 deep-link。
+- 影响：极边角（需"有 pending 时窗口恰好销毁"再开新窗口），且"留着等下个窗口"也可视作有意行为。严重度低。
+- 修法方向（若要治）：窗口 closed/销毁路径上按需丢弃过期 pending，或给 pendingUrl 加时效。
+
 ## InstanceOverview 的 channel 渲染同款换行隐患（窄屏多渠道可能溢出）
 
 **发现日期**：2026-06-01

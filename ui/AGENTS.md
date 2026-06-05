@@ -96,11 +96,12 @@ pnpm electron:build:win
 # Windows portable（免安装版，不参与自动更新）
 pnpm electron:build:win:portable
 
-# macOS DMG（仅 macOS + 代码签名环境下可构建）
+# macOS DMG + zip（zip 供自动更新；仅 macOS + 代码签名环境下可构建）
 pnpm electron:build:mac
 ```
 
-产物在 `ui/dist-electron/`。发布见 `deploy/static/releases/README.md`。
+产物在 `ui/dist-electron/`。签名/公证环境变量见 `ui/.env.example`；
+发布与分发流程见 `deploy/docs/desktop-releases.md`，iOS 构建见 `ui/docs/ios-build-release.md`。
 
 ### 测试
 

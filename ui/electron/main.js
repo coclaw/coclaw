@@ -125,6 +125,12 @@ if (!gotLock) {
 		return win;
 	}
 
+	// 注册 Deep Link 协议（含 macOS open-url 监听）——必须在 app ready 之前注册。
+	// macOS 冷启动经 coclaw:// 唤起时，open-url 会在 whenReady 之前触发；若拖到
+	// whenReady 内再注册会丢掉首个 URL。handleDeepLink 会把早到的 URL 缓存进
+	// pendingUrl，待窗口 did-finish-load 后由 flushPendingDeepLink 补发。
+	registerProtocol(app);
+
 	app.whenReady().then(() => {
 		// Windows 通知需要 AppUserModelId
 		if (process.platform === 'win32') {
@@ -206,9 +212,6 @@ if (!gotLock) {
 
 		// 权限处理
 		setupPermissions(session.defaultSession);
-
-		// 注册 Deep Link 协议
-		registerProtocol(app);
 
 		// 创建主窗口
 		const win = createWindow();

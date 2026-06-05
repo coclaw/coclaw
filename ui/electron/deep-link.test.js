@@ -145,6 +145,43 @@ describe('registerProtocol — argv[1] 防御', () => {
 		expect(win.webContents.send).toHaveBeenCalledWith('deep-link', 'coclaw://chat/abc');
 		windows.list = [];
 	});
+	test('open-url 冷启动（窗口尚未 load）→ 缓存为 pending，不立即 send', () => {
+		// macOS 冷启动经 coclaw:// 唤起：open-url 早于窗口加载完成时只缓存、待 flush 补发
+		__resetForTest();
+		const handlers = {};
+		registerProtocol({
+			setAsDefaultProtocolClient: vi.fn(),
+			on: (evt, cb) => { handlers[evt] = cb; },
+		});
+		const evt = { preventDefault: vi.fn() };
+		const win = makeWin({ loading: true, url: '' });
+		windows.list = [win];
+		handlers['open-url'](evt, 'coclaw://chat/cold');
+		expect(evt.preventDefault).toHaveBeenCalled();
+		expect(win.webContents.send).not.toHaveBeenCalled();
+		expect(__peekPendingUrl()).toBe('coclaw://chat/cold');
+		windows.list = [];
+	});
+	test('open-url 真冷启动（零窗口）→ 仅缓存 pending，待窗口加载后补发', () => {
+		// macOS 冷启动瞬间 getAllWindows() 为空，open-url 早于任何窗口创建；
+		// 此路径正是 registerProtocol 必须在 app ready 之前注册才能接住的场景
+		__resetForTest();
+		const handlers = {};
+		registerProtocol({
+			setAsDefaultProtocolClient: vi.fn(),
+			on: (evt, cb) => { handlers[evt] = cb; },
+		});
+		windows.list = []; // 零窗口
+		const evt = { preventDefault: vi.fn() };
+		handlers['open-url'](evt, 'coclaw://topics/x');
+		expect(evt.preventDefault).toHaveBeenCalled();
+		expect(__peekPendingUrl()).toBe('coclaw://topics/x');
+		// 随后窗口加载完成 → flush 补发一次并清空
+		const win = makeWin({ loading: false, url: 'https://im.coclaw.net/' });
+		flushPendingDeepLink(win);
+		expect(win.webContents.send).toHaveBeenCalledWith('deep-link', 'coclaw://topics/x');
+		expect(__peekPendingUrl()).toBeNull();
+	});
 });
 
 describe('bootstrapDeepLinkFromArgv', () => {
