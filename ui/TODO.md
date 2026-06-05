@@ -777,3 +777,15 @@ X4 触及面比 X1 广，需要重新评估：
 - 严重度：中（仅少了事前强提示，有事后橙条兜底）。
 - UI 侧清不干净：把变体归一到基座需要 `resolveProviderIdForAuth`，UI 拿不到（设计 dump #8「归一在插件侧」）。
 - 最优修法方向：**插件在 `coclaw.model.list` 出参按 scope 附加"主模型 provider 的别名归一基座 id"字段**（additive，用已注入的 `resolveProviderIdForAuth` 算），UI carrier 判定比对该字段而非裸名。次选：UI 在 remove-flow 加"变体主模型 + 撤任一已配基座 → 强提示"的过警告启发式（多基座时会过报，且越本子任务 scope）。
+
+## 常用 provider 标记 `zhipuai`/`groq` 与 catalog id 对不上 → 这两个常用分组未生效
+
+**发现日期**：2026-06-03
+**来源**：provider 研究（常用模型清单 + plan 徽章）调研，活网关 2026.5.28 实测 `coclaw.providerAuth.catalog`；预存 bug，非本次引入
+
+- 现状：`ui/src/constants/provider-meta.js` 的 popular 集里有两个 id 对不上运行时 catalog：
+  - **智谱 `zhipuai`**：OpenClaw 智谱原生 id 是 `zai`（别名仅 `z.ai`/`z-ai`，**不含 `zhipuai`**）。catalog 里在位的是 `zai`、有 13 个模型。
+  - **`groq`**：`providerAuth.catalog`（添加对话框数据源）的 43 个 provider 里**根本没有 `groq`**（groq 只出现在 model-catalog 路径 `infer model providers`，未进 setup 鉴权发现集）。
+- 机制：`AddProviderDialog` 的 popular 分组靠 `getProviderMeta(catalog.m.provider)` 严格匹配 catalog id，匹配不到就降级 `{ popular:false }`。结果 7 个 popular 实际只有 anthropic/openai/google/deepseek/moonshot 这 5 个进了常用组，zhipuai/groq 落空（智谱仍在"其他"组可加，groq 干脆不在添加列表）。
+- 修法：把 `zhipuai` 改为 `zai`（dashboardUrl 同步核对智谱官网建 key 链接）；`groq` 为何不在 providerAuth catalog 需单独查（插件是否启用/是否只走 model-catalog），确认后决定留删。同步更新 `provider-meta.test.js` 若有相关断言。
+- 严重度：低（仅常用置顶失效，不影响可达性与功能）。
