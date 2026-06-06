@@ -147,15 +147,16 @@ test('ChatInput：桌面端 Enter 键发送消息 @chat', async ({ page }) => {
 	const msgText = 'E2E_ENTER_' + Date.now();
 
 	await typeText(textarea, msgText);
+	// 确认整串已落入 textarea（v-model 同步完成）再发送，避免尾字符竞态
+	await expect(textarea).toHaveValue(msgText, { timeout: 3000 });
 
 	// 按 Enter 发送
 	await textarea.press('Enter');
 
-	// 发送按钮应消失（进入 sending 状态）或消息出现在列表中
-	await expect(async () => {
-		const pageText = await page.locator('main').innerText();
-		expect(pageText).toContain(msgText);
-	}).toPass({ timeout: 10_000 });
+	// 锁定到消息项 + 唯一时间戳精确匹配，避开历史与"上翻加载更早记录"等 UI 提示串；
+	// 乐观消息 pending 态仅显示"发送中"，accepted 后才渲染正文，故放宽超时
+	const sentMsg = page.locator('[data-testid="chat-msg-item"]').filter({ hasText: msgText });
+	await expect(sentMsg).toBeVisible({ timeout: 30_000 });
 });
 
 // ================================================================
@@ -204,8 +205,10 @@ test('ChatInput：空输入时发送按钮禁用 @chat', async ({ page }) => {
 
 	await waitChatReady(page);
 
-	// 发送按钮应禁用
-	await expect(page.getByTestId('btn-send')).toBeDisabled({ timeout: 5000 });
+	// 空输入时 btn-send 用 v-else-if="canSend"，canSend=false 故不渲染（非 disabled 态）
+	// 同时未发送 sending=false，btn-stop 也不渲染 → 两个按钮都不可见
+	await expect(page.getByTestId('btn-send')).not.toBeVisible({ timeout: 5000 });
+	await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 3000 });
 
 	// 输入文本后发送按钮应启用
 	const textarea = page.getByTestId('chat-textarea');

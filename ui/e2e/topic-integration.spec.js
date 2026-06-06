@@ -3,7 +3,7 @@
  * 需要真实 server + OpenClaw 实例 + 已完成的插件
  */
 import { test, expect } from '@playwright/test';
-import { login, waitChatReady, typeText } from './helpers.js';
+import { login, waitChatReady, typeText, evalStore } from './helpers.js';
 
 test.describe('Topic management @chat', () => {
 	test.setTimeout(120_000);
@@ -23,7 +23,15 @@ test.describe('Topic management @chat', () => {
 		// 1. 进入 topics 列表页，等待 agent 列表加载
 		await page.goto('/topics');
 		const agentLink = page.locator('nav a[href*="/chat/"]').first();
-		await agentLink.waitFor({ state: 'visible', timeout: 20_000 });
+		// 无在线 agent 时不硬抛，按其它 spec 的模式 skip
+		let hasAgent = true;
+		try {
+			await agentLink.waitFor({ state: 'visible', timeout: 20_000 });
+		}
+		catch {
+			hasAgent = false;
+		}
+		test.skip(!hasAgent, 'No online agent available');
 
 		// 2. 点击第一个 agent 进入 main session
 		await agentLink.click();
@@ -52,29 +60,25 @@ test.describe('Topic management @chat', () => {
 		await expect(page).toHaveURL(/\/topics\/[0-9a-f-]{36}/, { timeout: 5000 });
 
 		// 8. 等待 sending 状态结束（agent 完成处理）
+		//    chat store 是工厂模式，真实 id 为 chat-session:/chat-topic:，须用 evalStore 的 'chat' 简写匹配
 		await expect(async () => {
-			const sending = await page.evaluate(() => {
-				const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
-				return pinia?._s?.get('chat')?.sending;
-			});
+			const sending = await evalStore(page, 'chat', 'return store.sending;');
 			expect(sending).toBe(false);
 		}).toPass({ timeout: 90_000 });
 
 		// 9. 诊断：检查 store 状态
-		const storeState = await page.evaluate(() => {
-			const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
-			const chat = pinia?._s?.get('chat');
+		const storeState = await evalStore(page, 'chat', `
 			return {
-				sessionId: chat?.sessionId,
-				clawId: chat?.clawId,
-				topicMode: chat?.topicMode,
-				topicAgentId: chat?.topicAgentId,
-				msgCount: chat?.messages?.length ?? 0,
-				loading: chat?.loading,
-				errorText: chat?.errorText,
-				sending: chat?.sending,
+				sessionId: store.sessionId,
+				clawId: store.clawId,
+				topicMode: store.topicMode,
+				topicAgentId: store.topicAgentId,
+				msgCount: store.messages?.length ?? 0,
+				loading: store.loading,
+				errorText: store.errorText,
+				sending: store.sending,
 			};
-		});
+		`);
 		console.log('Chat store state after send:', JSON.stringify(storeState));
 
 		// 10. 核心验证：消息区域不为空白
@@ -91,13 +95,15 @@ test.describe('Topic management @chat', () => {
 
 		// 等待 topic 列表加载
 		const topicLinks = page.locator('nav a[href*="/topics/"]');
+		let hasTopic = true;
 		try {
 			await topicLinks.first().waitFor({ state: 'visible', timeout: 15_000 });
 		}
 		catch {
-			console.log('No topics found in list (might need to create one first)');
-			return;
+			hasTopic = false;
 		}
+		// 无 topic 时显式 skip（旧 return 会零断言报假绿）
+		test.skip(!hasTopic, 'No topics found in list (might need to create one first)');
 
 		const count = await topicLinks.count();
 		console.log(`Found ${count} topic(s) in the list`);
@@ -110,10 +116,7 @@ test.describe('Topic management @chat', () => {
 
 		// 验证消息加载成功（不是空白，不是持续 loading）
 		await expect(async () => {
-			const loading = await page.evaluate(() => {
-				const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
-				return pinia?._s?.get('chat')?.loading;
-			});
+			const loading = await evalStore(page, 'chat', 'return store.loading;');
 			expect(loading).toBe(false);
 		}).toPass({ timeout: 15_000 });
 
@@ -122,10 +125,7 @@ test.describe('Topic management @chat', () => {
 		const text = await chatRoot.textContent();
 		console.log('Topic content preview:', text.substring(0, 100));
 		// 基本检查：不应显示 error 状态
-		const errorText = await page.evaluate(() => {
-			const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
-			return pinia?._s?.get('chat')?.errorText ?? '';
-		});
+		const errorText = await evalStore(page, 'chat', 'return store.errorText ?? "";');
 		expect(errorText).toBe('');
 	});
 
@@ -133,13 +133,15 @@ test.describe('Topic management @chat', () => {
 		await page.goto('/topics');
 
 		const topicLink = page.locator('nav a[href*="/topics/"]').first();
+		let hasTopic = true;
 		try {
 			await topicLink.waitFor({ state: 'visible', timeout: 15_000 });
 		}
 		catch {
-			console.log('No topics found, skipping active state test');
-			return;
+			hasTopic = false;
 		}
+		// 无 topic 时显式 skip（旧 return 会零断言报假绿）
+		test.skip(!hasTopic, 'No topics found, skipping active state test');
 
 		await topicLink.click();
 		await page.waitForURL(/\/topics\//, { timeout: 5000 });

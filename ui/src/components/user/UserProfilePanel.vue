@@ -14,7 +14,7 @@
 			<template #footer>
 				<div class="flex w-full justify-end gap-2">
 					<UButton variant="ghost" color="neutral" @click="openNameModal = false">{{ $t('common.cancel') }}</UButton>
-					<UButton :loading="authStore.loading" @click="onSaveName">{{ $t('common.save') }}</UButton>
+					<UButton data-testid="btn-save" :loading="authStore.loading" @click="onSaveName">{{ $t('common.save') }}</UButton>
 				</div>
 			</template>
 		</UModal>

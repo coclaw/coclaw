@@ -16,14 +16,16 @@ import { login, evalStore } from './helpers.js';
 
 /** 等待 claw 在线�� RTC 连接就绪 */
 async function waitClawReady(page, timeout = 30_000) {
+	// dcReady 是 claws store 的"DC 可用"真实字段（onRtcStateChange('connected') 写入）；
+	// UI 已无 WS 传输，DC 就绪即 RTC 就绪。不存在 connState / transportMode 字段。
 	try {
 		await expect(async () => {
 			const items = await evalStore(page, 'claws', 'return store.items');
-			const ready = items.find((b) => b.online && b.connState === 'connected' && b.transportMode === 'rtc');
+			const ready = items.find((b) => b.online && b.dcReady);
 			expect(ready).toBeTruthy();
 		}).toPass({ timeout });
 		const items = await evalStore(page, 'claws', 'return store.items');
-		const claw = items.find((b) => b.online && b.connState === 'connected' && b.transportMode === 'rtc');
+		const claw = items.find((b) => b.online && b.dcReady);
 		return { clawId: claw.id, agentId: 'main' };
 	} catch {
 		return null;
@@ -44,12 +46,30 @@ async function setup(page, t) {
 /** 导航到文件管理页并等待列表加载 */
 async function gotoFiles(page, clawId, agentId) {
 	await page.goto(`/files/${clawId}/${agentId}`);
+	// 面包屑 Root 可见即列表区域已就绪
 	await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 15_000 });
-	await page.waitForTimeout(1500);
+}
+
+/**
+ * 等待该 claw 的连接就绪（conn 存在且 DC open）后再发 RPC。
+ * 页面跳转到 /files 是整页导航，连接管理器会重建——Root 面包屑可见早于连接就绪，
+ * 此时 get(clawId) 可能瞬时为 undefined / rtc 未 open，裸发 mkdirFiles 会 reading 'request' on undefined。
+ * conn.rtc?.isReady 是 DC open 的真实信号（与各 spec 既有判活一致）。
+ */
+async function waitConnReady(page, clawId, timeout = 15_000) {
+	await expect(async () => {
+		const ready = await page.evaluate(async (clawId) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
+			const conn = useClawConnections().get(clawId);
+			return Boolean(conn?.rtc?.isReady);
+		}, clawId);
+		expect(ready).toBe(true);
+	}).toPass({ timeout });
 }
 
 /** RPC 创建目录 */
 async function rpcMkdir(page, clawId, agentId, dir) {
+	await waitConnReady(page, clawId);
 	await page.evaluate(async ({ clawId, agentId, dir }) => {
 		const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 		const { mkdirFiles } = await import('/src/services/file-transfer.js');
@@ -121,7 +141,6 @@ test.describe('文件浏览器 @file', () => {
 
 		// 点击进入目录
 		await page.locator('main').getByText(dirName, { exact: true }).click();
-		await page.waitForTimeout(1500);
 
 		// 面包屑显示目录名
 		await expect(page.getByText(dirName)).toBeVisible({ timeout: 5000 });
@@ -131,16 +150,18 @@ test.describe('文件浏览器 @file', () => {
 
 		// 点击 ".." 返回上层
 		await page.locator('main').getByText('..', { exact: true }).click();
-		await page.waitForTimeout(1500);
+		// ".." 消失表示已回到根目录
+		await expect(page.locator('main').getByText('..', { exact: true })).not.toBeVisible({ timeout: 5000 });
 
 		// 回到根目录，面包屑不再显示 dirName（作为 segment）
 		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible();
 
 		// 再次进入目录，通过面包屑 Root 返回
 		await page.locator('main').getByText(dirName, { exact: true }).click();
-		await page.waitForTimeout(1500);
+		await expect(page.locator('main').getByText('..', { exact: true })).toBeVisible({ timeout: 5000 });
 		await page.getByRole('button', { name: /Root|根目录/ }).click();
-		await page.waitForTimeout(1000);
+		// ".." 消失表示已回根目录
+		await expect(page.locator('main').getByText('..', { exact: true })).not.toBeVisible({ timeout: 5000 });
 
 		// 清理
 		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
@@ -162,17 +183,14 @@ test.describe('文件浏览器 @file', () => {
 
 		// 进入 dir1
 		await page.locator('main').getByText(dir1, { exact: true }).click();
-		await page.waitForTimeout(1500);
-		await expect(page.getByText(dir1)).toBeVisible();
+		await expect(page.getByText(dir1)).toBeVisible({ timeout: 5000 });
 
 		// 进入 dir2（sub）
 		await page.locator('main').getByText(dir2, { exact: true }).click();
-		await page.waitForTimeout(1500);
-		await expect(page.getByText(dir2)).toBeVisible();
+		await expect(page.getByText(dir2)).toBeVisible({ timeout: 5000 });
 
 		// 面包屑跳转回 dir1
 		await page.getByText(dir1).click();
-		await page.waitForTimeout(1500);
 
 		// 应该看到 sub 目录在列表中
 		await expect(page.locator('main').getByText(dir2, { exact: true })).toBeVisible({ timeout: 5000 });
@@ -197,7 +215,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// 进入测试目录
 		await page.locator('main').getByText(dirName, { exact: true }).click();
-		await page.waitForTimeout(1500);
+		await expect(page.locator('main').getByText('..', { exact: true })).toBeVisible({ timeout: 5000 });
 
 		// 上传
 		await page.locator('input[type="file"]').setInputFiles({
@@ -211,15 +229,15 @@ test.describe('文件浏览器 @file', () => {
 
 		// 点击文件触发下载（store 调用 downloadFile → saveBlobToFile）
 		await page.locator('main').getByText(fileName, { exact: true }).click();
-		// 等待下载进度条出现再消失（表示下载完成）
-		await page.waitForTimeout(5000);
+		// 等待下载完成：ProgressRing（role=progressbar）消失或从未出现
+		await expect(page.locator('[role="progressbar"]')).not.toBeVisible({ timeout: 15_000 });
 
 		// 通过 RPC 直接下载验证文件内容
 		const downloadedText = await page.evaluate(async ({ clawId, agentId, dirName, fileName }) => {
 			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 			const { downloadFile } = await import('/src/services/file-transfer.js');
 			const conn = useClawConnections().get(clawId);
-			const handle = downloadFile(conn.__rtc, agentId, `${dirName}/${fileName}`);
+			const handle = downloadFile(conn, agentId, `${dirName}/${fileName}`);
 			const result = await handle.promise;
 			return result.blob.text();
 		}, { clawId: claw.clawId, agentId: claw.agentId, dirName, fileName });
@@ -242,7 +260,7 @@ test.describe('文件浏览器 @file', () => {
 		await clickRefresh(page);
 
 		await page.locator('main').getByText(dirName, { exact: true }).click();
-		await page.waitForTimeout(1500);
+		await expect(page.locator('main').getByText('..', { exact: true })).toBeVisible({ timeout: 5000 });
 
 		// 多文件上传
 		await page.locator('input[type="file"]').setInputFiles(
@@ -276,7 +294,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// 进入目录
 		await page.locator('main').getByText(dirName, { exact: true }).click();
-		await page.waitForTimeout(1500);
+		await expect(page.locator('main').getByText('..', { exact: true })).toBeVisible({ timeout: 5000 });
 
 		// 上传一个文件
 		await page.locator('input[type="file"]').setInputFiles({
@@ -326,16 +344,24 @@ test.describe('文件浏览器 @file', () => {
 
 		await clickRefresh(page);
 
-		// 点击目录行的删除按钮
-		const dirRow = page.locator('main > div').filter({ hasText: dirName }).first();
-		await dirRow.locator('button').last().click();
+		// 定位目录行：从名称文本向上找到 border-b 行（与"UI 删除文件"用例同一稳健模式），
+		// 点击该行的删除按钮。旧写法 main>div 只匹配单个列表容器，.last() 会点到末尾文件行 →
+		// 打开的是文件删除框（确认按钮为"确认"），故 /删除|Delete/ 找不到。
+		const dirText = page.locator('main').getByText(dirName, { exact: true });
+		await expect(dirText).toBeVisible({ timeout: 10_000 });
+		const dirRow = dirText.locator('xpath=ancestor::div[contains(@class, "border-b")]');
+		await dirRow.locator('button').click();
 
-		// 删除目录对话框 — 删除按钮应禁用
-		const deleteBtn = page.locator('button').filter({ hasText: /删除|Delete/ }).last();
+		// 删除目录对话框
+		const dialog = page.locator('[role="dialog"]');
+		await expect(dialog).toBeVisible({ timeout: 3000 });
+
+		// 删除按钮（文案 files.delete = "删除"）初始禁用，需勾选 checkbox
+		const deleteBtn = dialog.getByRole('button').filter({ hasText: /删除|Delete/ }).last();
 		await expect(deleteBtn).toBeDisabled({ timeout: 3000 });
 
-		// 勾选复选框
-		await page.locator('input[type="checkbox"]').check();
+		// 勾选复选框：Nuxt UI(reka) 渲染为 button[role=checkbox]，无 name 时不渲染原生 input
+		await dialog.getByRole('checkbox').click();
 		await expect(deleteBtn).toBeEnabled({ timeout: 1000 });
 
 		// 确认删除
@@ -343,6 +369,9 @@ test.describe('文件浏览器 @file', () => {
 
 		// 目录消失
 		await expect(page.locator('main').getByText(dirName)).not.toBeVisible({ timeout: 10_000 });
+
+		// 兜底清理（UI 删除已生效时为 no-op）
+		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 	});
 
 	// ----------------------------------------------------------
@@ -368,23 +397,16 @@ test.describe('文件浏览器 @file', () => {
 		await setup(page, test);
 
 		await page.goto('/claws');
-		// 等待 AgentCard 渲染
-		const agentCard = page.locator('[class*="rounded-xl"]').filter({ hasText: /chat|对话/ }).first();
+		// 等待 AgentCard 渲染：用稳定的 data-testid（AgentCard 根 class 是 rounded-lg，
+		// rounded-xl 是外层 claw 卡片且不含"对话"文本，旧选择器永远匹配不到）
+		const agentCard = page.locator('[data-testid^="agent-card-"]').first();
 		await expect(agentCard).toBeVisible({ timeout: 15_000 });
 
-		// AgentCard 中应有文件夹图标按钮
-		const _folderBtn = agentCard.locator('button').filter({ has: page.locator('[class*="i-lucide-folder"]') });
-		// Nuxt UI 渲染 icon 为 img，换用更通用的方式
-		const btns = agentCard.locator('button');
-		// AgentCard 动作区有两个按钮：chat + files
-		await expect(async () => {
-			const count = await btns.count();
-			expect(count).toBeGreaterThanOrEqual(2);
-		}).toPass({ timeout: 10_000 });
+		// 点击文件管理入口（btn-files）
+		const filesBtn = agentCard.getByTestId('btn-files');
+		await expect(filesBtn).toBeVisible({ timeout: 10_000 });
+		await filesBtn.click();
 
-		// 点击最后一个按钮（files）
-		const lastBtn = btns.last();
-		await lastBtn.click();
 		await page.waitForURL(/\/files\//, { timeout: 5000 });
 		await expect(page.getByRole('button', { name: /Root|根目录/ })).toBeVisible({ timeout: 10_000 });
 	});

@@ -116,33 +116,38 @@ test('用户页：修改昵称后恢复 @ui', async ({ page }) => {
 	const nameInput = editModal.locator('input');
 	await nameInput.fill('E2E_TEMP_NAME');
 
-	// 点击保存
-	const saveBtn = editModal.locator('button').last();
+	// 点击保存（组件已加 data-testid="btn-save"，避免 .last() 顺序定位歧义）
+	const saveBtn = page.getByTestId('btn-save');
 	await saveBtn.click();
 
-	// 等待保存完成（编辑对话框关闭）
-	await page.waitForTimeout(1000);
+	// 用 try/finally 保证恢复昵称在任何失败路径下都会执行
+	try {
+		// 等待编辑 modal 关闭：保存成功后 btn-save 随 modal 卸载而消失。
+		// 不用 editModal(=.last()) 判可见——modal 关闭后 .last() 会落到外层 profile dialog 造成误判。
+		await expect(page.getByTestId('btn-save')).not.toBeVisible({ timeout: 10_000 });
+	} finally {
+		// 恢复原始昵称（无论断言成功与否都执行，避免 E2E_TEMP_NAME 永久遗留）
+		await page.goto('/user');
+		await expect(page.getByTestId('menu-profile')).toBeVisible({ timeout: 10_000 });
+		await page.getByTestId('menu-profile').click();
 
-	// 恢复原始昵称
-	await page.goto('/user');
-	await expect(page.getByTestId('menu-profile')).toBeVisible({ timeout: 10_000 });
-	await page.getByTestId('menu-profile').click();
+		const dialog2 = page.locator('[role="dialog"]');
+		await expect(dialog2).toBeVisible({ timeout: 5000 });
 
-	const dialog2 = page.locator('[role="dialog"]');
-	await expect(dialog2).toBeVisible({ timeout: 5000 });
+		const editBtn2 = dialog2.getByTestId('btn-edit-name');
+		await editBtn2.click();
 
-	const editBtn2 = dialog2.getByTestId('btn-edit-name');
-	await editBtn2.click();
+		const editModal2 = page.locator('[role="dialog"]').last();
+		await expect(editModal2).toBeVisible({ timeout: 5000 });
 
-	const editModal2 = page.locator('[role="dialog"]').last();
-	await expect(editModal2).toBeVisible({ timeout: 5000 });
+		const nameInput2 = editModal2.locator('input');
+		await nameInput2.fill(originalName);
 
-	const nameInput2 = editModal2.locator('input');
-	await nameInput2.fill(originalName);
-
-	const saveBtn2 = editModal2.locator('button').last();
-	await saveBtn2.click();
-	await page.waitForTimeout(1000);
+		const saveBtn2 = page.getByTestId('btn-save');
+		await saveBtn2.click();
+		// 等待恢复保存完成（同上，用 btn-save 消失判定，避免 .last() 误判外层 dialog）
+		await expect(page.getByTestId('btn-save')).not.toBeVisible({ timeout: 10_000 });
+	}
 });
 
 // ================================================================

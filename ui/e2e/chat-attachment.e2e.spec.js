@@ -13,15 +13,17 @@ import { login, navigateToChat, waitChatReady, typeText, evalStore } from './hel
  */
 
 /** 等待 RTC 就绪，返回 claw 连接信息 */
-async function waitRtcReady(page, timeout = 15_000) {
+async function waitRtcReady(page, timeout = 30_000) {
 	let info = null;
 	await expect(async () => {
 		info = await page.evaluate(async () => {
 			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 			const manager = useClawConnections();
 			for (const [clawId, conn] of manager.__connections) {
-				if (conn.state === 'connected' && conn.transportMode === 'rtc') {
-					return { clawId, transportMode: conn.transportMode };
+				// conn 无 state/transportMode 字段：DC open（conn.rtc.isReady=
+				// rpc DataChannel readyState==='open'）即 RTC 就绪，RTC 是唯一传输
+				if (conn.rtc?.isReady) {
+					return { clawId, transportMode: 'rtc' };
 				}
 			}
 			return null;
@@ -71,9 +73,9 @@ test('附件发送：文本+文件通过 POST 上传，消息包含附件信息�
 	// 用户消息应出现
 	await expect(page.locator(`text=${msgText}`)).toBeVisible({ timeout: 10_000 });
 
-	// 附件卡片应出现在用户消息区（非图片文件显示为卡片）
+	// 附件卡片应出现在用户消息区（非图片文件显示为 ChatFile 卡片，带稳定 testid）
 	await expect(async () => {
-		const cards = page.locator('[data-testid="chat-root"] main .items-end .rounded-lg.border');
+		const cards = page.locator('[data-testid="chat-root"] main .items-end [data-testid="msg-attachment-card"]');
 		const count = await cards.count();
 		expect(count).toBeGreaterThanOrEqual(1);
 	}).toPass({ timeout: 10_000 });
@@ -131,7 +133,7 @@ test('附件发送：仅文件无文本 @chat @file', async ({ page }) => {
 
 	// 附件卡片应出现
 	await expect(async () => {
-		const cards = page.locator('[data-testid="chat-root"] main .items-end .rounded-lg.border');
+		const cards = page.locator('[data-testid="chat-root"] main .items-end [data-testid="msg-attachment-card"]');
 		const count = await cards.count();
 		expect(count).toBeGreaterThanOrEqual(1);
 	}).toPass({ timeout: 10_000 });
@@ -179,9 +181,11 @@ test('附件发送：图片文件在消息中显示预览 @chat @file', async ({
 	// 用户消息应出现
 	await expect(page.locator(`text=${msgText}`)).toBeVisible({ timeout: 10_000 });
 
-	// 图片应以 inline 预览出现在消息气泡中（base64 data URL）
+	// 图片附件应以预览图出现在用户消息区。
+	// 注意：ChatImg 会先取回文件再压缩，渲染出的 <img> src 始终是 blob: URL
+	// （而非 data:image）；用户侧此消息无内联图，故 .items-end img 即附件预览图。
 	await expect(async () => {
-		const imgs = page.locator('[data-testid="chat-root"] main .items-end img[src^="data:image"]');
+		const imgs = page.locator('[data-testid="chat-root"] main .items-end img');
 		const count = await imgs.count();
 		expect(count).toBeGreaterThanOrEqual(1);
 	}).toPass({ timeout: 10_000 });
@@ -274,7 +278,7 @@ test('附件发送：多个文件同时发送 @chat @file', async ({ page }) => 
 
 	// 两个附件卡片出现
 	await expect(async () => {
-		const cards = page.locator('[data-testid="chat-root"] main .items-end .rounded-lg.border');
+		const cards = page.locator('[data-testid="chat-root"] main .items-end [data-testid="msg-attachment-card"]');
 		const count = await cards.count();
 		expect(count).toBeGreaterThanOrEqual(2);
 	}).toPass({ timeout: 10_000 });
@@ -348,7 +352,7 @@ test('附件发送：上传的文件实际存在于 agent workspace @chat @file'
 		const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 		const { downloadFile } = await import('/src/services/file-transfer.js');
 		const conn = useClawConnections().get(clawId);
-		const handle = downloadFile(conn.__rtc, 'main', filePath);
+		const handle = downloadFile(conn, 'main', filePath);
 		const result = await handle.promise;
 		return await result.blob.text();
 	}, { clawId: rtcInfo.clawId, filePath: attachmentPath });

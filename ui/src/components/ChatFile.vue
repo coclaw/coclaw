@@ -1,5 +1,5 @@
 <template>
-	<div class="inline-flex max-w-full items-center gap-2 rounded-xl border border-accented py-2 pl-2 pr-1">
+	<div data-testid="msg-attachment-card" class="inline-flex max-w-full items-center gap-2 rounded-xl border border-accented py-2 pl-2 pr-1">
 		<!-- 文件图标 -->
 		<UIcon name="i-lucide-file" class="size-8 shrink-0 text-amber-400" />
 

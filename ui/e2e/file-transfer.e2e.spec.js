@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { login, TEST_LOGIN_NAME, TEST_PASSWORD } from './helpers.js';
+import { login, TEST_LOGIN_NAME, TEST_PASSWORD, evalStore } from './helpers.js';
 
 const SERVER = 'http://127.0.0.1:3000';
 
@@ -41,8 +41,14 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 		await login(page);
 		// 进入 topics 页以触发 claw 连接和 RTC 建连
 		await page.goto('/topics');
-		// 等待连接建立（WS + RTC 握手）
-		await page.waitForTimeout(8000);
+		// 尽力等待至少一个 claw 上线且 DC 就绪（代替固定 8s 等待）。
+		// dcReady 是 claws store 的"DC 可用"真实字段（onRtcStateChange('connected') 写入）；
+		// 不存在 connState 字段。best-effort：超时不抛——无可用 claw 时交由各用例的
+		// getConnectedClaw 诚实 skip，避免 beforeEach 硬失败制造 7×30s 假挂。
+		await expect(async () => {
+			const items = await evalStore(page, 'claws', 'return store.items');
+			expect(items.some((b) => b.online && b.dcReady)).toBe(true);
+		}).toPass({ timeout: 30_000 }).catch(() => {});
 	});
 
 	/** 获取第一个已连接的 clawId 和 RTC 状态 */
@@ -52,9 +58,12 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const manager = useClawConnections();
 			const all = [];
 			for (const [clawId, conn] of manager.__connections) {
-				all.push({ clawId, state: conn.state, transportMode: conn.transportMode });
+				// conn 无 state/transportMode 字段：连接形态由 conn.rtc 派生
+				//（rtc.state='connected'、rtc.isReady=rpc DataChannel open；RTC 是唯一传输）
+				const ready = Boolean(conn.rtc?.isReady);
+				all.push({ clawId, state: conn.rtc?.state ?? null, transportMode: ready ? 'rtc' : null });
 			}
-			const connected = all.find((c) => c.state === 'connected');
+			const connected = all.find((c) => c.transportMode === 'rtc');
 			return { all, connected: connected ?? null };
 		});
 		console.log('Claw connections:', JSON.stringify(info.all));
@@ -114,7 +123,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const bytes = new TextEncoder().encode(content);
 			const file = new File([bytes], fileName, { type: 'text/plain' });
 
-			const handle = uploadFile(conn.__rtc, 'main', fileName, file);
+			const handle = uploadFile(conn, 'main', fileName, file);
 			return handle.promise;
 		}, { clawId: claw.clawId, fileName: testFileName, content: testContent });
 
@@ -139,7 +148,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const { downloadFile } = await import('/src/services/file-transfer.js');
 			const conn = useClawConnections().get(clawId);
 
-			const handle = downloadFile(conn.__rtc, 'main', fileName);
+			const handle = downloadFile(conn, 'main', fileName);
 			const result = await handle.promise;
 			const text = await result.blob.text();
 			return { text, bytes: result.bytes, name: result.name };
@@ -266,7 +275,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const bytes = new TextEncoder().encode(content);
 			const file = new File([bytes], fileName, { type: 'text/plain' });
 
-			const handle = postFile(conn.__rtc, 'main', dir, fileName, file);
+			const handle = postFile(conn, 'main', dir, fileName, file);
 			return handle.promise;
 		}, { clawId: claw.clawId, dir: collectionDir, fileName: originalName, content });
 
@@ -283,7 +292,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const { downloadFile } = await import('/src/services/file-transfer.js');
 			const conn = useClawConnections().get(clawId);
 
-			const handle = downloadFile(conn.__rtc, 'main', filePath);
+			const handle = downloadFile(conn, 'main', filePath);
 			const result = await handle.promise;
 			return await result.blob.text();
 		}, { clawId: claw.clawId, filePath: postResult.path });
@@ -311,7 +320,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const conn = useClawConnections().get(clawId);
 
 			const file = new File([new Uint8Array(10)], 'evil.txt');
-			const handle = uploadFile(conn.__rtc, 'main', '../../../tmp/evil.txt', file);
+			const handle = uploadFile(conn, 'main', '../../../tmp/evil.txt', file);
 			try {
 				await handle.promise;
 				return null;
@@ -334,7 +343,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const { downloadFile } = await import('/src/services/file-transfer.js');
 			const conn = useClawConnections().get(clawId);
 
-			const handle = downloadFile(conn.__rtc, 'main', '__does_not_exist_e2e__.txt');
+			const handle = downloadFile(conn, 'main', '__does_not_exist_e2e__.txt');
 			try {
 				await handle.promise;
 				return null;

@@ -107,14 +107,14 @@ test('模型配置 S1：首次接入——橙条引导→配 key→选主模型�
 	await waitDashboardSettled(page, clawId, { hasAny: true });
 
 	// 还没主模型 → 选主模型
-	const selBtn = page.getByTestId('btn-primary-select');
+	const selBtn = page.getByTestId('btn-primary');
 	await expect(selBtn).toBeVisible({ timeout: 10_000 });
 	await selBtn.click();
 	await expect(page.getByTestId('primary-picker-dialog')).toBeVisible({ timeout: 10_000 });
 	await page.getByTestId(`primary-picker-item-groq__${GROQ_PRIMARY.split('/')[1]}`).click();
 	await expect(page.getByTestId('primary-picker-dialog')).not.toBeVisible({ timeout: 15_000 });
-	// 子页主模型区即时反映
-	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY);
+	// 子页主模型区即时反映（primary-current 只显示 model 部分，不含 provider 前缀）
+	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY.split('/')[1]);
 
 	// 仍在子页时先断言 store 已被写回调（onPrimaryPicked）的 loadDashboard(force) 刷成"有效主模型"——
 	// 这把"写回调强刷新路径"本身锁住；否则后面 /claws 挂载时的 loadData 会把断言救活、掩盖回调回归
@@ -156,7 +156,7 @@ test('模型配置 S2：撤销主模型载体 provider——强提示分支→�
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
 
 	// 子页：主模型有效、两个凭据行
-	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY, { timeout: 30_000 });
+	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY.split('/')[1], { timeout: 30_000 });
 	// profiles[0] = groq（mock 固定顺序，ModelConfigPage 不排序）；即便选错行，下方"强提示分支"
 	// 断言（confirmButtonStrong + descAffectPrimary 含 Groq/primary）也会失败，故选错行不会漏过
 	const firstRemove = page.getByTestId('btn-remove-provider').first();
@@ -175,8 +175,10 @@ test('模型配置 S2：撤销主模型载体 provider——强提示分支→�
 	await confirm.click();
 	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
 
-	// 子页：groq 行消失、anthropic 保留、主模型区切"失效"
-	await expect(page.getByText('groq', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+	// 子页：groq 凭据行消失、anthropic 保留、主模型区切"失效"
+	// 注意：撤掉载体后 primary 仍为 groq/...（失效态），主模型区 primary-current-provider 仍显示 "groq"。
+	// 故按凭据行定位（行内 provider 名是 <p>，主模型 provider 是 <span>），避免被主模型区误命中。
+	await expect(page.locator('p').filter({ hasText: /^groq$/ })).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByText('anthropic', { exact: true })).toBeVisible();
 	await expect(page.getByTestId('primary-warning')).toBeVisible({ timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toContainText(await tr(page, 'modelConfig.primary.invalidWarning'));
@@ -213,10 +215,10 @@ test('模型配置 S3：切换主模型——无二次确认→toast→子页即
 	await expect(modelRow).toBeVisible({ timeout: 30_000 });
 	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
-	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY, { timeout: 30_000 });
+	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY.split('/')[1], { timeout: 30_000 });
 
 	// 换模型：点"更换"→ picker → 点另一个模型
-	const changeBtn = page.getByTestId('btn-primary-change');
+	const changeBtn = page.getByTestId('btn-primary');
 	await expect(changeBtn).toBeEnabled({ timeout: 30_000 });
 	await changeBtn.click();
 	await expect(page.getByTestId('primary-picker-dialog')).toBeVisible({ timeout: 10_000 });
@@ -226,7 +228,7 @@ test('模型配置 S3：切换主模型——无二次确认→toast→子页即
 	// 负向断言：picker 关闭后不存在任何对话框（含二次确认 modal）——锁死"选完即存、无二次确认"
 	await expect(page.getByRole('dialog')).toHaveCount(0);
 	// 成功不弹 toast：主模型区即时刷新成新模型即是反馈（用户可直接分辨）
-	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY_ALT);
+	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY_ALT.split('/')[1]);
 
 	// 仍在子页时断言 store 已被写回调（onPrimaryPicked）的 loadDashboard(force) 刷成新主模型——
 	// 锁住写回调的强刷新路径（不依赖随后 /claws 挂载的 loadData 救活断言）
@@ -373,7 +375,7 @@ test('模型配置 S6：内联 key 列出可撤（强提示）、env 行只读�
 	await expect(modelRow).toBeVisible({ timeout: 30_000 });
 	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
-	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY, { timeout: 30_000 });
+	await expect(page.getByTestId('primary-current')).toHaveText(GROQ_PRIMARY.split('/')[1], { timeout: 30_000 });
 
 	// 两条来源标签都在；env 行带"去主机移除"提示
 	await expect(page.getByText(await tr(page, 'modelConfig.providerAuth.source.inline'), { exact: true })).toBeVisible();
@@ -394,8 +396,9 @@ test('模型配置 S6：内联 key 列出可撤（强提示）、env 行只读�
 	await confirm.click();
 	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
 
-	// 内联 groq 行消失、主模型切失效；env anthropic 行仍在（不可撤）
-	await expect(page.getByText('groq', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+	// 内联 groq 凭据行消失、主模型切失效；env anthropic 行仍在（不可撤）
+	// 同 S2：失效 primary 仍在主模型区显示 "groq"（<span>），故按凭据行的 <p> 标签定位。
+	await expect(page.locator('p').filter({ hasText: /^groq$/ })).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toBeVisible({ timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toContainText(await tr(page, 'modelConfig.primary.invalidWarning'));
 	await expect(page.getByText('anthropic', { exact: true })).toBeVisible();
@@ -432,10 +435,10 @@ test('模型配置 S7：选模型器来自 listAvailable，能选中别名套餐
 	await expect(modelRow).toBeVisible({ timeout: 30_000 });
 	await modelRow.click();
 	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
-	await expect(page.getByTestId('primary-current')).toHaveText('volcengine/doubao-pro', { timeout: 30_000 });
+	await expect(page.getByTestId('primary-current')).toHaveText('doubao-pro', { timeout: 30_000 });
 
 	// 打开选模型器（来自 listAvailable byProvider）：变体作为一等可选项出现
-	const changeBtn = page.getByTestId('btn-primary-change');
+	const changeBtn = page.getByTestId('btn-primary');
 	await expect(changeBtn).toBeEnabled({ timeout: 30_000 });
 	await changeBtn.click();
 	await expect(page.getByTestId('primary-picker-dialog')).toBeVisible({ timeout: 10_000 });
@@ -445,7 +448,7 @@ test('模型配置 S7：选模型器来自 listAvailable，能选中别名套餐
 	await variantItem.click();
 	await expect(page.getByTestId('primary-picker-dialog')).not.toBeVisible({ timeout: 15_000 });
 	// 子页主模型区即时反映为变体（凭据信号别名感知 → 仍有效，不误报失效）
-	await expect(page.getByTestId('primary-current')).toHaveText('volcengine-plan/ark-code-latest');
+	await expect(page.getByTestId('primary-current')).toHaveText('ark-code-latest');
 });
 
 // ================================================================

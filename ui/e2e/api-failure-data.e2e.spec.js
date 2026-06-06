@@ -88,8 +88,12 @@ test.describe('WebSocket 连接故障 @resilience', () => {
 		// 记录 chat URL
 		const chatUrl = page.url();
 
-		// 拦截 WS 升级请求（阻止后续所有 WS 连接）
-		await page.route('**/api/v1/claws/stream**', (route) => route.abort());
+		// 拦截信令 WS（真实端点 /api/v1/rtc/signal），关闭每次连接尝试。
+		// 注意：page.route 不拦截 WebSocket（这正是 Playwright 单设 routeWebSocket
+		// 的原因），故此处必须用 routeWebSocket，否则拦截落空、WS 正常连、假绿。
+		// ws.close() 后 SignalingConnection 会重连，但每次重连同样被拦截关闭 →
+		// 信令通道持续不可用 → RTC/DataChannel 无法建立。
+		await page.routeWebSocket('**/api/v1/rtc/signal*', (ws) => ws.close());
 
 		// 刷新页面 → WS 尝试重连但被拦截
 		await page.reload();
@@ -97,8 +101,9 @@ test.describe('WebSocket 连接故障 @resilience', () => {
 		// chat-root 应渲染（页面本身正常加载）
 		await expect(page.getByTestId('chat-root')).toBeVisible({ timeout: 10_000 });
 
-		// 应显示连接错误或 loading 状态（WS 无法建立 → 消息加载失败）
-		// errorText = 'Claw not connected' 或 loading 持续
+		// 信令持续不可用 → DataChannel 永远建不起来 → 数据通道失败。
+		// claw 仍 online（SSE 未被拦截），dcReady 恒 false → chat-root 稳定显示
+		// 连接状态 banner（.text-muted）或错误文案（.text-error），不再靠瞬时 loading 假绿。
 		await expect(async () => {
 			const hasError = await page.locator('[data-testid="chat-root"] .text-error').isVisible();
 			const hasLoading = await page.locator('[data-testid="chat-root"] .text-muted').isVisible();

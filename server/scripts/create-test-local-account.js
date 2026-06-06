@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { prisma } from '../src/db/prisma.js';
 import { findLocalAuthByLoginName } from '../src/repos/local-auth.repo.js';
 import { createLocalAccount } from '../src/services/local-auth.svc.js';

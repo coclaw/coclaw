@@ -3,3 +3,7 @@ dist-electron/
 
 # Local agent scratch
 tmp/
+
+# E2E cleanup sidecars (baseline/keeper claw snapshots)
+e2e/.baseline-claws.json
+e2e/.keeper-claws.json

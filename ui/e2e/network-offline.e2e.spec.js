@@ -15,6 +15,19 @@ import {
  * 技术手段：context.setOffline(true/false) 模拟浏览器断网/恢复
  */
 
+/** 取应用当前语言下某个 i18n key 的渲染值，让断言与具体 locale 解耦（测试账号可能持久化 lang=zh-CN） */
+async function tr(page, key) {
+	return page.evaluate(async (k) => {
+		const m = await import('/src/i18n/index.js');
+		return m.i18n.global.t(k);
+	}, key);
+}
+
+/** 转义正则元字符（i18n 文案含 . 。 等字符，拼 alternation 前先转义） */
+function escapeRe(s) {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 test.describe('网络断开与恢复 @resilience', () => {
 	test.beforeEach(async ({ page }) => {
 		test.setTimeout(90_000);
@@ -30,33 +43,68 @@ test.describe('网络断开与恢复 @resilience', () => {
 	});
 
 	// ================================================================
-	// Test 1: 断网 → 发消息 → 错误反馈 + 输入恢复
+	// Test 1: 断网 → 发消息 → 韧性等待（不快速失败、不回滚、保留气泡）
 	// ================================================================
+	//
+	// 为何不验证"立即弹错误 toast"：业务 RPC 走 RTC DataChannel，与信令 WS 是两条
+	// 独立通路（communication-model 第二章）。仅 forceCloseWs（断信令 WS）+ setOffline，
+	// 已建立的 DataChannel 不会立刻关闭——ICE 有 ~3min 恢复预算、SCTP 跨 ICE restart 存活
+	// （communication-model §5.5）。所以消息被乐观投递后挂起等响应/重连：
+	//   - agent RPC 的连接等待默认 210s（DEFAULT_CONNECT_TIMEOUT_MS）
+	//   - pre-acceptance 看门狗 180s，到点才以"响应超时"形式反馈
+	//   - 断连后还会自动重试一次，retry 仍走 210s 连接等待
+	// 即"断网立即报连接错误"并非产品真实行为：产品是韧性等待，最快 ~180s 才有超时反馈。
+	// 因此本用例验证韧性语义（消息被保留、不快速失败），而非快速失败的错误 toast。
 
-	test('断网后发消息：显示错误 toast，输入文本恢复', async ({ page, context }) => {
+	test('断网后发消息：进入韧性等待，不快速失败、不回滚、保留气泡', async ({ page, context }) => {
 		const textarea = page.getByTestId('chat-textarea');
 		const testMsg = 'offline-test-' + Date.now();
 
 		// 先输入文本
 		await typeText(textarea, testMsg);
 
-		// 强制关闭 WS + 断网阻止重连（setOffline 不会立即关闭 WS）
+		// 强制关闭信令 WS + 断网阻止重连（setOffline 不会立即关闭 WS）
 		await forceCloseWs(page);
 		await context.setOffline(true);
 
-		// 等待 WS 连接断开
+		// 等待信令 WS 断开
 		await waitForWsState(page, 'disconnected');
 
 		// 点击发送
 		await page.getByTestId('btn-send').click();
 
-		// 应出现 "Claw not connected" 错误 toast
-		await expect(
-			page.locator('[data-slot="title"]').filter({ hasText: /not connected/i }),
-		).toBeVisible({ timeout: 5000 });
+		// 1) sending 持续为 true：消息已被乐观投递并在途/排队，未被快速拒绝
+		await expect.poll(
+			() => evalStore(page, 'chat', 'return store.sending'),
+			{ timeout: 8000 },
+		).toBe(true);
 
-		// 输入框文本应被恢复（sendMessage 失败回滚）
-		await expect(textarea).toHaveValue(testMsg, { timeout: 3000 });
+		// 2) 再留一段窗口，确认期间确实没有触发任何"快速失败"路径
+		await page.waitForTimeout(5000);
+		const stillSending = await evalStore(page, 'chat', 'return store.sending');
+		expect(stillSending).toBe(true);
+
+		// 3) 窗口内不应出现任何连接/超时类错误 toast（210s/180s 远超此处窗口）
+		const connErrTexts = await Promise.all([
+			tr(page, 'chat.errWsClosed'),
+			tr(page, 'chat.errRtcSendFailed'),
+			tr(page, 'chat.errRpcTimeout'),
+			tr(page, 'chat.errPreAcceptTimeout'),
+		]);
+		const connErrRe = new RegExp(connErrTexts.map(escapeRe).join('|'));
+		await expect(
+			page.locator('[data-slot="title"]').filter({ hasText: connErrRe }),
+		).toHaveCount(0);
+
+		// 4) 输入框保持为空：消息进入在途，草稿未回滚（与"快速失败回滚"相反）
+		await expect(textarea).toHaveValue('');
+
+		// 5) 用户气泡仍渲染在页面：消息被保留、没有被丢弃
+		// 用 DOM 层断言而非 store 内部标记——气泡可能脱离纯乐观态（_local 消失）
+		// 或 content 变成 block 数组（双格式坑），但只要气泡文本仍可见即证明消息未丢失
+		await expect(
+			page.locator('[data-testid="chat-msg-item"]').filter({ hasText: testMsg }),
+		).toBeVisible();
 	});
 
 	// ================================================================

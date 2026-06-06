@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { login } from './helpers.js';
 
 /**
  * 下拉刷新 E2E 测试
@@ -7,14 +8,6 @@ import { expect, test } from '@playwright/test';
  */
 
 const MOBILE_VP = { width: 390, height: 844 };
-
-async function login(page) {
-	await page.goto('/login');
-	await page.getByTestId('login-name').fill('test');
-	await page.getByTestId('login-password').fill('12345678');
-	await page.getByTestId('btn-login').click();
-	await page.waitForTimeout(2000);
-}
 
 /**
  * 通过 CDP 模拟触屏下拉手势
@@ -79,7 +72,7 @@ test.describe('下拉刷新 @ui', () => {
 	test('TopicsPage: 下拉超过阈值触发页面刷新', async ({ page }) => {
 		await login(page);
 		await page.goto('/topics');
-		await page.waitForTimeout(1000);
+		await expect(page.locator('main')).toBeVisible({ timeout: 5000 });
 		await setReloadMarker(page);
 
 		const [, loadEvent] = await Promise.all([
@@ -95,10 +88,11 @@ test.describe('下拉刷新 @ui', () => {
 	test('TopicsPage: 短距离下拉不触发刷新', async ({ page }) => {
 		await login(page);
 		await page.goto('/topics');
-		await page.waitForTimeout(1000);
+		await expect(page.locator('main')).toBeVisible({ timeout: 5000 });
 		await setReloadMarker(page);
 
 		await cdpPullDown(page, 200, 200, 20);
+		// 负向检查：稍等确认页面未 reload
 		await page.waitForTimeout(500);
 
 		// 页面不应 reload：window 标记仍在
@@ -109,7 +103,7 @@ test.describe('下拉刷新 @ui', () => {
 	test('UserPage: 下拉触发刷新', async ({ page }) => {
 		await login(page);
 		await page.goto('/user');
-		await page.waitForTimeout(1000);
+		await expect(page.locator('main')).toBeVisible({ timeout: 5000 });
 		await setReloadMarker(page);
 
 		const [, loadEvent] = await Promise.all([
@@ -125,7 +119,7 @@ test.describe('下拉刷新 @ui', () => {
 	test('ManageClawsPage: 下拉触发刷新', async ({ page }) => {
 		await login(page);
 		await page.goto('/claws');
-		await page.waitForTimeout(1000);
+		await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 5000 });
 		await setReloadMarker(page);
 
 		const [, loadEvent] = await Promise.all([
@@ -141,7 +135,7 @@ test.describe('下拉刷新 @ui', () => {
 	test('AboutPage: 下拉触发刷新', async ({ page }) => {
 		await login(page);
 		await page.goto('/about');
-		await page.waitForTimeout(1000);
+		await expect(page.locator('main img[alt="CoClaw"]')).toBeVisible({ timeout: 5000 });
 		await setReloadMarker(page);
 
 		const [, loadEvent] = await Promise.all([
@@ -156,7 +150,6 @@ test.describe('下拉刷新 @ui', () => {
 
 	test('ChatPage: 滚动到顶部后下拉触发刷新', async ({ page }) => {
 		await login(page);
-		await page.waitForTimeout(1000);
 		if (!/\/chat\//.test(page.url())) {
 			await page.goto('/topics');
 			// v0.2: sessions 通过 WS 异步加载，需等待链接出现
@@ -167,7 +160,7 @@ test.describe('下拉刷新 @ui', () => {
 				return;
 			}
 			await chatLink.click();
-			await page.waitForTimeout(1000);
+			await expect(page.getByTestId('chat-root')).toBeVisible({ timeout: 5000 });
 		}
 
 		// 确保 main 滚到顶部
@@ -175,16 +168,14 @@ test.describe('下拉刷新 @ui', () => {
 			const main = document.querySelector('[data-testid="chat-root"] main');
 			if (main) main.scrollTop = 0;
 		});
-		await page.waitForTimeout(200);
 		await setReloadMarker(page);
 
-		const [, loadEvent] = await Promise.all([
-			cdpPullDown(page, 200, 200, 250),
-			page.waitForEvent('load', { timeout: 5000 }),
-		]);
-
-		expect(loadEvent).toBeTruthy();
+		// ChatPage 的下拉与其它顶层页不同：全局下拉刷新（整页 reload）被 suppress，
+		// 下拉到顶改为应用内加载更早历史（__loadMoreHistory），不触发原生 'load' 事件、也不整页 reload。
+		// 故等待手势完成后断言页面仍在（chat-root 可见、SPA 未跳走），并确认未发生整页 reload。
+		await cdpPullDown(page, 200, 200, 250);
+		await expect(page.getByTestId('chat-root')).toBeVisible({ timeout: 5000 });
 		const reloaded = await verifyReloadHappened(page);
-		expect(reloaded).toBe(true);
+		expect(reloaded).toBe(false);
 	});
 });

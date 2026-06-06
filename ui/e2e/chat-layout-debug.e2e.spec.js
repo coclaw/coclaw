@@ -1,37 +1,11 @@
 import { expect, test } from '@playwright/test';
+import { login, navigateToChat } from './helpers.js';
 
 /**
  * ChatPage 布局回归测试
  * 验证 header 粘顶、footer 固底、main 内部滚动。
  * 此测试防止 ChatPage 根元素误加 flex-1 导致布局崩溃。
  */
-
-/**
- * 登录并导航到 ChatPage。
- * @returns {boolean} true=成功进入 chat 页，false=无可用 session（应跳过测试）
- */
-async function loginAndNavigateToChat(page) {
-	await page.goto('/login');
-	await page.getByTestId('login-name').fill('test');
-	await page.getByTestId('login-password').fill('12345678');
-	await page.getByTestId('btn-login').click();
-	await page.waitForTimeout(2000);
-
-	// 若登录后已进入 chat 页（有 claw 且有 session），直接返回
-	if (/\/chat\//.test(page.url())) return true;
-
-	// 尝试从 topics 页面找到可用 session 链接
-	await page.goto('/topics');
-	// v0.2: sessions 通过 WS 异步加载，需等待链接出现
-	await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
-	const chatLink = page.locator('main a[href*="/chat/"]').first();
-	if (await chatLink.count()) {
-		await chatLink.click();
-		await page.waitForTimeout(1000);
-		return true;
-	}
-	return false;
-}
 
 function injectMessages(page, count = 50) {
 	return page.evaluate((n) => {
@@ -75,11 +49,13 @@ function getLayoutMetrics(page) {
 
 test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 720 });
-	const ok = await loginAndNavigateToChat(page);
-	test.skip(!ok, 'No chat session available (no claw connected)');
+	await login(page);
+	const claw = await navigateToChat(page);
+	test.skip(!claw, 'No chat session available (no claw connected)');
 
 	await injectMessages(page, 50);
-	await page.waitForTimeout(300);
+	// 等待 chat-root 可见，确保注入消息后 DOM 稳定
+	await expect(page.getByTestId('chat-root')).toBeVisible();
 
 	const m = await getLayoutMetrics(page);
 
@@ -97,11 +73,13 @@ test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 
 test('Mobile: ChatPage layout with many messages @ui', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
-	const ok = await loginAndNavigateToChat(page);
-	test.skip(!ok, 'No chat session available (no claw connected)');
+	await login(page);
+	const claw = await navigateToChat(page);
+	test.skip(!claw, 'No chat session available (no claw connected)');
 
 	await injectMessages(page, 50);
-	await page.waitForTimeout(300);
+	// 等待 chat-root 可见，确保注入消息后 DOM 稳定
+	await expect(page.getByTestId('chat-root')).toBeVisible();
 
 	const m = await getLayoutMetrics(page);
 

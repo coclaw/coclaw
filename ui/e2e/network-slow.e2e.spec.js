@@ -75,9 +75,10 @@ test.describe('弱网环境 @resilience', () => {
 		// 高延迟下 sending 状态应持续足够长，send 按钮消失（被 stop 按钮替换）
 		await expect(sendBtn).not.toBeVisible({ timeout: 5000 });
 
-		// 最终 sending 结束（消息完成或超时），send 按钮恢复
+		// 最终 sending 结束（消息完成或超时），btn-stop 消失
+		// 发送后输入框清空、canSend=false，btn-send 不渲染，须等 btn-stop 消失
 		// 超时设为 90s：Slow 3G 下 WS RPC 往返需 ~4s，agent 响应可能更久
-		await expect(sendBtn).toBeVisible({ timeout: 90_000 });
+		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 90_000 });
 
 		// 无错误 banner
 		await expect(
@@ -100,8 +101,9 @@ test.describe('弱网环境 @resilience', () => {
 		await typeText(textarea, testMsg);
 		await sendBtn.click();
 
-		// Slow 4G 延迟低（170ms），应在合理时间内完成
-		await expect(sendBtn).toBeVisible({ timeout: 60_000 });
+		// Slow 4G 延迟低（170ms），应在合理时间内完成（btn-stop 消失）
+		// 发送后输入框清空、canSend=false，btn-send 不渲染，须等 btn-stop 消失
+		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 60_000 });
 
 		// textarea 恢复可用
 		await expect(textarea).toBeEnabled({ timeout: 3000 });

@@ -6,6 +6,7 @@ export default defineConfig({
 	retries: 0,
 	workers: 1,
 	globalSetup: './e2e/global-setup.js',
+	globalTeardown: './e2e/global-teardown.js',
 	use: {
 		baseURL: 'http://127.0.0.1:4173',
 		// ⚠ 禁止改为 true。headless Chrome 在部分环境（如 WSL2）下动画帧渲染异常，
