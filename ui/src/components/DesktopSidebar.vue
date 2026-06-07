@@ -4,7 +4,8 @@
 		:style="{ width: uiStore.drawerWidth + 'px' }"
 	>
 		<div class="flex min-h-0 flex-1 flex-col">
-			<div class="flex min-h-12 items-center gap-2 pl-3.5 pr-2 py-1">
+			<!-- Windows Electron 原生标题栏已显示 [图标]+"CoClaw"，此处 logo+名称冗余，整行隐藏让列表上移贴原生标题栏 -->
+			<div v-if="showSidebarBrand" class="flex min-h-12 items-center gap-2 pl-3.5 pr-2 py-1">
 				<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 				<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
 				<!-- TODO: 收起/展开 drawer 功能完成后恢复
@@ -62,6 +63,8 @@ import { useUserDialogs } from '../composables/use-user-dialogs.js';
 import { useWebAgentDialogs } from '../composables/use-web-agent-dialogs.js';
 import { getUserDisplayName } from '../utils/user-profile.js';
 import { useUiStore } from '../stores/ui.store.js';
+import { useEnvStore } from '../stores/env.store.js';
+import { isElectronApp } from '../utils/platform.js';
 import logoSrc from '../assets/coclaw-logo.jpg';
 
 export default {
@@ -85,6 +88,7 @@ export default {
 			userDialogs: useUserDialogs(),
 			webAgentDialogs: useWebAgentDialogs(),
 			uiStore: useUiStore(),
+			envStore: useEnvStore(),
 		};
 	},
 	data() {
@@ -94,6 +98,10 @@ export default {
 		};
 	},
 	computed: {
+		// 仅 Windows Electron（原生标题栏已含品牌）时隐藏顶部 logo+名称；其余壳/全部浏览器都保留
+		showSidebarBrand() {
+			return !(isElectronApp && this.envStore.isWin);
+		},
 		userMenuItems() {
 			return getUserMenuItems(this.$t, { isAdmin: this.user?.level === -100 });
 		},
