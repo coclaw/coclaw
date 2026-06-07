@@ -17,12 +17,12 @@ describe('setupContextMenu', () => {
 		expect(mockContextMenu.mock.calls[0][0].window).toBe(fakeWin);
 	});
 
-	test('强制开启检查元素 + 全选，关闭 Google 搜索', () => {
+	test('强制开启检查元素，关闭全选与 Google 搜索', () => {
 		mockContextMenu.mockClear();
 		setupContextMenu({});
 		const opts = mockContextMenu.mock.calls[0][0];
 		expect(opts.showInspectElement).toBe(true);
-		expect(opts.showSelectAll).toBe(true);
+		expect(opts.showSelectAll).toBe(false);
 		expect(opts.showSearchWithGoogle).toBe(false);
 	});
 

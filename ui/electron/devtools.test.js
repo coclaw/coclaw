@@ -3,16 +3,27 @@ import { setupDevtoolsShortcut } from './devtools.js';
 
 describe('setupDevtoolsShortcut', () => {
 	let fakeWin;
-	let handler;
+	let handler;      // 主窗口 before-input-event 处理器
+	let dtHandler;    // DevTools webContents 的 before-input-event 处理器
+	let triggerOpen;  // 触发 devtools-opened
 
 	beforeEach(() => {
 		handler = null;
+		dtHandler = null;
+		triggerOpen = null;
+		const devToolsWebContents = {
+			on: vi.fn((event, fn) => {
+				if (event === 'before-input-event') dtHandler = fn;
+			}),
+		};
 		fakeWin = {
 			webContents: {
 				on: vi.fn((event, fn) => {
 					if (event === 'before-input-event') handler = fn;
+					if (event === 'devtools-opened') triggerOpen = fn;
 				}),
 				toggleDevTools: vi.fn(),
+				devToolsWebContents,
 			},
 		};
 		setupDevtoolsShortcut(fakeWin);
@@ -77,6 +88,18 @@ describe('setupDevtoolsShortcut', () => {
 		handler(e, { type: 'keyUp', key: 'F12' });
 		handler(e, { type: 'keyUp', key: 'I', control: true, shift: true });
 		expect(fakeWin.webContents.toggleDevTools).not.toHaveBeenCalled();
+	});
+
+	test('DevTools 打开后，在其 webContents 上按 F12 也能切换（即关闭 DevTools）', () => {
+		// 触发 devtools-opened：应把同一处理器挂到 DevTools 的 webContents
+		triggerOpen();
+		expect(fakeWin.webContents.devToolsWebContents.on)
+			.toHaveBeenCalledWith('before-input-event', expect.any(Function));
+		// 在 DevTools 的 webContents 上按 F12 → 调用主窗口 toggleDevTools（关闭）
+		const e = { preventDefault: vi.fn() };
+		dtHandler(e, { type: 'keyDown', key: 'F12' });
+		expect(fakeWin.webContents.toggleDevTools).toHaveBeenCalledTimes(1);
+		expect(e.preventDefault).toHaveBeenCalledTimes(1);
 	});
 
 	test('win 为空时静默返回，不抛', () => {
