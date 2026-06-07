@@ -15,6 +15,11 @@ description: 更新 CoClaw App logo/icon。Use when 用户上传新 logo 图片�
 
 - `npx sharp-cli` — PNG 缩放
 - `npx png2icons` — ICO/ICNS 生成（`-icowe` 生成 Windows EXE 兼容 ICO，`-icns` 生成 macOS ICNS，`-bz` 使用最佳质量）
+- `python3` + PIL（Pillow）— 仅给 Electron 的 `.ico`/`.icns` 烘焙圆角（见 `mask-electron-icons.py`）
+
+## 硬规则：只圆 Electron 的 .ico/.icns
+
+共享 master（`public/*`、`src/assets`、Android、iOS、Tauri、以及 Electron 的 `icon.png`/`tray-icon.png`）必须保持**方形满幅**——各 OS 自行套圆角/圆形遮罩，源图圆角会和系统遮罩叠加出双层圆角。**只有** Electron 桌面的 `build-resources/icon.ico`（Windows）和 `build-resources/icon.icns`（macOS）需要预烘圆角，由 `mask-electron-icons.py` 生成中间图后再喂给 png2icons。
 
 ## 需要更新的文件清单
 
@@ -74,10 +79,10 @@ Android Adaptive Icon 会对前景层施加遮罩（圆形/圆角方形等），
 
 | 文件 | 尺寸/格式 | 说明 |
 |---|---|---|
-| `build-resources/icon.png` | 512x512 PNG | BrowserWindow icon |
-| `build-resources/tray-icon.png` | 32x32 PNG | 系统托盘 |
-| `build-resources/icon.ico` | ICO | Windows 安装包/任务栏 |
-| `build-resources/icon.icns` | ICNS | macOS app bundle |
+| `build-resources/icon.png` | 512x512 PNG | BrowserWindow icon，**方形满幅**（不圆角） |
+| `build-resources/tray-icon.png` | 32x32 PNG | 系统托盘，方形 |
+| `build-resources/icon.ico` | ICO | Windows 安装包/任务栏，**预烘全幅圆角矩形**（半径 20%） |
+| `build-resources/icon.icns` | ICNS | macOS app bundle，**预烘方圆贴片**（squircle n=5，贴片 80%，内容裁 bbox+4% 呼吸边、最长边填满贴片 90%） |
 
 ### 5. Tauri — src-tauri/icons/
 
@@ -155,10 +160,15 @@ rm -f "$TMP"
 npx sharp-cli -i "$SRC" -o "$IOS_ICON/AppIcon-512@2x.png" resize 1024 1024
 
 # === 4. Electron ===
+# icon.png / tray 保持方形 master（绝不圆角）
 npx sharp-cli -i "$SRC" -o "$BUILD/icon.png" resize 512 512
 npx sharp-cli -i "$SRC" -o "$BUILD/tray-icon.png" resize 32 32
-npx png2icons "$SRC" "$BUILD/icon" -icowe -bz
-npx png2icons "$SRC" "$BUILD/icon" -icns -bz
+# .ico/.icns 先烘圆角中间图（win 512 圆角矩形 / mac 1024 方圆贴片），再喂 png2icons
+SKILL_DIR=".agents/skills/update-logo"
+mkdir -p /tmp/icon-build
+python3 "$SKILL_DIR/mask-electron-icons.py" "$SRC" /tmp/icon-build/win.png /tmp/icon-build/mac.png
+npx png2icons /tmp/icon-build/win.png "$BUILD/icon" -icowe -bz   # Windows 圆角 ICO
+npx png2icons /tmp/icon-build/mac.png "$BUILD/icon" -icns -bz    # macOS 方圆 ICNS
 
 # === 5. Tauri ===
 npx sharp-cli -i "$SRC" -o "$TAURI/icon.png" resize 512 512
@@ -177,5 +187,7 @@ npx png2icons "$SRC" "$TAURI/icon" -icns -bz
 ## 注意事项
 
 - ICO 使用 `-icowe` 参数生成 Windows 可执行文件兼容格式（含多尺寸 BMP），避免 Electron/Tauri 打包后图标显示异常
+- Electron 的 `.ico`/`.icns` 走 `mask-electron-icons.py` 预烘圆角；其余所有输出（含 `icon.png`、Tauri、Android、iOS）保持方形满幅，**不要**把圆角中间图喂给它们（详见上方“硬规则”）
+- 验证圆角：用 PIL 打开生成的 `.ico`/`.icns`，检查最大尺寸帧四角 alpha 为 0（透明）
 - 更新后用 `ls -lh` 验证所有文件已生成且大小合理
 - 如新增了 logo 相关文件（如新平台或 PWA manifest 引用新尺寸），需同步更新此 skill
