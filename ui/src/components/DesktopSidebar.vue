@@ -17,7 +17,8 @@
 				/>
 				-->
 			</div>
-			<MainList :current-path="currentPath" scrollable instance="sidebar" />
+			<!-- 品牌行隐藏时（Windows Electron）补 8px 顶间距，避免列表贴顶 -->
+			<MainList :current-path="currentPath" :class="{ 'pt-2': !showSidebarBrand }" scrollable instance="sidebar" />
 		</div>
 
 		<div class="border-t border-default px-2 py-1">

@@ -80,27 +80,30 @@ describe('DesktopSidebar 顶部品牌行平台门控', () => {
 		mockEnv = { ...defaultEnv };
 	});
 
-	test('web/非 Electron：保留 logo+名称', () => {
+	test('web/非 Electron：保留 logo+名称，无顶间距补偿', () => {
 		platformMock.isElectronApp = false;
 		mockEnv.isWin = true; // Windows 浏览器（无原生标题栏）仍须保留
 		const wrapper = createWrapper();
 		expect(wrapper.vm.showSidebarBrand).toBe(true);
 		expect(brandRowExists(wrapper)).toBe(true);
+		expect(wrapper.find('.mainlist-stub').classes()).not.toContain('pt-2');
 	});
 
-	test('Windows Electron：隐藏 logo+名称', () => {
+	test('Windows Electron：隐藏 logo+名称，补 8px 顶间距', () => {
 		platformMock.isElectronApp = true;
 		mockEnv.isWin = true;
 		const wrapper = createWrapper();
 		expect(wrapper.vm.showSidebarBrand).toBe(false);
 		expect(brandRowExists(wrapper)).toBe(false);
+		expect(wrapper.find('.mainlist-stub').classes()).toContain('pt-2');
 	});
 
-	test('macOS Electron：保留 logo+名称', () => {
+	test('macOS Electron：保留 logo+名称，无顶间距补偿', () => {
 		platformMock.isElectronApp = true;
 		mockEnv.isMac = true;
 		const wrapper = createWrapper();
 		expect(wrapper.vm.showSidebarBrand).toBe(true);
 		expect(brandRowExists(wrapper)).toBe(true);
+		expect(wrapper.find('.mainlist-stub').classes()).not.toContain('pt-2');
 	});
 });
