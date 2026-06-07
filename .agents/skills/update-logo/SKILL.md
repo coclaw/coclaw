@@ -81,7 +81,7 @@ Android Adaptive Icon 会对前景层施加遮罩（圆形/圆角方形等），
 |---|---|---|
 | `build-resources/icon.png` | 512x512 PNG | BrowserWindow icon，**方形满幅**（不圆角） |
 | `build-resources/tray-icon.png` | 32x32 PNG | 系统托盘，方形 |
-| `build-resources/icon.ico` | ICO | Windows 安装包/任务栏，**预烘全幅圆角矩形**（半径 20%） |
+| `build-resources/icon.ico` | ICO | Windows 安装包/任务栏，**预烘全幅圆角矩形**（半径 22%） |
 | `build-resources/icon.icns` | ICNS | macOS app bundle，**预烘方圆贴片**（squircle n=5，贴片 80%，内容裁 bbox+4% 呼吸边、最长边填满贴片 90%） |
 
 ### 5. Tauri — src-tauri/icons/

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 仅为 Electron 的 .ico / .icns 烘焙圆角中间图：
-#   win  -> 全幅圆角矩形（圆角半径 = 20% 边长，仅四角透明）
+#   win  -> 全幅圆角矩形（圆角半径 = 22% 边长，仅四角透明）
 #   mac  -> 方圆贴片（superellipse n=5，贴片 = 画布 80%，外边 ~10% 透明，
 #           内容裁到 bbox + 4% 呼吸边后最长边填满贴片 90%）
 #
@@ -51,7 +51,7 @@ def squircle_alpha(size, tile_frac, n=5):
 
 def build_win(src, size=512):
 	out = src.convert("RGBA").resize((size, size), Image.LANCZOS)
-	out.putalpha(rounded_rect_alpha(size, 0.20))  # 圆角半径 = 20% 边长
+	out.putalpha(rounded_rect_alpha(size, 0.22))  # 圆角半径 = 22% 边长
 	return out
 
 
