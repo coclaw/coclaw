@@ -1,0 +1,19 @@
+/**
+ * 给窗口绑定 DevTools 快捷键：F12 与 Ctrl+Shift+I 切换 DevTools（生产也生效）。
+ * 用窗口级 before-input-event，而非 globalShortcut——后者在 app 未聚焦时也会触发，对 F12 不合适。
+ * @param {Electron.BrowserWindow} win - 目标窗口
+ */
+export function setupDevtoolsShortcut(win) {
+	if (!win) return;
+	const wc = win.webContents;
+	wc.on('before-input-event', (e, input) => {
+		if (input.type !== 'keyDown') return;
+		// 严格匹配：排除带额外修饰键的组合（如 Ctrl+F12、Ctrl+Alt+Shift+I）误触发
+		const isF12 = input.key === 'F12' && !input.control && !input.shift && !input.alt && !input.meta;
+		const isInspect = input.control && input.shift && !input.alt && !input.meta && input.key?.toLowerCase() === 'i';
+		if (isF12 || isInspect) {
+			wc.toggleDevTools();
+			e.preventDefault();
+		}
+	});
+}

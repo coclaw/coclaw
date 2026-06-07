@@ -14,6 +14,8 @@ import {
 import { initUpdater, disposeUpdater } from './updater.js';
 import { getAppTitle, t } from './locale.js';
 import { REMOTE_URL, DEV_URL, isTrustedUrl } from './url-guard.js';
+import { setupContextMenu } from './context-menu.js';
+import { setupDevtoolsShortcut } from './devtools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -81,6 +83,10 @@ if (!gotLock) {
 		win.once('ready-to-show', () => {
 			win.show();
 		});
+
+		// 右键上下文菜单（复制/粘贴/检查元素）+ DevTools 快捷键（F12 / Ctrl+Shift+I），生产也生效
+		setupContextMenu(win);
+		setupDevtoolsShortcut(win);
 
 		// 加载页面
 		const url = isDev ? DEV_URL : REMOTE_URL;
