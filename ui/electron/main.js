@@ -69,6 +69,9 @@ if (!gotLock) {
 				sandbox: true,
 				// 禁止后台节流，确保 WebSocket 心跳和定时器在窗口不可见时仍按正常精度运行
 				backgroundThrottling: false,
+				// 关闭拼写检查：与 UI 输入框 spellcheck="false" 的设计一致，去掉红色波浪线，
+				// 同时让右键菜单不再出现 electron-context-menu 写死的英文占位项 "No Guesses Found"
+				spellcheck: false,
 			},
 			// macOS 标题栏
 			...(process.platform === 'darwin' && {
