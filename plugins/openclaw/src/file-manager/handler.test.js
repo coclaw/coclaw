@@ -16,7 +16,12 @@ function silentLogger() {
 }
 
 async function makeTmpDir() {
-	return fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-file-test-'));
+	const dir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-file-test-'));
+	// macOS 上 os.tmpdir() 落在 /var/...，而 /var 是指向 /private/var 的符号链接；
+	// validatePath 内部用 realpath 解析符号链接目标，会得到 /private/var/...，
+	// 导致沙箱内符号链接被误判越界。统一用 realpath 归一沙箱根，让所有断言与
+	// validatePath 的判定基准一致（Linux 上 /tmp 非软链，realpath 等价无副作用）。
+	return fs.realpath(dir);
 }
 
 // 模拟 DataChannel

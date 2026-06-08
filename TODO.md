@@ -24,8 +24,3 @@
 2. **worktree 网关工具链 `pnpm wt:*` 在 macOS 上跑不起来**
    - `scripts/_lib.sh`（约 line 189 的 `case` 分支）在 macOS 自带 bash 3.2 下解析失败；脚本还用了 Linux-only 的 `ss`/`fuser`，macOS 无这些命令（也无 `timeout`）。
    - 影响：worktree-dev skill 的隔离网关流程在 Mac 上无法直接用（本次验证靠 `lsof` 手动镜像逻辑绕过）。结合正在搭 Mac 开发环境，值得加固（bash 4+ shebang 或语法降级 + 命令探测/替代）。
-
-3. **两个测试套在 macOS 上必挂（Linux CI 全绿）**
-   - plugin `file-manager/handler.test.js`：macOS 把 `/var`→`/private/var` 规范化，mkdtemp 沙箱根仍是 `/var`，`validatePath` 判 symlink 越界报 PATH_DENIED；Linux `/tmp` 非软链故 CI 过。
-   - ui `electron/tray.test.js`：2 例落在 `process.platform === 'darwin'` 分支调 `setTemplateImage()`，测试 mock 缺该方法；该分支在 Linux CI 永不执行。
-   - 影响：`pnpm test` 在 Mac 上恒 exit 1（与代码改动无关）。若要在 Mac 跑提交门禁需补这两处 mock/路径规范化。

@@ -24,7 +24,10 @@ vi.mock('electron', () => ({
 	Tray: vi.fn(() => mockTray),
 	Menu: { buildFromTemplate: vi.fn(() => ({})) },
 	nativeImage: {
-		createFromPath: vi.fn(() => iconByCall[createFromPathCallIdx++]),
+		// 超出 iconByCall 预置项时兜底返回带 setTemplateImage 的 stub，
+		// 否则 disposeTray 用例二次 initTray（idx 未重置）会拿到 undefined，
+		// macOS 的 darwin 分支 cachedNormalIcon.setTemplateImage 即崩
+		createFromPath: vi.fn(() => iconByCall[createFromPathCallIdx++] ?? { __tag: 'extra', setTemplateImage: vi.fn() }),
 		createEmpty: vi.fn(() => ({ __tag: 'empty' })),
 	},
 	ipcMain: {
