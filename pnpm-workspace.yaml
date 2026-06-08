@@ -8,6 +8,20 @@ ignoredBuiltDependencies:
   - electron-winstaller
   - vue-demi
 
+# 构建脚本放行清单。注意：pnpm 10 下 package.json 的 pnpm.onlyBuiltDependencies
+# 会整体顶替（非合并）本清单，故统一收口到此处一份，别再往 package.json 写。
 onlyBuiltDependencies:
   - electron
   - esbuild
+  - "@prisma/client"
+  - "@prisma/engines"
+  - prisma
+
+# overrides 同样遵循 pnpm 10 的"package.json 顶替 yaml"规则，故也统一收口到此处一份。
+overrides:
+  # 插件按 peer 依赖加载宿主 openclaw，开发期用本地 stub 顶替，避免拉真包。
+  openclaw: "link:./tools/openclaw-peer-stub"
+  # electron 安装时用 extract-zip@2.0.1→yauzl@2.10 解压，在 Node 24.16.0+ 会卡死在
+  # 解压流中途（Node 回归 nodejs/node#63487），导致 .app 缺 Frameworks、二进制起不来。
+  # extract-zip 无新版可换，把它用的 yauzl 顶到 3.x 即修复；仅作用于 electron 解压路径。
+  "extract-zip>yauzl": "^3.3.1"
