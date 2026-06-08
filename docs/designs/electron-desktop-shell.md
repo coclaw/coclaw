@@ -177,10 +177,8 @@ if (!gotLock) {
     const mainWindowState = windowStateKeeper({ defaultWidth: 420, defaultHeight: 780 });
     const win = new BrowserWindow({
       /* ... 窗口配置 ... */
-      ...(process.platform === 'darwin' && {
-        titleBarStyle: 'hiddenInset',
-        trafficLightPosition: { x: 10, y: 10 },
-      }),
+      // 注：原设计的 macOS hiddenInset 沉浸式标题栏已回退为原生标题栏
+      // （共用的移动端优先前端未为无边框窗口预留顶部拖拽区，会导致红绿灯压住页面内容）
     });
     mainWindowState.manage(win);
     win.loadURL(isDev ? DEV_URL : REMOTE_URL);
@@ -998,10 +996,12 @@ nsis:
 portable:
   artifactName: coclaw-${version}.${ext}
 
-# ---- macOS（Phase 1 仅 DMG） ----
+# ---- macOS（dmg 供下载 + zip 供自动更新） ----
 mac:
   target:
     - target: dmg
+      arch: [universal]
+    - target: zip
       arch: [universal]
   icon: build-resources/icon.icns
   category: public.app-category.social-networking
@@ -1024,7 +1024,7 @@ dmg:
     height: 380
 ```
 
-> **自动更新源**：由 GitHub Releases 切换为走自家 CDN（`im.coclaw.net/releases/{win,mac}/`）。原因：GitHub Releases 在国内访问不稳定；域名内产物便于通过 nginx 统一缓存策略（`latest*.yml` no-cache，其它产物 immutable）。发布流程由 `rsync` 将 `dist-electron/` 产物推送到 `deploy/static/releases/<平台>/`，详见 `deploy/static/releases/README.md`。
+> **自动更新源**：由 GitHub Releases 切换为走自家 CDN（`im.coclaw.net/releases/{win,mac}/`）。原因：GitHub Releases 在国内访问不稳定；域名内产物便于通过 nginx 统一缓存策略（`latest*.yml` no-cache，其它产物 immutable）。发布流程由 `rsync` 将 `dist-electron/` 产物推送到 `deploy/static/releases/<平台>/`，详见 `deploy/docs/desktop-releases.md`。
 
 ### 10.2 macOS 权限文件
 
@@ -1154,7 +1154,7 @@ Phase 2/3 追加：Windows `.appx`（Microsoft Store）、macOS `.pkg`（Mac App
 
 electron-builder 构建时自动生成 `latest.yml`（Windows）/ `latest-mac.yml`（macOS），连同安装包 + blockmap 一起 `rsync` 到 `deploy/static/releases/<平台>/` 即发布完成。
 
-缓存策略：`latest*.yml` 强制 `no-cache`，其它产物 `immutable`（详见 `deploy/static/releases/README.md`）。
+缓存策略：`latest*.yml` 强制 `no-cache`，其它产物 `immutable`（详见 `deploy/docs/desktop-releases.md`）。
 
 ## 11. package.json 变更
 
@@ -1177,7 +1177,7 @@ electron-builder 构建时自动生成 `latest.yml`（Windows）/ `latest-mac.ym
     "electron:build": "electron-builder",
     "electron:build:win": "electron-builder --win nsis",
     "electron:build:win:portable": "electron-builder --win portable",
-    "electron:build:mac": "electron-builder --mac dmg"
+    "electron:build:mac": "electron-builder --mac"
   }
 }
 ```

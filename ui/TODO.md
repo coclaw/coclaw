@@ -12,16 +12,6 @@
 - 修法方向：加自定义 NSIS 脚本（`nsis.include` 指向 `.nsh`，`!macro customInstall` 里 `WriteRegStr HKCU "Software\Classes\coclaw" ...`、`customUnInstall` 删）。perMachine:false 故写 HKCU 不需提权。
 - 为何暂不做：需 Windows 构建环境实测安装包注册表写入，本环境无法验证；盲写未测 NSIS 脚本有破坏 Windows 构建风险。待 Windows/打包环境就绪后实现+验证。
 
-## docs/designs/electron-desktop-shell.md 与现状脱节（旧脚本 + 死链）
-
-**发现日期**：2026-06-06
-**来源**：同上 deep-review；设计稿为过程文档、按约定归档不追新，登记备查
-
-- 内嵌 `electron:build:mac` 片段仍是旧的 `electron-builder --mac dmg`（已改为 `--mac`，产 dmg+zip）；mac target 示例仍只列 `dmg`，未含自动更新所需的 `zip`。
-- 两处指向 `deploy/static/releases/README.md` 为死链（`deploy/static/` 被 gitignore、磁盘无此文件）；canonical 发布说明已迁至 `deploy/docs/desktop-releases.md`。
-- （2026-06-09 deep-review 补）窗口配置示例（约 `:176-184`）仍写 macOS `titleBarStyle:'hiddenInset'` + `trafficLightPosition`，但该配置已于 commit `f04ee216` 删除（红绿灯压网页内容 bug，回退原生标题栏）；设计稿描述与现状**相反**，最易误导。
-- 修法：按需更新这几处，或在稿头标注"以代码为准、部分示例已过时"。
-
 ## deep-link.js flushPendingDeepLink 在窗口 null/destroyed 时不清 pendingUrl（陈旧链接可能滞留）
 
 **发现日期**：2026-06-06
