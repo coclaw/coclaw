@@ -1,7 +1,10 @@
 services:
   mysql:
     container_name: coclaw-mysql
-    image: mysql:8.0.36-bookworm
+    # 默认变体（Oracle Linux 底座）是多架构镜像，含原生 arm64，
+    # 让本地开发在 Apple Silicon 上免 x86 模拟直接起；mysqld 版本不变（8.0.36）。
+    # 生产 compose.yaml 仍用 -bookworm（x86 部署不受影响），如需对齐再单独切换。
+    image: mysql:8.0.36
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4
