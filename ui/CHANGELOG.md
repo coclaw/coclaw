@@ -4,11 +4,17 @@
 
 ### Patch Changes
 
+- 9912b07: Validate the macOS desktop (Electron) and iOS (Capacitor) clients on real hardware and fix what surfaced. Most visible: the macOS window drops its hidden-inset title bar — the traffic-light buttons had floated over the page's own header — and falls back to the standard macOS system title bar, matching Windows; and the desktop installer icons are now rounded (Windows a rounded rectangle at 22%, macOS a squircle; the shared web/Android/iOS icons stay square, masked by each OS). Behind the scenes, with no end-user effect: the iOS native dependency versions are pinned for reproducible builds and the macOS-only test-suite failures are fixed.
+
 - ea4cd64: Add an 8px top gap above the sidebar's first nav group on the Windows desktop app, where the brand row is hidden, so the list isn't flush against the top edge. No effect on macOS/Linux/browsers, where the brand row already provides that spacing.
 
 ## 0.31.4
 
 ### Patch Changes
+
+- 45a303c: Bring the macOS/Windows (Electron) and iOS (Capacitor) app shells up to the same clean-machine build-and-run bar the Android build already met — macOS coclaw:// URL-scheme registration, an update zip target, and built-in notarization; the iOS arm64 capability and a from-scratch build/release recipe; documented Windows code-signing placeholders. Two runtime fixes ride along: macOS cold-start coclaw:// deep links are now delivered instead of dropped, and the iOS splash uses the configured dark background.
+
+- fa85fbc: Build out the Electron desktop shell's editing affordances — a localized right-click context menu (cut/copy/paste, copy link/image, inspect element) and DevTools keyboard shortcuts (F12 / Ctrl+Shift+I, both toggling, with a follow-up fix so a second F12 reliably closes DevTools). Also disable the Chromium spellchecker (no more red underlines on English input) and drop the context menu's whole-page "Select All" item (Ctrl+A is unaffected).
 
 - e509e7e: Hide the redundant sidebar logo/name on the Windows desktop app. The native Windows titlebar already shows the app icon + name, so the brand row is gated off only on Windows-Electron; it stays on macOS-Electron (which hides its titlebar text), Linux-Electron, and all browsers.
 
