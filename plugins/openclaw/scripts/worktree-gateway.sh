@@ -21,6 +21,42 @@ PORT_FILE="$STATE_DIR/.wt-gateway-port"
 PID_FILE="$STATE_DIR/.wt-gateway-pid"
 GW_LOG="$STATE_DIR/gateway.log"
 
+# --- 可移植原语：用 lsof / 自带超时替代 Linux-only 的 ss / fuser / timeout ---
+# lsof 在 macOS 与 Linux 都有，是同时覆盖两端的单一形式；macOS 无 ss，且其
+# BSD fuser 只认文件、不认 <port>/tcp 语法，故端口相关一律走 lsof。
+
+# 端口是否被监听（占用）。返回 0=占用，1=空闲。
+__port_in_use() {   # $1=port
+	lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+# 列出监听某端口的 pid（每行一个；无则空）。替代 fuser <port>/tcp。
+__port_listener_pids() {   # $1=port
+	lsof -nP -t -iTCP:"$1" -sTCP:LISTEN 2>/dev/null || true
+}
+
+# 在 secs 秒内运行命令，超时 TERM 杀之并返回 124。优先用 coreutils 的
+# timeout/gtimeout（信号传播更稳）；都没有（macOS 默认）时退化为可移植轮询看门狗。
+__run_timeout() {   # $1=secs  $2..=cmd
+	local secs="$1"; shift
+	if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
+	if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+	"$@" &
+	local cmd_pid=$! count=0 rc=0
+	local tenths=$((secs * 10))
+	while kill -0 "$cmd_pid" 2>/dev/null; do
+		if [[ "$count" -ge "$tenths" ]]; then
+			kill -TERM "$cmd_pid" 2>/dev/null || true
+			wait "$cmd_pid" 2>/dev/null || true
+			return 124
+		fi
+		sleep 0.1
+		count=$((count + 1))
+	done
+	wait "$cmd_pid" || rc=$?
+	return "$rc"
+}
+
 # 选端口：已记录则复用（up/reload 稳定）；否则名字哈希到 18800-18879，被占向后找空位。
 __pick_port() {
 	if [[ -f "$PORT_FILE" ]]; then cat "$PORT_FILE"; return; fi
@@ -29,7 +65,7 @@ __pick_port() {
 	base=$((18800 + h % 80)); p=$base
 	local _i
 	for _i in $(seq 1 40); do
-		if ! ss -ltn 2>/dev/null | grep -q ":$p "; then echo "$p"; return; fi
+		if ! __port_in_use "$p"; then echo "$p"; return; fi
 		p=$((p + 1))
 	done
 	echo "[ERROR] 找不到空闲端口（18800 起扫 40 个都被占）" >&2; exit 1
@@ -40,7 +76,7 @@ __pick_port() {
 #  pid+port 双印证还能同时挡住「pid 复用」和「别的进程接管了端口」两种误伤。）
 __pid_owns_port() {   # $1=pid  $2=port
 	local owners
-	owners="$(fuser "$2/tcp" 2>/dev/null || true)"
+	owners="$(__port_listener_pids "$2" | tr '\n' ' ')"
 	[[ " $owners " == *" $1 "* ]]
 }
 
@@ -57,9 +93,11 @@ __stop_gateway() {
 		fi
 		return 0   # PID_FILE 存在即本工具管控：pid 已不占端口=网关自行退出，不再盲按端口杀
 	fi
-	# 无 PID_FILE（旧 state 兼容）：best-effort 按端口杀
+	# 无 PID_FILE（旧 state 兼容）：best-effort 按端口杀（端口作用域，非广义匹配）
 	if [[ -f "$PORT_FILE" ]]; then
-		fuser -k "$(cat "$PORT_FILE")/tcp" 2>/dev/null || true
+		local lp
+		lp="$(__port_listener_pids "$(cat "$PORT_FILE")")"
+		[[ -n "$lp" ]] && kill $lp 2>/dev/null || true
 	fi
 }
 
@@ -68,7 +106,7 @@ __stop_gateway() {
 __wait_ready() {
 	local port="$1" _i
 	for _i in $(seq 1 40); do
-		if timeout 5 openclaw --profile "$PROFILE" gateway call coclaw.info \
+		if __run_timeout 5 openclaw --profile "$PROFILE" gateway call coclaw.info \
 			--url "ws://127.0.0.1:$port" --token x --json >/dev/null 2>&1; then
 			return 0
 		fi
@@ -84,7 +122,7 @@ __wait_ready() {
 __wait_port_free() {   # $1=port
 	local _i
 	for _i in $(seq 1 30); do   # 最多 ~3s
-		ss -ltn 2>/dev/null | grep -q ":$1 " || return 0
+		__port_in_use "$1" || return 0
 		sleep 0.1
 	done
 	echo "[ERROR] 端口 $1 3s 内未释放（可能被无关进程占用）；换端口或先 pnpm wt:down --all" >&2
@@ -136,7 +174,7 @@ cmd_reload() {
 	__stop_gateway   # 精确停旧网关；__start_gateway 内 __wait_port_free 负责等端口放开
 	__start_gateway "$port"
 	__wait_ready "$port"
-	echo "[DONE] 隔离网关已重载（url ws://127.0.0.1:$port）"
+	echo "[DONE] 隔离网关已重载（url ws://127.0.0.1:${port}）"
 }
 
 cmd_call() {
@@ -158,7 +196,7 @@ cmd_down() {
 # 扫文件系统不依赖 cwd，可从任意检出运行。按 pid 精确收尸：仅杀「pid 仍活且仍占记录端口」者，
 # 故意不设按端口兜底杀（那会误伤接管该端口的无关进程）——换来「绝不误伤」。代价：pid 记录丢失的
 # 网关收不到（只会发生在 SIGTERM 没生效 / 手动删了 pid 文件，而 OpenClaw 实测稳收 SIGTERM），
-# 会留真孤儿、需手动 fuser -k <port>。极窄、可接受，是有意取舍。
+# 会留真孤儿、需手动 kill（如 lsof -t -iTCP:<port> -sTCP:LISTEN | xargs kill）。极窄、可接受，是有意取舍。
 __reap_all() {
 	shopt -s nullglob
 	local dirs=("$HOME"/.openclaw-wt-*)

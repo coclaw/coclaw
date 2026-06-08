@@ -20,7 +20,3 @@
    - 本次只把 electron 的 `extract-zip>yauzl` 顶到 3.x；`@capacitor/cli` 捆的 `native-run` 仍解析 yauzl 2.10.0。
    - 风险 LOW：native-run 不在 APK 构建关键路径（APK 由 Gradle 出），仅 `cap run android` 部署到设备/模拟器时调用；解的是小 APK 而非 281MB 大流（回归对大流式解压最致命）；仓库内无脚本调用它。
    - 真要中招：照搬同款 scoped override `native-run>yauzl: ^3.x` 即可。
-
-2. **worktree 网关工具链 `pnpm wt:*` 在 macOS 上跑不起来**
-   - `scripts/_lib.sh`（约 line 189 的 `case` 分支）在 macOS 自带 bash 3.2 下解析失败；脚本还用了 Linux-only 的 `ss`/`fuser`，macOS 无这些命令（也无 `timeout`）。
-   - 影响：worktree-dev skill 的隔离网关流程在 Mac 上无法直接用（本次验证靠 `lsof` 手动镜像逻辑绕过）。结合正在搭 Mac 开发环境，值得加固（bash 4+ shebang 或语法降级 + 命令探测/替代）。

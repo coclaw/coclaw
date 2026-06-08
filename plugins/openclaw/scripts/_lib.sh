@@ -72,7 +72,7 @@ ensure_uninstalled() {
 		echo "[INFO] 插件未安装，无需卸载"
 		return 0
 	fi
-	echo "[INFO] 当前安装模式: $mode，执行卸载..."
+	echo "[INFO] 当前安装模式: ${mode}，执行卸载..."
 	# --force 跳过交互确认；脚本环境没有 stdin tty。
 	openclaw plugins uninstall --force "$PLUGIN_ID" || true
 	# 清理可能残留的 extensions 目录
@@ -131,7 +131,7 @@ ensure_openclaw_link() {
 	fi
 	rm -rf "$STAGE_DIR/node_modules/openclaw"
 	ln -s "$oc_root" "$STAGE_DIR/node_modules/openclaw"
-	echo "[STEP] 建 node_modules/openclaw → $oc_root（runtime 解析 plugin-sdk）"
+	echo "[STEP] 建 node_modules/openclaw → ${oc_root}（runtime 解析 plugin-sdk）"
 }
 
 # 构建扁平依赖 stage（pnpm deploy）+ 把 src/ 换成回指源目录的 symlink。
@@ -174,7 +174,7 @@ build_stage() {
 	stage_src="$(readlink -f "$STAGE_DIR/src" 2>/dev/null || true)"
 	real_src="$(readlink -f "$PLUGIN_DIR/src" 2>/dev/null || true)"
 	if [[ -z "$stage_src" || "$stage_src" != "$real_src" ]]; then
-		echo "[ERROR] stage src 软链自检失败：$STAGE_DIR/src → ${stage_src:-<空>}（期望 $real_src）" >&2
+		echo "[ERROR] stage src 软链自检失败：$STAGE_DIR/src → ${stage_src:-<空>}（期望 ${real_src}）" >&2
 		echo "[HINT] 可能 pnpm deploy 布局变更或软链失活，reload 会测到旧码，已中止" >&2
 		exit 1
 	fi
@@ -185,10 +185,11 @@ build_stage() {
 	leak=$(find "$STAGE_DIR/node_modules" -type l 2>/dev/null | while read -r l; do
 		local tgt
 		tgt=$(readlink -f "$l" 2>/dev/null || true)
-		case "$tgt" in
-			"$STAGE_DIR"/*|'') ;;
-			*) echo "$l → $tgt" ;;
-		esac
+		# 非空且不在 stage 内 = 外指泄漏。用 [[ ]] 而非 case：bash 3.2 无法在 $(...)
+		# 命令替换内解析 case（把闭 case 分支的 ) 误当成闭命令替换的 )，macOS 自带 bash 3.2）。
+		if [[ -n "$tgt" && "$tgt" != "$STAGE_DIR"/* ]]; then
+			echo "$l → $tgt"
+		fi
 	done | head -1)
 	if [[ -n "$leak" ]]; then
 		echo "[ERROR] stage 仍存在外指 symlink：$leak" >&2
