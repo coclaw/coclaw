@@ -14,7 +14,7 @@
 		"node": ">=20.0.0"
 	},
 	"scripts": {
-		"dev": "bash ../scripts/ensure-dev-dockers.sh && cross-env NODE_ENV=development nodemon --watch src --ext js,mjs,cjs src/index.js",
+		"dev": "prisma generate && bash ../scripts/ensure-dev-dockers.sh && cross-env NODE_ENV=development nodemon --watch src --ext js,mjs,cjs src/index.js",
 		"start": "cross-env NODE_ENV=production node src/index.js",
 		"build": "echo \"TODO: build server\"",
 		"lint": "eslint \"**/*.{js,mjs,cjs}\" --ignore-pattern \"src/generated/**\" --no-error-on-unmatched-pattern",
@@ -28,7 +28,7 @@
 		"prisma:studio": "prisma studio",
 		"admin": "node src/cli/admin.js",
 		"account:create-test-local": "node scripts/create-test-local-account.js",
-		"test": "c8 --check-coverage --lines 90 --functions 90 --branches 90 --statements 90 --reporter=text --reporter=lcov node --test",
+		"test": "prisma generate && c8 --check-coverage --lines 90 --functions 90 --branches 90 --statements 90 --reporter=text --reporter=lcov node --test",
 		"verify": "pnpm check && pnpm test"
 	},
 	"dependencies": {
