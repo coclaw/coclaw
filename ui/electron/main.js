@@ -73,11 +73,6 @@ if (!gotLock) {
 				// 同时让右键菜单不再出现 electron-context-menu 写死的英文占位项 "No Guesses Found"
 				spellcheck: false,
 			},
-			// macOS 标题栏
-			...(process.platform === 'darwin' && {
-				titleBarStyle: 'hiddenInset',
-				trafficLightPosition: { x: 10, y: 10 },
-			}),
 		});
 
 		mainWindowState.manage(win);
