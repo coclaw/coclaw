@@ -21,18 +21,52 @@ PORT_FILE="$STATE_DIR/.wt-gateway-port"
 PID_FILE="$STATE_DIR/.wt-gateway-pid"
 GW_LOG="$STATE_DIR/gateway.log"
 
-# --- 可移植原语：用 lsof / 自带超时替代 Linux-only 的 ss / fuser / timeout ---
-# lsof 在 macOS 与 Linux 都有，是同时覆盖两端的单一形式；macOS 无 ss，且其
-# BSD fuser 只认文件、不认 <port>/tcp 语法，故端口相关一律走 lsof。
+# --- 可移植原语：端口探测多级回退 + 自带超时替代 Linux-only 的 timeout ---
+# 端口探测按 lsof -> ss -> fuser 三级回退：lsof 永远第一优先（macOS/Linux 都有，且
+# macOS 无 ss、其 BSD fuser 又不认 <port>/tcp 语法，故 Mac 全靠 lsof）；ss/fuser 是
+# Linux 上 lsof 缺席时的兜底（沿用 Mac 兼容改造前的老码）。三者全缺则一次性响亮告警，
+# 端口探测降级但不再静默。
+
+# 端口探测工具全缺（lsof/ss/fuser 都没装）时的一次性响亮告警：用模块级 flag 守住，
+# 避免每次探端口都刷屏；走 stderr，文案点名三者并给可操作的安装提示。
+__PORT_PROBE_WARNED=""
+__warn_no_port_probe() {
+	[[ -n "$__PORT_PROBE_WARNED" ]] && return 0
+	__PORT_PROBE_WARNED=1
+	echo "[WARN] 端口探测不可用：lsof / ss / fuser 三者都没装。" >&2
+	echo "       隔离网关的端口起 / 停判断会失准（可能误判端口空闲、或漏杀残留旧网关）。" >&2
+	echo "       请装其一后重试：Linux 用 apt install lsof（或 iproute2 / psmisc），macOS 用 brew install lsof。" >&2
+}
 
 # 端口是否被监听（占用）。返回 0=占用，1=空闲。
+# 三级回退 lsof -> ss -> fuser；三者全缺则告警一次并视为「未占用」(rc=1) 继续。
 __port_in_use() {   # $1=port
-	lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+	if command -v lsof >/dev/null 2>&1; then
+		lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+	elif command -v ss >/dev/null 2>&1; then
+		ss -ltn 2>/dev/null | grep -q ":$1 "
+	elif command -v fuser >/dev/null 2>&1; then
+		fuser "$1/tcp" >/dev/null 2>&1
+	else
+		__warn_no_port_probe
+		return 1
+	fi
 }
 
 # 列出监听某端口的 pid（每行一个；无则空）。替代 fuser <port>/tcp。
+# 三级回退 lsof -> ss -> fuser（顺序与 __port_in_use 一致）；三者全缺则告警一次并输出空。
+# ss -ltnp 同用户网关看得到自身 pid，无需 root；端口锚定沿用 ":$1 " 防子串误配。
+# 双栈监听（v4+v6）会让 ss 重复输出同一 pid，sort -u 去重，与 lsof/fuser 的单行输出对齐。
 __port_listener_pids() {   # $1=port
-	lsof -nP -t -iTCP:"$1" -sTCP:LISTEN 2>/dev/null || true
+	if command -v lsof >/dev/null 2>&1; then
+		lsof -nP -t -iTCP:"$1" -sTCP:LISTEN 2>/dev/null || true
+	elif command -v ss >/dev/null 2>&1; then
+		ss -ltnp 2>/dev/null | grep ":$1 " | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
+	elif command -v fuser >/dev/null 2>&1; then
+		fuser "$1/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true
+	else
+		__warn_no_port_probe
+	fi
 }
 
 # 在 secs 秒内运行命令，超时 TERM 杀之并返回 124。优先用 coreutils 的
