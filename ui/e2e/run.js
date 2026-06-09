@@ -61,7 +61,40 @@ function run(cmd, args) {
 	}
 }
 
+// 跑测试前确保 Playwright 浏览器已安装（幂等：已装则秒过）。
+// 这样新机器 / CI / 升级 Playwright 后首次跑会自动补齐，而非以
+// "Executable doesn't exist" 失败。浏览器二进制不走 npm registry，
+// 故不硬编码镜像；下载源由开发者环境的 PLAYWRIGHT_DOWNLOAD_HOST 决定。
+function ensureBrowsers() {
+	try {
+		// 加 timeout：下载卡死（坏网络/限速）时也转成下方显著提示，而非无限 hang
+		execFileSync('npx', ['playwright', 'install', 'chromium'], {
+			stdio: 'inherit',
+			env: process.env,
+			timeout: 300_000,
+		});
+	} catch {
+		// 安装失败时给出显著提示——开发者常让 agent 代跑，醒目的指引能快速定位
+		const bar = '═'.repeat(74);
+		console.error(`\n${bar}`);
+		console.error('  ✗ Playwright 浏览器安装失败 —— E2E 无法运行');
+		console.error(bar);
+		console.error('  浏览器二进制不走 npm registry，registry 镜像（.npmrc）对它无效。');
+		console.error('  国内若卡在官方 CDN，设 Playwright 专用下载源后重试：');
+		console.error('');
+		console.error('    export PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright');
+		console.error('    pnpm exec playwright install chromium');
+		console.error('');
+		console.error('  该镜像偶尔暂缺最新版本（404）→ 等镜像追上，或临时用全局代理。');
+		console.error('  详见 docs/e2e-troubleshooting.md 卡点 8。');
+		console.error(`${bar}\n`);
+		process.exit(1);
+	}
+}
+
 const useXvfb = isLinux && (isCi || isWSL()) && hasXvfbRun();
+
+ensureBrowsers();
 
 if (useXvfb) {
 	run('xvfb-run', ['--auto-servernum', 'npx', 'playwright', ...pwArgs]);

@@ -22,6 +22,11 @@ pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 - 从项目 root 执行时：`pnpm --filter @coclaw/ui e2e:ci`
 - 当用户明确要求时才执行 E2E 测试
 
+## 浏览器内核（自动安装）
+
+- `run.js` 在跑测试前自动 `playwright install chromium`（幂等，已装秒过）：新机器 / CI / 升级 Playwright 后首次跑会自动补齐浏览器，无需手动安装。
+- 浏览器二进制**不走 npm registry**——`.npmrc` 的 registry 镜像对它无效。国内若安装卡在官方 CDN，另设 `PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright` 后重试（与 npm registry 是两套独立配置）。安装失败时 run.js 会打印显著提示。详见 `docs/e2e-troubleshooting.md` 卡点 8。
+
 ## 测试账号
 
 - 后端测试账号（本地认证）：loginName=`test`；password=`12345678`

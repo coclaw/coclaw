@@ -164,6 +164,36 @@ await page.locator('#t').click({ timeout: 3000 });
 - 文件名和断言文本中包含 `Date.now()` 时间戳确保跨 run 唯一。
 - 匹配时用唯一标识过滤，避免命中历史消息。
 
+## 卡点 8：浏览器内核安装失败 / `Executable doesn't exist`
+
+### 现象
+
+- 首次跑 E2E 报 `browserType.launch: Executable doesn't exist at .../chromium-XXXX/...`，提示 `playwright install`。
+- 或 `playwright install` 卡住：官方 CDN（`cdn.playwright.dev`）下载长时间 0 字节 / 中途 stall。
+- 或换镜像后报 404（`NoSuchKey`）。
+
+### 原因
+
+- 浏览器二进制不纳入 npm 依赖，需单独 `playwright install`。`run.js` 已在跑测试前自动执行（幂等），但下载本身可能失败。
+- **关键易混点**：浏览器二进制**不从 npm registry 下载**，故 `.npmrc` 的 registry 镜像对它无效——换源要另设 `PLAYWRIGHT_DOWNLOAD_HOST`（与 npm registry 是两套独立配置）。
+- 官方 CDN 在部分网络（如国内无代理）会被限速到约 0，下载 stall。
+- Playwright 专用镜像（`cdn.npmmirror.com/binaries/playwright`）偶尔暂缺最新版本 → 404，等镜像追上即可。
+
+### 处理方式
+
+- 设 Playwright 专用下载源后重试：
+	```bash
+	export PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+	pnpm exec playwright install chromium
+	```
+- 若该镜像暂缺当前版本（404）：临时用全局代理直连官方 CDN，或等镜像追上。
+- 兜底（CDN、镜像都不行时）：从 chrome-for-testing 镜像手动下对应版本的 `chrome-<platform>.zip`，解压进 `~/Library/Caches/ms-playwright/chromium-<build>/`（解压后含 `chrome-<platform>/` 子目录），`touch INSTALLATION_COMPLETE` 标记即可——Playwright 仅以该标记文件存在判定"已安装"。
+- run.js 安装失败时已打印显著提示，按提示操作即可。
+
+### 备注
+
+- 开发者通常让 agent 代跑 E2E；agent 遇到上述现象，直接按"设 `PLAYWRIGHT_DOWNLOAD_HOST` 重试"处理，别误判为测试代码问题。
+
 ## 快速检查清单
 
 - `ui/playwright.config.js` 中前端命令是否为 `pnpm dev ...`
@@ -174,3 +204,4 @@ await page.locator('#t').click({ timeout: 3000 });
 - 判断发送完成是否用 `btn-stop` 消失而非 `btn-send` 出现
 - `evalStore` 检查消息内容是否同时处理 string 和 block 数组格式
 - 测试数据（文件名、消息文本）是否包含唯一标识避免跨 run 碰撞
+- 浏览器内核是否已装（`run.js` 自动 `playwright install chromium`）；国内安装慢/失败时是否设了 `PLAYWRIGHT_DOWNLOAD_HOST`（≠ npm registry 镜像）
