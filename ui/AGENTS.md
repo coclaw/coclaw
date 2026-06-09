@@ -119,7 +119,7 @@ pnpm test
 
 ### 设计文档
 
-`docs/designs/electron-desktop-shell.md` —— 涵盖壳子架构、安全模型、权限模型、截图、自动更新、构建分发等完整设计。
+`ui/docs/designs/electron-desktop-shell.md` —— 涵盖壳子架构、安全模型、权限模型、截图、自动更新、构建分发等完整设计。
 
 ## 移动端子页面适配
 

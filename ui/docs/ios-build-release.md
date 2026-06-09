@@ -1,7 +1,7 @@
 # iOS 构建与发布（Capacitor）
 
 > 适用范围：`coclaw/ui` 的 iOS 壳子（Capacitor）。与 Android 共用前端与 `capacitor.config.ts`，
-> 仅原生工程在 `ui/ios/`。桌面端见 `docs/designs/electron-desktop-shell.md` 与
+> 仅原生工程在 `ui/ios/`。桌面端见 `ui/docs/designs/electron-desktop-shell.md` 与
 > `deploy/docs/desktop-releases.md`。
 
 iOS 与已验证的 Android APK 共用同一套远程加载壳（`server.url = https://im.coclaw.net`），

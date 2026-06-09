@@ -46,8 +46,8 @@
 - [认领绑定](designs/claim-bind.md) — OpenClaw 侧发起绑定（已实施）
 - [TURN over TLS](designs/turn-over-tls.md) — 端口 443 穿透方案（已实施）
 - [DC 文件传输排查](designs/dc-file-transfer-issues.md) — DataChannel 大文件传输故障分析（部分实施）
-- [Electron 桌面壳](designs/electron-desktop-shell.md) — 桌面端方案（草案）
-- [Tauri 桌面壳](designs/tauri-desktop-shell.md) — Tauri 方案（已放弃，保留备用）
+- [Electron 桌面壳](../ui/docs/designs/electron-desktop-shell.md) — 桌面端方案（草案，纯 ui 工作区设计，已迁至 `ui/docs/designs/`）
+- [Tauri 桌面壳](../ui/docs/designs/tauri-desktop-shell.md) — Tauri 方案（已放弃，保留备用；已迁至 `ui/docs/designs/`）
 - [API 迁移 bot→claw](designs/api-bot-to-claw-migration.md) — bot→claw 命名迁移（全部完成）
 - [OpenClaw 实例身份](designs/openclaw-instance-identity.md) — 跨重绑持久身份（研究阶段）
 

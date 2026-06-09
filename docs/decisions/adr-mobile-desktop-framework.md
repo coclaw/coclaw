@@ -22,7 +22,7 @@ CoClaw 前端（`ui`）是基于 Vue 3 + Vite + Nuxt UI 4 的 SPA，采用移动
 
 ### 桌面端（Windows + macOS）：Electron
 
-> **修订说明**（2026-04-08）：原决策选择 Tauri v2，后因 Rust 维护负担、无法在 WSL2 交叉编译 Windows .exe、原生 API 缺口等问题，改为 Electron。详见 [Electron 桌面壳设计](../designs/electron-desktop-shell.md)。
+> **修订说明**（2026-04-08）：原决策选择 Tauri v2，后因 Rust 维护负担、无法在 WSL2 交叉编译 Windows .exe、原生 API 缺口等问题，改为 Electron。详见 [Electron 桌面壳设计](../../ui/docs/designs/electron-desktop-shell.md)。
 
 - **原理**：Node.js 后端 + Chromium，thin-shell 架构——壳仅加载远程 UI（`https://im.coclaw.net`）并桥接原生能力
 - **与项目契合度**：全 JS 技术栈，WSL2 可直接构建 Windows .exe；`setOverlayIcon`/`setBadgeCount`/`flashFrame` 等通知能力开箱即用
@@ -46,4 +46,4 @@ CoClaw 前端（`ui`）是基于 Vue 3 + Vite + Nuxt UI 4 的 SPA，采用移动
 | Tauri v2 Mobile | 移动端支持 2024 年才正式发布，生态和踩坑经验远不如 Capacitor |
 | React Native / Flutter | 需要重写 UI 层，不适合已有 Vue SPA |
 | Electron（初版） | 原认为包体积大且不需定制浏览器能力，但后续发现 Tauri 的 Rust 维护成本和交叉编译困难更严重，故最终选回 Electron |
-| Tauri v2（桌面端） | 原选方案，因 Rust 维护负担、WSL2 无法交叉编译、原生 API 缺口而放弃（详见 `designs/electron-desktop-shell.md`） |
+| Tauri v2（桌面端） | 原选方案，因 Rust 维护负担、WSL2 无法交叉编译、原生 API 缺口而放弃（详见 `ui/docs/designs/electron-desktop-shell.md`） |
