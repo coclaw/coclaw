@@ -2,6 +2,18 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## Electron 托盘"退出"退不掉（带活跃 RTC 连接时）— fork 的看门狗修法已实机证伪并 revert
+
+**发现日期**：2026-06-10
+**来源**：并行 fork 对此 bug 的修复经实机验证证伪；修复 commit `0a2c5727` 已 revert（`93ff6311`）
+
+- 症状：托盘右键"退出"点了退不掉——进程不退、托盘还在、还能再点，与最初报告一致。
+- 已实机钉死的根因：壳子加载的远程页连着活跃 RTC 时，`app.quit()` 的优雅关闭被 renderer/RTC 收尾拖死。`before-quit` 正常触发、`isQuitting` 正常置位，但 `app.exit(0)` 也无法终止进程——主线程在 teardown 里 wedge（"RTC 连接很难真断"老问题，呼应 memory `project_rtc_connection_hard_to_break` 与原始 "SIGTERM 5s 无反应靠 SIGKILL" 证据）。实测连进程内 `process.kill(self,'SIGKILL')` 都跑不起来（主线程卡死、inspector eval 超时）→ 任何同线程看门狗（`setTimeout`→`app.exit`）都救不了，杀必须来自进程外。
+- fork 为何误判已修：它验证时壳子未连活跃 RTC（无连接时强退能成，量到 ~1.8s）；单测用假时钟 + mock `app.exit`，结构上抓不到。
+- 修法方向：进程外看门狗——`before-quit` 时 spawn 一个 detached 小进程，宽限期（~2-3s）内主进程没死就从外部 `kill -9 <pid>`；干净退出成功时（窗口 `closed` / `will-quit`）撤掉它。注意 pid 复用风险：看门狗只在进程确实还活着且卡死时开火（靠"成功退出即撤销"避免误杀被回收的 pid）。保留原修复里 `isQuitting` 那半（修了 Cmd+Q/菜单退出被误塞进托盘），只换掉无效的进程内计时器。
+- 为何暂不做：壳子是次要平台（尽力而为，主目标是 web/Capacitor）；真修需 spawn 外部杀手 + 多轮 rebuild-test（带活跃 RTC 实机验证），用户拍板现阶段搁置。
+- 复现/验证手法（留给接手者）：打包后 `<App>/Contents/MacOS/CoClaw --inspect=9229`，连主进程 inspector，往 renderer 注入阻塞 `beforeunload` 再 `app.quit()`，从**进程外** `pgrep`/`kill -0` 观察是否真退——inspector 自身会被主线程 wedge 影响，观察必须走 OS 级、不能靠 eval 回包。
+
 ## Windows NSIS 未在安装期注册 coclaw:// 协议（首启前的冷链接打不开）
 
 **发现日期**：2026-06-06
