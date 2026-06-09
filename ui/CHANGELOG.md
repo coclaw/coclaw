@@ -1,5 +1,15 @@
 # @coclaw/ui
 
+## 0.32.0
+
+### Minor Changes
+
+- 1710206: Add a custom title bar for the Electron desktop shell. The native OS title bar is hidden while the system still paints the window controls (traffic lights on macOS, the Window Controls Overlay on Windows), and the web layer takes over that strip's background and drag region — matching VS Code / Slack / Linear. All title-bar offsets live behind an `html.cc-electron-custom` scope class that web and Capacitor never receive, so their layout and CSS are byte-for-byte unchanged. The Windows control-overlay color follows the active theme (including live `auto` changes), and the strip stays clear of modals, popovers, selects, and toasts.
+
+### Patch Changes
+
+- 5f79cd5: Flatten the three desktop content headers (chat, file manager, model config) to share the page body background while keeping the hairline bottom border, so they no longer read as a sunken chrome panel on wide screens. Also make the `auto` theme follow the OS light/dark setting live: a single boot-time `matchMedia` listener now re-applies the theme when the system switches, so `.dark`, the `theme-color` meta, and the native status bar style stay in sync without needing a settings change.
+
 ## 0.31.5
 
 ### Patch Changes
