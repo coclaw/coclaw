@@ -49,7 +49,7 @@ vi.mock('./locale.js', () => ({
 	t: (zh, en) => en,
 }));
 
-const { initTray, attachMainWindow, disposeTray, installQuitGuard } = await import('./tray.js');
+const { initTray, attachMainWindow, disposeTray } = await import('./tray.js');
 const { nativeImage } = await import('electron');
 
 describe('tray flash', () => {
@@ -162,54 +162,6 @@ describe('attachMainWindow', () => {
 		attachMainWindow(fakeApp, null);
 		attachMainWindow(fakeApp, { isDestroyed: () => true, on: vi.fn() });
 		// 无异常即通过
-	});
-});
-
-describe('installQuitGuard', () => {
-	test('注册 before-quit', () => {
-		const handlers = {};
-		const fakeApp = { isQuitting: false, on: vi.fn((e, h) => { handlers[e] = h; }), exit: vi.fn() };
-		installQuitGuard(fakeApp);
-		assert.ok(handlers['before-quit'], 'should register before-quit handler');
-	});
-
-	test('before-quit：置 isQuitting=true 并装退出看门狗，到点 app.exit(0)', () => {
-		vi.useFakeTimers();
-		try {
-			const handlers = {};
-			const fakeApp = { isQuitting: false, on: vi.fn((e, h) => { handlers[e] = h; }), exit: vi.fn() };
-			installQuitGuard(fakeApp);
-
-			handlers['before-quit']();
-			// 立刻标记真退出（让 close 处理器放行，不再收进托盘）
-			assert.equal(fakeApp.isQuitting, true);
-			// 看门狗未到点不强退
-			assert.equal(fakeApp.exit.mock.calls.length, 0);
-
-			vi.advanceTimersByTime(1600);
-			// 到点强退，退出码 0
-			assert.equal(fakeApp.exit.mock.calls.length, 1);
-			assert.deepEqual(fakeApp.exit.mock.calls[0], [0]);
-		}
-		finally {
-			vi.useRealTimers();
-		}
-	});
-
-	test('看门狗在窗口能优雅关闭时不应触发（进程提前退出 → 不调 app.exit）', () => {
-		vi.useFakeTimers();
-		try {
-			const handlers = {};
-			const fakeApp = { isQuitting: false, on: vi.fn((e, h) => { handlers[e] = h; }), exit: vi.fn() };
-			installQuitGuard(fakeApp);
-			handlers['before-quit']();
-			// 截止时间之前查看：尚未强退（真实进程此刻已优雅退出，timer 随进程消失）
-			vi.advanceTimersByTime(1400);
-			assert.equal(fakeApp.exit.mock.calls.length, 0);
-		}
-		finally {
-			vi.useRealTimers();
-		}
 	});
 });
 

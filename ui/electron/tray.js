@@ -13,9 +13,6 @@ let isUnread = false;
 let cachedNormalIcon = null;
 let cachedUnreadIcon = null;
 
-// 退出看门狗：优雅退出迟迟完不成时强退的硬截止时间
-const QUIT_WATCHDOG = 1500;
-
 /**
  * 初始化系统托盘（仅调用一次，不含窗口绑定，窗口绑定走 attachMainWindow）
  * @param {Electron.App} app
@@ -118,23 +115,6 @@ export function attachMainWindow(app, win) {
 	});
 	win.on('hide', () => {
 		if (!win.isDestroyed()) win.webContents.send('window-blur');
-	});
-}
-
-/**
- * 安装退出守卫——解决「托盘 app 退不掉」。是 attachMainWindow 里「关窗→收进托盘」策略的另一半。
- * - before-quit 统一把 app.isQuitting 置 true：覆盖托盘 / Cmd+Q / 菜单 / 更新器所有退出入口，
- *   让 close 处理器放行真退出，而不是误把它当成「收进托盘」（此前 Cmd+Q/菜单退出也会被收进托盘）。
- * - 优雅 app.quit() 把关窗委托给 renderer 的 unload，而远程页 beforeunload 取消关闭、或活跃 RTC/
- *   子进程收尾挂住会让它永远完不成（退不掉、托盘还在）。装一个硬截止时间，到点仍没退就 app.exit(0)
- *   强退，保证「退出必达」；窗口能优雅关闭时进程早已退出，unref 的 timer 既不触发也不拖慢正常退出。
- * @param {Electron.App} app
- */
-export function installQuitGuard(app) {
-	app.on('before-quit', () => {
-		app.isQuitting = true;
-		const timer = setTimeout(() => app.exit(0), QUIT_WATCHDOG);
-		timer.unref?.();
 	});
 }
 
