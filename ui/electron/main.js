@@ -16,9 +16,14 @@ import { getAppTitle, t } from './locale.js';
 import { REMOTE_URL, DEV_URL, isTrustedUrl } from './url-guard.js';
 import { setupContextMenu } from './context-menu.js';
 import { setupDevtoolsShortcut } from './devtools.js';
+import { buildWindowChrome, markWindowWco, isWindowWcoEnabled } from './window-chrome.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
+
+// 构建期应急回退开关（见 docs/designs/electron-custom-titlebar.md §8）：
+// 打包后 env 对终端用户不可达，仅纠正版重出包时用，强制三平台回落原生栏。
+const forceNativeTitlebar = process.env.CC_FORCE_NATIVE_TITLEBAR === '1';
 
 /** 当前主窗口引用，供各模块通过 getMainWindow() 获取 */
 let mainWin = null;
@@ -44,7 +49,11 @@ if (!gotLock) {
 		});
 
 		const appTitle = getAppTitle();
-		const win = new BrowserWindow({
+
+		// 标题栏平台决策（单一真相源）：custom 经 additionalArguments 下发 preload，preload 只读不重算
+		const chrome = buildWindowChrome(process.platform, { forceNative: forceNativeTitlebar });
+
+		const winOpts = {
 			x: mainWindowState.x,
 			y: mainWindowState.y,
 			width: mainWindowState.width,
@@ -52,6 +61,8 @@ if (!gotLock) {
 			minWidth: 360,
 			minHeight: 640,
 			title: appTitle,
+			// 创建期固定背景色，规避 web 首帧前露白底闪
+			backgroundColor: chrome.backgroundColor,
 			// Windows 用 .ico（多分辨率，200% DPI 下不模糊）；其余平台用 .png
 			icon: path.join(
 				__dirname,
@@ -72,8 +83,18 @@ if (!gotLock) {
 				// 关闭拼写检查：与 UI 输入框 spellcheck="false" 的设计一致，去掉红色波浪线，
 				// 同时让右键菜单不再出现 electron-context-menu 写死的英文占位项 "No Guesses Found"
 				spellcheck: false,
+				// 把 custom 决策经 process.argv 下发沙箱 preload（见设计稿 §4.1/§4.2）
+				additionalArguments: chrome.custom ? ['--cc-titlebar-custom=1'] : [],
 			},
-		});
+		};
+		// 自定义壳：隐藏原生栏（mac 保留红绿灯；Windows 另配 titleBarOverlay 由系统画 WCO）
+		if (chrome.titleBarStyle) winOpts.titleBarStyle = chrome.titleBarStyle;
+		if (chrome.titleBarOverlay) winOpts.titleBarOverlay = chrome.titleBarOverlay;
+
+		const win = new BrowserWindow(winOpts);
+
+		// 记录该窗口启用了 WCO，供 ipc 层 setTitleBarOverlay 护栏判定（防 Electron #34137 崩）
+		if (chrome.titleBarOverlay) markWindowWco(win);
 
 		mainWindowState.manage(win);
 		mainWin = win;
@@ -85,6 +106,10 @@ if (!gotLock) {
 		// 右键上下文菜单（复制/粘贴/检查元素）+ DevTools 快捷键（F12 / Ctrl+Shift+I），生产也生效
 		setupContextMenu(win);
 		setupDevtoolsShortcut(win);
+
+		// 全屏事件转发渲染进程（自定义标题栏据此收起条；见设计稿 §4.1）。
+		// 必须逐窗口接线：mac activate 在无窗口时会重建窗口，一次性全局注册会漏掉新窗口
+		attachWindowChromeEvents(win);
 
 		// 加载页面
 		const url = isDev ? DEV_URL : REMOTE_URL;
@@ -127,6 +152,21 @@ if (!gotLock) {
 		});
 
 		return win;
+	}
+
+	/**
+	 * 给单个窗口接上原生全屏事件，转发给渲染进程（自定义标题栏据此收起/恢复条）。
+	 * 只认原生全屏——非全屏的 maximize/zoom 不发这两个事件，此时红绿灯/WCO 仍在、条须保留。
+	 * @param {Electron.BrowserWindow} win
+	 */
+	function attachWindowChromeEvents(win) {
+		const sendFullScreen = (val) => {
+			if (!win.isDestroyed()) {
+				win.webContents.send('window-fullscreen', val);
+			}
+		};
+		win.on('enter-full-screen', () => sendFullScreen(true));
+		win.on('leave-full-screen', () => sendFullScreen(false));
 	}
 
 	// 注册 Deep Link 协议（含 macOS open-url 监听）——必须在 app ready 之前注册。
@@ -225,7 +265,7 @@ if (!gotLock) {
 		bootstrapDeepLinkFromArgv(process.argv);
 
 		// 以下只注册一次，通过 getMainWindow() 获取当前窗口
-		registerIpcHandlers(getMainWindow);
+		registerIpcHandlers(getMainWindow, isWindowWcoEnabled);
 		initTray(app, getMainWindow);
 		// 主窗口的 close→托盘、focus/blur 事件绑定（仅对主窗口生效，避免误伤后续弹窗）
 		attachMainWindow(app, win);

@@ -30,6 +30,20 @@ const electronAPI = Object.freeze({
 	// ---- 平台信息 ----
 	platform: process.platform, // 'win32' | 'darwin' | 'linux'
 
+	// ---- 自定义标题栏（壳→web 关键契约信号）----
+	// custom 取自主进程实际决策：读 additionalArguments 经 process.argv 下发的标志，
+	// preload 不自行重算平台（避免 forceNative override 时半回滚，见设计稿 §4.2）。
+	// 子对象也 freeze，保持契约只读。
+	titleBar: Object.freeze({
+		custom: process.argv.includes('--cc-titlebar-custom=1'),
+	}),
+	// 同步 Windows WCO 按钮色（仅 Windows 生效，主题切换时调用）
+	setTitleBarOverlay: (opts) => ipcRenderer.invoke('window:setTitleBarOverlay', opts),
+	// 订阅原生全屏变化（payload 为 boolean），返回 unsubscribe
+	onFullScreenChange: (cb) => subscribe('window-fullscreen', cb),
+	// 向主进程拉当前全屏态（reload 后 preload 是全新进程、不持有主进程态，必须经此 getter 取）
+	getFullScreen: () => ipcRenderer.invoke('window:getFullScreen'),
+
 	// ---- 壳子版本（打包时由 electron-builder extraMetadata 注入） ----
 	getShellVersion: () => ipcRenderer.invoke('app:getShellVersion'),
 

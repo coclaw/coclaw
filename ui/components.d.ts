@@ -21,6 +21,7 @@ declare module 'vue' {
     ChatInput: typeof import('./src/components/ChatInput.vue')['default']
     ChatMsgItem: typeof import('./src/components/ChatMsgItem.vue')['default']
     DesktopSidebar: typeof import('./src/components/DesktopSidebar.vue')['default']
+    ElectronTitleBar: typeof import('./src/components/ElectronTitleBar.vue')['default']
     FileBreadcrumb: typeof import('./src/components/files/FileBreadcrumb.vue')['default']
     FileListItem: typeof import('./src/components/files/FileListItem.vue')['default']
     FileUploadItem: typeof import('./src/components/files/FileUploadItem.vue')['default']

@@ -59,7 +59,8 @@ export default defineConfig({
 				},
 				toaster: {
 					slots: {
-						viewport: 'mt-[var(--safe-area-inset-top)] mb-[var(--safe-area-inset-bottom)]',
+						// cc-toaster-viewport：纯惰性 marker，仅 html.cc-electron-custom 下偏移让开标题栏条/WCO 按钮区（设计稿 §5.4）
+						viewport: 'cc-toaster-viewport mt-[var(--safe-area-inset-top)] mb-[var(--safe-area-inset-bottom)]',
 					},
 				},
 				modal: MODAL_THEME,

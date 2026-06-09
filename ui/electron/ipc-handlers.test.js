@@ -1,4 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { markWindowWco, isWindowWcoEnabled } from './window-chrome.js';
 
 // ---- Mocks ----
 
@@ -118,6 +119,8 @@ function freshWin() {
 		focus: vi.fn(),
 		flashFrame: vi.fn(),
 		setOverlayIcon: vi.fn(),
+		setTitleBarOverlay: vi.fn(),
+		isFullScreen: vi.fn().mockReturnValue(false),
 		webContents: {
 			send: vi.fn(),
 			downloadURL: vi.fn(),
@@ -136,7 +139,8 @@ function restorePlatform() {
 let onceRegistered = false;
 function registerOnce() {
 	if (onceRegistered) return;
-	registerIpcHandlers(() => fakeWin);
+	// 注入真实的 WCO 守卫（window-chrome.js 的 WeakSet），让 setTitleBarOverlay 护栏测试贴近实情
+	registerIpcHandlers(() => fakeWin, isWindowWcoEnabled);
 	onceRegistered = true;
 }
 
@@ -541,6 +545,69 @@ describe('app / store', () => {
 	test('store:get 未设置的 key 返回 undefined', async () => {
 		const res = await hoisted.invokeHandlers['store:get']({}, 'nonexistent');
 		expect(res).toBeUndefined();
+	});
+});
+
+// ---- 标题栏（自定义壳）----
+
+describe('window:setTitleBarOverlay（WCO 护栏）', () => {
+	test('窗口启用了 WCO → 调到 win.setTitleBarOverlay', async () => {
+		markWindowWco(fakeWin);
+		const opts = { color: '#1b1b1b', symbolColor: '#e5e5e5', height: 38 };
+		await hoisted.invokeHandlers['window:setTitleBarOverlay']({}, opts);
+		expect(fakeWin.setTitleBarOverlay).toHaveBeenCalledWith(opts);
+	});
+
+	test('窗口未启用 WCO（如 win32 + forceNative）→ 不调（防 Electron #34137 崩）', async () => {
+		// 不 markWindowWco：模拟 forceNative 下创建的窗口没有 WCO
+		await hoisted.invokeHandlers['window:setTitleBarOverlay']({}, { color: '#1b1b1b' });
+		expect(fakeWin.setTitleBarOverlay).not.toHaveBeenCalled();
+	});
+
+	test('非 Windows（未启用 WCO）→ 不调', async () => {
+		// 非 Windows 窗口同样不会被 markWindowWco
+		await hoisted.invokeHandlers['window:setTitleBarOverlay']({}, { color: '#f1f5f9' });
+		expect(fakeWin.setTitleBarOverlay).not.toHaveBeenCalled();
+	});
+
+	test('win=null → 不抛、不调', async () => {
+		const prev = fakeWin;
+		fakeWin = null;
+		await hoisted.invokeHandlers['window:setTitleBarOverlay']({}, { color: '#1b1b1b' });
+		fakeWin = prev;
+		// 无法对 null 断言调用；只要上面 await 不抛即通过
+	});
+
+	test('窗口已销毁（mac close/activate 重建竞态）→ 不调、不抛', async () => {
+		markWindowWco(fakeWin);
+		fakeWin.isDestroyed = () => true;
+		await hoisted.invokeHandlers['window:setTitleBarOverlay']({}, { color: '#1b1b1b' });
+		expect(fakeWin.setTitleBarOverlay).not.toHaveBeenCalled();
+	});
+});
+
+describe('window:getFullScreen', () => {
+	test('返回 win.isFullScreen()', async () => {
+		fakeWin.isFullScreen.mockReturnValue(true);
+		const res = await hoisted.invokeHandlers['window:getFullScreen']();
+		expect(res).toBe(true);
+		expect(fakeWin.isFullScreen).toHaveBeenCalled();
+	});
+
+	test('win=null → 返回 false（不抛）', async () => {
+		const prev = fakeWin;
+		fakeWin = null;
+		const res = await hoisted.invokeHandlers['window:getFullScreen']();
+		expect(res).toBe(false);
+		fakeWin = prev;
+	});
+
+	test('窗口已销毁 → 返回 false、不调 isFullScreen、不抛', async () => {
+		fakeWin.isDestroyed = () => true;
+		fakeWin.isFullScreen.mockReturnValue(true);
+		const res = await hoisted.invokeHandlers['window:getFullScreen']();
+		expect(res).toBe(false);
+		expect(fakeWin.isFullScreen).not.toHaveBeenCalled();
 	});
 });
 

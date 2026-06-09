@@ -53,8 +53,10 @@ function isAllowedExternalProtocol(url) {
  * 1. ipcMain.handle 对同 channel 抛 "second handler" 错
  * 2. will-download 监听器重复注册，导致每次下载发多次 progress/done 事件
  * @param {() => Electron.BrowserWindow | null} getWin - 获取当前主窗口的函数
+ * @param {(win: Electron.BrowserWindow) => boolean} [isWcoEnabled] - 判定窗口是否启用了
+ *   WCO（自定义标题栏 setTitleBarOverlay 护栏用，见 window-chrome.js）；缺省视为未启用
  */
-export function registerIpcHandlers(getWin) {
+export function registerIpcHandlers(getWin, isWcoEnabled = () => false) {
 	if (registered) return;
 	registered = true;
 
@@ -204,6 +206,23 @@ export function registerIpcHandlers(getWin) {
 				});
 			}
 		});
+	});
+
+	// ---- 标题栏（自定义壳，Windows WCO 色同步 + 全屏态查询）----
+	// 仅在该窗口创建时确实启用了 WCO 才调 setTitleBarOverlay，否则崩（Electron #34137）。
+	// forceNative / 非 Windows 窗口未启用 WCO → isWcoEnabled 返回 false → 静默忽略。
+	// 不能只判 win32：win32 + forceNative 下窗口没 WCO，只判平台会崩。
+	// 同样要判 isDestroyed：mac close/activate 重建竞态下 getWin 可能返回已销毁窗口，
+	// 对其调方法会抛错刷无谓 error 日志（renderer invoke 也会被 reject）。
+	safeHandle('window:setTitleBarOverlay', (_, opts) => {
+		const win = getWin();
+		if (win && !win.isDestroyed() && isWcoEnabled(win)) {
+			win.setTitleBarOverlay(opts);
+		}
+	});
+	safeHandle('window:getFullScreen', () => {
+		const win = getWin();
+		return win && !win.isDestroyed() ? win.isFullScreen() : false;
 	});
 
 	// ---- 应用信息 ----

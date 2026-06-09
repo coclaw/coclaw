@@ -110,3 +110,38 @@ body {
 .cc-secret-mask {
 	-webkit-text-security: disc;
 }
+
+/*
+ * Electron 自定义标题栏作用域（设计稿 docs/designs/electron-custom-titlebar.md §5.3）
+ * 全部挂在 html.cc-electron-custom 之下；web / Capacitor 永不挂此类 → 以下规则对它们完全不存在、零脆弱面。
+ * 写成不分层（非 @layer）的 author 规则，优先级高于 Tailwind 的 @layer utilities，能稳定盖过 .min-h-screen/.h-dvh-safe；
+ * 禁止 !important / Tailwind important 模式（会与作用域覆盖互相打架）。
+ */
+html.cc-electron-custom {
+	--cc-titlebar-h: 38px; /* 作用域内常量；web 看不到、无 IACVT 风险 */
+}
+/* 内容区让出条高（marker，惰性挂在 router-view 包裹容器上） */
+html.cc-electron-custom .cc-app-content {
+	padding-top: var(--cc-titlebar-h);
+}
+/* 满高根：覆盖工具类本身 → 自动覆盖当前+未来所有用到它们的根，无需逐页改 */
+html.cc-electron-custom .min-h-screen {
+	min-height: calc(100vh - var(--cc-titlebar-h));
+}
+html.cc-electron-custom .h-dvh-safe {
+	height: calc(100vh - var(--cc-titlebar-h));
+}
+@supports (height: 100dvh) {
+	html.cc-electron-custom .h-dvh-safe {
+		height: calc(100dvh - var(--cc-titlebar-h));
+	}
+}
+/* 侧边栏：sticky 顶边下移 + 高度减条（marker，惰性挂在侧边栏根上） */
+html.cc-electron-custom .cc-desktop-sidebar {
+	top: var(--cc-titlebar-h);
+	height: calc(100vh - var(--cc-titlebar-h));
+}
+/* 顶部浮层避让（toast teleport 到 body、仍是 html 后代，故能命中；+1rem 保留 Nuxt UI 默认 top-4 的 16px 视觉间距） */
+html.cc-electron-custom .cc-toaster-viewport {
+	top: calc(var(--cc-titlebar-h) + 1rem + var(--safe-area-inset-top, 0px));
+}

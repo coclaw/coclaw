@@ -341,3 +341,50 @@ describe('initThemeModeWatcher', () => {
 		expect(changeListenerCount()).toBe(1);
 	});
 });
+
+describe('Windows WCO 按钮色同步（setTitleBarOverlay）', () => {
+	afterEach(() => {
+		// 其余 describe 假定 window.electronAPI 为 undefined，用完即清
+		delete window.electronAPI;
+	});
+
+	test('Electron + Windows + custom：dark 切换调用 setTitleBarOverlay，色值 #1b1b1b + height 38', () => {
+		const setTitleBarOverlay = vi.fn().mockResolvedValue(undefined);
+		window.electronAPI = { platform: 'win32', titleBar: { custom: true }, setTitleBarOverlay };
+		applyThemeMode('dark');
+		expect(setTitleBarOverlay).toHaveBeenCalledTimes(1);
+		expect(setTitleBarOverlay).toHaveBeenCalledWith({ color: '#1b1b1b', symbolColor: '#e5e5e5', height: 38 });
+	});
+
+	test('Electron + Windows + custom：light 切换调用 setTitleBarOverlay，色值为钉死设计常量 #f1f5f9', () => {
+		const setTitleBarOverlay = vi.fn().mockResolvedValue(undefined);
+		window.electronAPI = { platform: 'win32', titleBar: { custom: true }, setTitleBarOverlay };
+		applyThemeMode('light');
+		expect(setTitleBarOverlay).toHaveBeenCalledTimes(1);
+		expect(setTitleBarOverlay).toHaveBeenCalledWith({ color: '#f1f5f9', symbolColor: '#1e293b', height: 38 });
+	});
+
+	test('非 Windows（mac）custom 壳：不调用 setTitleBarOverlay（红绿灯系统自适应）', () => {
+		const setTitleBarOverlay = vi.fn();
+		window.electronAPI = { platform: 'darwin', titleBar: { custom: true }, setTitleBarOverlay };
+		applyThemeMode('light');
+		expect(setTitleBarOverlay).not.toHaveBeenCalled();
+	});
+
+	test('非 custom 壳（老壳无 titleBar 字段）：不调用 setTitleBarOverlay', () => {
+		const setTitleBarOverlay = vi.fn();
+		window.electronAPI = { platform: 'win32', setTitleBarOverlay };
+		applyThemeMode('dark');
+		expect(setTitleBarOverlay).not.toHaveBeenCalled();
+	});
+
+	test('best-effort：setTitleBarOverlay reject 被 .catch 吞掉，不抛、不影响 .dark 主链', async () => {
+		const setTitleBarOverlay = vi.fn().mockRejectedValue(new Error('overlay failed'));
+		window.electronAPI = { platform: 'win32', titleBar: { custom: true }, setTitleBarOverlay };
+		expect(() => applyThemeMode('dark')).not.toThrow();
+		expect(document.documentElement.classList.contains('dark')).toBe(true);
+		// 等微任务队列：.catch 已挂，无 unhandled rejection
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+});

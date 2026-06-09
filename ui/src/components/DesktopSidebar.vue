@@ -1,10 +1,9 @@
 <template>
 	<aside
-		class="sticky top-0 hidden h-screen flex-shrink-0 border-r border-default bg-elevated pt-[var(--safe-area-inset-top)] pb-[var(--safe-area-inset-bottom)] md:flex md:flex-col"
+		class="cc-desktop-sidebar sticky top-0 hidden h-screen flex-shrink-0 border-r border-default bg-elevated pt-[var(--safe-area-inset-top)] pb-[var(--safe-area-inset-bottom)] md:flex md:flex-col"
 		:style="{ width: uiStore.drawerWidth + 'px' }"
 	>
 		<div class="flex min-h-0 flex-1 flex-col">
-			<!-- Windows Electron 原生标题栏已显示 [图标]+"CoClaw"，此处 logo+名称冗余，整行隐藏让列表上移贴原生标题栏 -->
 			<div v-if="showSidebarBrand" class="flex min-h-12 items-center gap-2 pl-3.5 pr-2 py-1">
 				<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 				<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
@@ -17,8 +16,7 @@
 				/>
 				-->
 			</div>
-			<!-- 品牌行隐藏时（Windows Electron）补 8px 顶间距，避免列表贴顶 -->
-			<MainList :current-path="currentPath" :class="{ 'pt-2': !showSidebarBrand }" scrollable instance="sidebar" />
+			<MainList :current-path="currentPath" scrollable instance="sidebar" />
 		</div>
 
 		<div class="border-t border-default px-2 py-1">
@@ -64,8 +62,6 @@ import { useUserDialogs } from '../composables/use-user-dialogs.js';
 import { useWebAgentDialogs } from '../composables/use-web-agent-dialogs.js';
 import { getUserDisplayName } from '../utils/user-profile.js';
 import { useUiStore } from '../stores/ui.store.js';
-import { useEnvStore } from '../stores/env.store.js';
-import { isElectronApp } from '../utils/platform.js';
 import logoSrc from '../assets/coclaw-logo.jpg';
 
 export default {
@@ -89,7 +85,6 @@ export default {
 			userDialogs: useUserDialogs(),
 			webAgentDialogs: useWebAgentDialogs(),
 			uiStore: useUiStore(),
-			envStore: useEnvStore(),
 		};
 	},
 	data() {
@@ -99,9 +94,9 @@ export default {
 		};
 	},
 	computed: {
-		// 仅 Windows Electron（原生标题栏已含品牌）时隐藏顶部 logo+名称；其余壳/全部浏览器都保留
+		// 品牌行恒显：自定义壳模式下 Windows 原生栏已移除、标题栏条留空不放品牌，故不再有重复，全端统一显示
 		showSidebarBrand() {
-			return !(isElectronApp && this.envStore.isWin);
+			return true;
 		},
 		userMenuItems() {
 			return getUserMenuItems(this.$t, { isAdmin: this.user?.level === -100 });
