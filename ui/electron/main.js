@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, session, shell, globalShortcut } from 'electr
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import windowStateKeeper from 'electron-window-state';
-import { initTray, attachMainWindow, disposeTray } from './tray.js';
+import { initTray, attachMainWindow, disposeTray, installQuitGuard } from './tray.js';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
 import {
@@ -299,6 +299,9 @@ if (!gotLock) {
 			app.quit();
 		}
 	});
+
+	// 退出守卫：让所有退出入口都能真正退出，绕过 renderer unload 卡住（见 tray.js installQuitGuard）
+	installQuitGuard(app);
 
 	app.on('will-quit', () => {
 		globalShortcut.unregisterAll();
