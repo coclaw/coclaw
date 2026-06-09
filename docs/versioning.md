@@ -88,7 +88,9 @@ pnpm changeset
 
 ## Electron 壳子版本独立维护
 
-Electron 壳子（`ui/electron-builder.yaml`）的版本号**独立于 `@coclaw/ui` 的 npm 版本**，不进入 changesets 流程。
+Electron 壳子（`ui/electron-builder.yaml`）的**版本号**（`extraMetadata.version`）**独立于 `@coclaw/ui` 的 npm 版本**、手工维护，不由 changesets 驱动。
+
+> **注意区分「改动记录」与「版本号」**：壳子**代码**改动（`ui/electron/`）本属 `@coclaw/ui` 包，仍需照常走 changeset（记在 `@coclaw/ui` 上、bump 的是 ui 包版本）；不进 changesets 流程的仅是壳子这个独立版本号——不是「改壳子代码不用 changeset」。
 
 ### 为什么独立
 
