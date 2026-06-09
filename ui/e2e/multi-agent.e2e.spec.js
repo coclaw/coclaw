@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { evalStore, login, waitChatReady } from './helpers.js';
+import { evalStore, login, typeText, waitChatReady } from './helpers.js';
 
 /**
  * 多 Agent 支持 E2E 测试
@@ -45,11 +45,32 @@ async function waitSessionsLoaded(page, timeout = 15_000) {
 	}).toPass({ timeout });
 }
 
-/** 等待 tester agent 链接在 DOM 中可见 */
+/**
+ * 定位 agent 列表（main 区第一个 nav）中指定 agentId 的链接。
+ * 按 href 末段的 agent id 定位（chat 路由为 /chat/<clawId>/<agentId>），
+ * 与显示名/locale 无关——避免依赖可翻译文案。
+ * @param {import('@playwright/test').Page} page
+ * @param {string} agentId - 'main' | 'tester' 等
+ */
+function agentLink(page, agentId) {
+	return page.locator('main nav').first().locator(`a[href$="/${agentId}"]`);
+}
+
+/** 等待 tester agent 链接可见（按 href id 定位，不依赖显示名/文案） */
 async function waitTesterAgentLink(page, timeout = 10_000) {
-	const link = page.locator('main nav').first().locator('a[href*="/chat/"]').filter({ hasText: '压测锤' });
+	const link = agentLink(page, 'tester');
 	await link.waitFor({ state: 'visible', timeout });
 	return link;
+}
+
+/**
+ * 断言 agent 列表同时含 main 与 tester（按 href id，locale/文案无关）。
+ * 这两个 agent 由 globalSetup 的 ensureNamedAgents 夹具保证存在，故为硬断言而非 skip。
+ * @param {import('@playwright/test').Page} page
+ */
+async function expectMainAndTester(page) {
+	await expect(agentLink(page, 'main')).toBeVisible({ timeout: 5000 });
+	await expect(agentLink(page, 'tester')).toBeVisible({ timeout: 5000 });
 }
 
 /** 通用前置：登录 + 导航 + 等待 agents（失败时 skip） */
@@ -61,28 +82,6 @@ async function setupWithAgents(page, test, route = '/topics') {
 	test.skip(!loaded, 'Claw offline or agents not available (< 2 agents)');
 }
 
-/**
- * 检查所需 agent 名称/emoji 是否在页面 main 区域可见；任一缺失则 skip。
- * setupWithAgents 只守卫"至少 2 个 agent"，无法覆盖特定 agent 缺失的场景。
- * 本函数补充守卫，避免强依赖特定 agent 名的断言硬失败。
- * @param {import('@playwright/test').Page} page
- * @param {object} test - Playwright test 对象
- * @param {string[]} names - 待检查的 agent 名称/emoji
- * @returns {Promise<boolean>} 全部找到返回 true，任一缺失已 skip 并返回 false
- */
-async function requireSpecificAgents(page, test, names) {
-	for (const name of names) {
-		try {
-			await expect(page.locator('main').getByText(name)).toBeVisible({ timeout: 5000 });
-		}
-		catch {
-			test.skip(true, `Required agent "${name}" not found; spec needs predefined agent fixture (小点/压测锤/🔨)`);
-			return false;
-		}
-	}
-	return true;
-}
-
 // ================================================================
 // Test 1: Topics 页 Agent 列表展示
 // ================================================================
@@ -91,16 +90,12 @@ test('Topics 页：Agent 列表展示多个 agent @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
-	// 守卫：这两个 agent 不存在则 skip（强依赖 OpenClaw 预定义配置）
-	if (!await requireSpecificAgents(page, test, ['小点', '压测锤'])) return;
-
 	// agent 列表区域应至少有 2 个 agent（真实环境 agent 数量不定，断言下限即可）
 	const agentLinks = page.locator('main nav').first().locator('[role="listitem"]');
 	await expect.poll(async () => agentLinks.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
 
-	// 验证 agent 名称可见
-	await expect(page.locator('main').getByText('小点')).toBeVisible({ timeout: 5000 });
-	await expect(page.locator('main').getByText('压测锤')).toBeVisible({ timeout: 5000 });
+	// 按 href 中的 agent id 断言 main 与 tester 均在列（locale/文案无关）
+	await expectMainAndTester(page);
 });
 
 // ================================================================
@@ -111,11 +106,11 @@ test('Topics 页：Agent emoji 正确渲染 @chat', async ({ page }) => {
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
-	// 守卫：🔨 emoji agent 不存在则 skip
-	if (!await requireSpecificAgents(page, test, ['🔨'])) return;
-
-	// tester agent 应显示 🔨 emoji
-	await expect(page.locator('main').getByText('🔨')).toBeVisible({ timeout: 5000 });
+	// tester agent 行（按 href id 定位）应渲染其身份 emoji 🔨。
+	// emoji 不可翻译 → locale 无关断言的唯一例外（“难度除外”）。tester 无 avatar，故 emoji span 必显示。
+	const testerLink = agentLink(page, 'tester');
+	await expect(testerLink).toBeVisible({ timeout: 5000 });
+	await expect(testerLink).toContainText('🔨');
 });
 
 // ================================================================
@@ -126,11 +121,11 @@ test('Topics 页：点击 Agent 进入对应 chat session @chat', async ({ page 
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
-	// 点击第一个 agent（默认 agent）进入 chat
-	const firstAgentLink = page.locator('main nav').first().locator('a[href*="/chat/"]').first();
-	await expect(firstAgentLink).toBeVisible({ timeout: 5000 });
-	await firstAgentLink.click();
-	await expect(page).toHaveURL(/\/chat\//, { timeout: 5000 });
+	// 点击 main agent（按 href id 定位）进入其 chat session
+	const mainLink = agentLink(page, 'main');
+	await expect(mainLink).toBeVisible({ timeout: 5000 });
+	await mainLink.click();
+	await expect(page).toHaveURL(/\/chat\/[^/]+\/main$/, { timeout: 5000 });
 	await waitChatReady(page);
 });
 
@@ -142,22 +137,15 @@ test('非 main agent (tester) 的 session 可正常加载消息 @chat', async ({
 	test.setTimeout(30_000);
 	await setupWithAgents(page, test);
 
-	let testerLink;
-	try {
-		testerLink = await waitTesterAgentLink(page);
-	}
-	catch {
-		test.skip(true, 'Tester agent link not visible');
-		return;
-	}
-
+	// 按 href id 定位 tester agent 链接并进入其 session
+	const testerLink = await waitTesterAgentLink(page);
 	await testerLink.click();
-	await expect(page).toHaveURL(/\/chat\//, { timeout: 5000 });
+	await expect(page).toHaveURL(/\/chat\/[^/]+\/tester$/, { timeout: 5000 });
 	await waitChatReady(page);
 
-	// chat 页面应正常加载（无错误提示）
-	const errorText = await page.locator('[data-testid="chat-root"]').locator('.text-error').isVisible().catch(() => false);
-	expect(errorText).toBe(false);
+	// chat 页面应正常加载（无错误提示）。.text-error 是类名（非文案），locale 无关。
+	const errorVisible = await page.locator('[data-testid="chat-root"]').locator('.text-error').isVisible().catch(() => false);
+	expect(errorVisible).toBe(false);
 });
 
 // ================================================================
@@ -170,14 +158,11 @@ test('ManageClaws 页：Claw 卡片内显示 Agent 列表 @chat', async ({ page 
 	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 	await waitSessionsLoaded(page);
 
-	// 守卫：压测锤 agent 不存在则 skip（对话按钮数量与 agent 数量强绑定）
-	if (!await requireSpecificAgents(page, test, ['压测锤'])) return;
+	// tester 的 agent 卡片应存在（按 agent id 定位 testid，locale/文案无关）
+	await expect(page.getByTestId('agent-card-tester')).toBeVisible({ timeout: 5000 });
 
-	// Claw 卡片内 agent 区域应有 agent 名称
-	await expect(page.locator('main').getByText('压测锤')).toBeVisible({ timeout: 5000 });
-
-	// 每个 agent 应有"对话"按钮；真实 agent 数量不定，断言至少有 2 个
-	const chatButtons = page.locator('main').getByText('对话');
+	// 在线 agent 各有"对话"按钮（btn-chat，locale 无关）；main + tester 至少 2 个
+	const chatButtons = page.locator('main').getByTestId('btn-chat');
 	await expect.poll(async () => chatButtons.count(), { timeout: 5000 }).toBeGreaterThanOrEqual(2);
 });
 
@@ -191,8 +176,8 @@ test('ManageClaws 页：点击 Agent 对话按钮进入 chat @chat', async ({ pa
 	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 	await waitSessionsLoaded(page);
 
-	// 点击第一个"对话"按钮
-	const chatBtn = page.locator('main').getByText('对话').first();
+	// 点击第一个"对话"按钮（btn-chat，locale 无关）
+	const chatBtn = page.locator('main').getByTestId('btn-chat').first();
 	await expect(chatBtn).toBeEnabled({ timeout: 5000 });
 	await chatBtn.click();
 
@@ -205,58 +190,55 @@ test('ManageClaws 页：点击 Agent 对话按钮进入 chat @chat', async ({ pa
 // ================================================================
 
 test('Topics 页：Session 列表中显示对应 agent 的 emoji @chat', async ({ page }) => {
-	test.setTimeout(30_000);
+	test.setTimeout(120_000);
 	await setupWithAgents(page, test);
 
-	// 守卫：🔨 emoji agent 不存在则 skip（session 列表的 emoji 依赖 agent 配置）
-	if (!await requireSpecificAgents(page, test, ['🔨'])) return;
+	// 取已绑定 claw 的 id（main 与 tester 链接共用同一 clawId）
+	const mainLink = agentLink(page, 'main');
+	await expect(mainLink).toBeVisible({ timeout: 5000 });
+	const href = await mainLink.getAttribute('href');
+	const clawId = href?.match(/\/chat\/([^/]+)\//)?.[1];
+	expect(clawId).toBeTruthy();
 
-	// 等待 session 列表加载（无 topic 列表则该 claw 尚无 topic，缺夹具干净 skip）
+	// best-effort：经浏览器为 tester 新建一个 topic。topic 在 createTopic 解析时即入 store，
+	// 其在列表项中的 emoji 取自 agent 身份（与 agent 列表 emoji 是不同代码路径）。
+	// - tester 非 main agent，其 session 页不显示"新建话题"按钮（产品门控，见 MA-8），故直接进
+	//   new-topic 路由（?agent=tester）发起，而非走按钮；
+	// - 与线上 MiniMax agent 交互若慢/抖动则干净 skip（见 TODO），不阻塞其余用例。
+	let topicId = null;
 	try {
-		await expect(page.locator('main a[href*="/topics/"]').first()).toBeVisible({ timeout: 10_000 });
+		await page.goto(`/topics/new?agent=tester&claw=${clawId}`);
+		const textarea = page.getByTestId('chat-textarea');
+		await expect(textarea).toBeEnabled({ timeout: 15_000 });
+		await typeText(textarea, `e2e tester topic ${Date.now()}`);
+		await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 5000 });
+		await page.getByTestId('btn-send').click();
+		// createTopic 解析后路由由 /topics/new 切到 /topics/<topicId>（不等 agent 回复）
+		await page.waitForURL((url) => /\/topics\/[^/]+$/.test(url.pathname) && url.pathname !== '/topics/new', { timeout: 30_000 });
+		topicId = new URL(page.url()).pathname.split('/').pop();
 	}
 	catch {
-		test.skip(true, 'No topic/session links present; spec needs predefined topic fixture from a 🔨 agent');
-		return;
+		// 据 topicId 干净 skip
 	}
+	test.skip(!topicId, 'Could not create a tester topic against the live agent (best-effort fixture); see TODO');
 
-	// tester agent 的 session 应显示 🔨 emoji；无对应 topic 夹具则干净 skip
-	const testerSession = page.locator('main a[href*="/topics/"]').filter({ hasText: '🔨' });
-	const hasEmoji = await testerSession.count();
-	test.skip(hasEmoji < 1, 'No topic/session from a 🔨 agent present; spec needs predefined topic fixture');
-	expect(hasEmoji).toBeGreaterThanOrEqual(1);
+	// 侧栏（aside，桌面常驻）的 session/topic 列表中，新建的 tester topic 项应显示 🔨
+	//（emoji 不可翻译 → locale 无关例外）。
+	// 不做整页刷新：coclaw.topics.list 固定按 agentId:'main' 拉取，刷新后 tester topic 不回列
+	//（产品限制，见 TODO）；乐观入 store 的 topic 项足以验证"列表项按 agent 身份渲染 emoji"。
+	const testerTopic = page.locator(`aside a[href$="/topics/${topicId}"]`);
+	await expect(testerTopic).toContainText('🔨', { timeout: 10_000 });
 });
 
 // ================================================================
 // Test 8: 新建聊天按钮在非 main agent 的 main session 上也可用
 // ================================================================
 
-test('非 main agent 的 main session 也显示新建聊天按钮 @chat', async ({ page }) => {
-	test.setTimeout(30_000);
-	await setupWithAgents(page, test);
-
-	let testerLink;
-	try {
-		testerLink = await waitTesterAgentLink(page);
-	}
-	catch {
-		test.skip(true, 'Tester agent link not visible');
-		return;
-	}
-
-	await testerLink.click();
-	await expect(page).toHaveURL(/\/chat\//, { timeout: 5000 });
-	await waitChatReady(page);
-
-	// 期望：非 main agent 的 main session 也提供"新建话题"入口。
-	// 现状：showNewTopicBtn 仅在 main agent 或 topic 路由为真（见 ChatPage），非 main agent 不显示该按钮，
-	// 故该前置不满足时干净 skip（需产品支持或预置 main agent 夹具，见 TODO）。
-	// 注：桌面视口下正确 testid 为 btn-new-topic-desktop；旧的 btn-new-chat 已不存在。
-	const newTopicBtn = page.getByTestId('btn-new-topic-desktop');
-	const visible = await newTopicBtn.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
-	test.skip(!visible, 'New-topic button not shown for non-main agent (showNewTopicBtn gates on main agent); needs product support or main-agent fixture');
-	await expect(newTopicBtn).toBeVisible();
-});
+// 暂挂（产品决策待定，非环境问题）：非 main agent 的 main session 不显示"新建话题"按钮。
+// ChatPage.vue 的 showNewTopicBtn 仅在 topic 路由或 currentAgentId==='main' 时为真，这是产品
+// 有意的门控——provision tester 也无法满足该前置。是否允许从非 main agent 直接新建 topic 待产品
+// 定夺（详见 ui/TODO.md，2026-06-10）。届时放开门控后再以 btn-new-topic-* 断言去 skip。
+test.skip('非 main agent 的 main session 也显示新建聊天按钮 @chat', async () => {});
 
 // ================================================================
 // Test 9: HomePage 智能跳转到默认 agent

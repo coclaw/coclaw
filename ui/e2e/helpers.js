@@ -35,6 +35,35 @@ export async function navigateToChat(page) {
 	return { clawId: match[1], agentId: match[2] };
 }
 
+/**
+ * 确定性导航到 main agent 的 chat session（而非按活跃度排序的首个 agent）。
+ *
+ * 引入 tester 夹具后 /topics 的 agent 列表有多个链接，navigateToChat 点的是活跃度
+ * 最高的那个、不一定是 main。需要"新建话题"按钮的用例必须落在 main——该按钮仅在
+ * main agent 或 topic 路由显示（见 ChatPage.showNewTopicBtn）。
+ *
+ * 做法：从首个 chat 链接读出 clawId（所有 agent 共用同一 claw），再直接 goto
+ * /chat/<clawId>/main。
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<{ clawId: string, agentId: string }|null>} 无可用 claw 返回 null
+ */
+export async function navigateToMainChat(page) {
+	await page.goto('/topics');
+	const chatLink = page.locator('main a[href*="/chat/"]').first();
+	try {
+		await chatLink.waitFor({ state: 'visible', timeout: 10_000 });
+	}
+	catch {
+		return null;
+	}
+	const href = await chatLink.getAttribute('href');
+	const clawId = href?.match(/\/chat\/([^/]+)\//)?.[1];
+	if (!clawId) return null;
+	await page.goto(`/chat/${clawId}/main`);
+	await page.waitForURL(/\/chat\/[^/]+\/main$/, { timeout: 5000 });
+	return { clawId, agentId: 'main' };
+}
+
 /** 等待 chat 页面完全就绪（chat-root 可见 + textarea 可用） */
 export async function waitChatReady(page) {
 	await expect(page.getByTestId('chat-root')).toBeVisible({ timeout: 5000 });

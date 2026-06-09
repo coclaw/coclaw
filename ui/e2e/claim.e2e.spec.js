@@ -69,12 +69,6 @@ test.describe('Claim Page @bind', () => {
 		await expect(page.locator('main')).toContainText(/invalid|无效/i, { timeout: 5000 });
 	});
 
-	// 暂挂：产品里不存在 "already bound" 这个态。server claimClaw 对每个有效认领码
-	// 都新建一条 claw（从不复用、也不检测重复绑定），ClaimPage 也无对应 errorCode 分支
-	// （未知码统一显示 claim.failed）。即「已有 claw 时再认领新码」依旧成功、再多一条 claw。
-	// 原断言 /already bound|已绑定/ 必挂。正确断言/语义待产品定夺，详见任务报告 TODO。
-	test.skip('should show already bound error (product has no already-bound state)', async () => {});
-
 	test('should redirect to login then back to claim when not authenticated', async ({ page }) => {
 		const cookies = await loginAndGetCookies();
 		await ensureUnbound(cookies);

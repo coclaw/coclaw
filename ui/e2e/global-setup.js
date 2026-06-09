@@ -4,6 +4,7 @@ import {
 	loginAndGetCookies,
 	listClawIds,
 	ensureBoundClaw,
+	ensureNamedAgents,
 	writeBaseline,
 	writeBaselineUncaptured,
 	resetKeepers,
@@ -41,6 +42,16 @@ export default async function globalSetup() {
 		}
 
 		// 抓基线必须在自愈绑定之后：新绑的 claw 进基线 → 受 teardown baseline/keeper 保护，不被当孤儿删。
+		// 确保命名 agent 夹具（main + tester）就绪，供 multi-agent spec 按 id 断言而非 skip。
+		// fail-safe：失败不抛（夹具一旦创建即长期存在，单次瞬时失败不阻断整轮测试）。
+		try {
+			const r = ensureNamedAgents();
+			console.info(`[e2e-cleanup] named agents ready (created=${r.created}, agents=${r.ids.join(',')})`);
+		}
+		catch (agentErr) {
+			console.warn(`[e2e-cleanup] ensure named agents failed; multi-agent tests may skip: ${agentErr?.message}`);
+		}
+
 		const ids = await listClawIds(cookies);
 		writeBaseline(ids);
 		console.info(`[e2e-cleanup] baseline captured: ${ids.size} claw(s)`);

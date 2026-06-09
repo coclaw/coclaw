@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -136,6 +137,89 @@ export async function ensureBoundClaw(cookies) {
 	}
 
 	return { alreadyOnline: false, bound: true, online: Boolean(onlineId), clawId: onlineId };
+}
+
+// ================================================================
+// 命名 agent 夹具（multi-agent spec 依赖）
+// ================================================================
+//
+// multi-agent.e2e.spec 需要本机 OpenClaw 至少有两个 agent，且其中一个是稳定的、
+// 可按 id 断言的非 main agent。约定该夹具：
+//   - main：OpenClaw 隐式默认 agent，始终存在（isDefault:true），不由本模块管理；
+//   - tester：id 固定为 'tester'、名 '压测锤'、emoji '🔨'、模型继承默认 MiniMax-M3。
+//
+// 与 test 账号自愈、ensureBoundClaw 一样持久存在、无 teardown（一次创建长期复用）。
+// CLI `agents add` / `set-identity` 经 RPC 写运行中网关，立即生效，无需重启。
+
+const TESTER_AGENT_ID = 'tester';
+const TESTER_NAME = '压测锤';
+const TESTER_EMOJI = '🔨';
+
+/**
+ * 执行 openclaw CLI，仅返回 stdout（`--json` 输出为纯 JSON；插件诊断走 stderr，已丢弃）。
+ * @param {string} args - openclaw 子命令与参数
+ * @returns {string} stdout
+ */
+function runOpenclaw(args) {
+	return execSync(`openclaw ${args}`, {
+		timeout: 30_000,
+		encoding: 'utf-8',
+		stdio: ['ignore', 'pipe', 'ignore'],
+	});
+}
+
+/**
+ * 列出本机 agent；失败返回空数组（调用方据此决定是否创建）。
+ * @returns {{ id: string, identityName?: string, identityEmoji?: string }[]}
+ */
+function listAgents() {
+	try {
+		const out = runOpenclaw('agents list --json');
+		const start = out.indexOf('[');
+		if (start < 0) return [];
+		return JSON.parse(out.slice(start));
+	}
+	catch {
+		return [];
+	}
+}
+
+/**
+ * 幂等确保命名 agent 夹具（tester）存在且身份正确。
+ *
+ * 流程：列举 → 缺 tester 则 `agents add tester --workspace <ws>` → 身份不符（含刚创建）
+ * 则 `set-identity` 补设名/emoji。重复调用不产生副本、已存在不报错。
+ *
+ * 失败处理交由调用方（globalSetup 内 fail-safe：warn 后继续，夹具一旦创建即长期存在，
+ * 单次瞬时失败不影响后续运行）。
+ *
+ * @returns {{ created: boolean, ids: string[] }} created=本次是否新建了 tester；ids=最终 agent id 列表
+ */
+export function ensureNamedAgents() {
+	let agents = listAgents();
+	let created = false;
+
+	if (!agents.some((a) => a.id === TESTER_AGENT_ID)) {
+		const ws = nodePath.join(os.homedir(), '.openclaw', 'workspace-tester');
+		mkdirSync(ws, { recursive: true });
+		runOpenclaw(`agents add ${TESTER_AGENT_ID} --non-interactive --workspace ${ws}`);
+		created = true;
+		agents = listAgents();
+	}
+
+	// 自愈身份：tester 名/emoji 不符（或刚创建尚未设）时补设
+	const tester = agents.find((a) => a.id === TESTER_AGENT_ID);
+	if (tester && (tester.identityName !== TESTER_NAME || tester.identityEmoji !== TESTER_EMOJI)) {
+		runOpenclaw(`agents set-identity --agent ${TESTER_AGENT_ID} --name "${TESTER_NAME}" --emoji "${TESTER_EMOJI}"`);
+		agents = listAgents();
+	}
+
+	// main 是隐式默认 agent，正常恒在；缺失属异常，仅告警（不阻断）
+	if (!agents.some((a) => a.id === 'main')) {
+		console.warn('[e2e-cleanup] implicit "main" agent missing after provisioning; multi-agent guards may skip');
+	}
+
+	return { created, ids: agents.map((a) => a.id) };
 }
 
 /**

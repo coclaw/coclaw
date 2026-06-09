@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { login, navigateToChat, waitChatReady, waitChatInputStable, typeText } from './helpers.js';
+import { login, navigateToChat, navigateToMainChat, waitChatReady, waitChatInputStable, typeText } from './helpers.js';
 
 /**
  * 聊天核心流程 E2E 测试
@@ -70,8 +70,8 @@ test('Session 切换：不同 session 显示各自的消息 @chat', async ({ pag
 		test.skip(true, 'No chat sessions available (claw offline?)');
 	}
 	const links = page.locator('main a[href*="/chat/"]');
-	const linkCount = await links.count();
-	test.skip(linkCount < 2, 'Need at least 2 sessions to test switching');
+	// 两个 agent（main + tester）→ 两个 chat 链接，由 globalSetup 的 ensureNamedAgents 夹具保证
+	await expect.poll(async () => links.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
 
 	// 进入第 1 个 session
 	const href1 = await links.nth(0).getAttribute('href');
@@ -86,7 +86,8 @@ test('Session 切换：不同 session 显示各自的消息 @chat', async ({ pag
 
 	// 进入第 2 个 session
 	const href2 = await links.nth(1).getAttribute('href');
-	test.skip(href1 === href2, 'Two links point to same session');
+	// 两个链接指向不同 agent 的 session
+	expect(href1).not.toEqual(href2);
 	await links.nth(1).click();
 	await page.waitForURL(/\/chat\//, { timeout: 5000 });
 	await waitChatReady(page);
@@ -107,39 +108,33 @@ test('Session 切换：不同 session 显示各自的消息 @chat', async ({ pag
 });
 
 // ================================================================
-// Test 3: 新建聊天
+// Test 3: 新建话题（new-topic 入口）
 // ================================================================
 
-test('新建聊天：点击后跳转到新 session @chat', async ({ page }) => {
+test('新建话题：从 main session 点击进入新建 topic @chat', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);
 
-	const sessionId = await navigateToChat(page);
-	test.skip(!sessionId, 'No chat session available');
+	// "新建话题"按钮仅在 main agent（或 topic 路由）显示，故确定性落在 main session
+	const session = await navigateToMainChat(page);
+	test.skip(!session, 'No chat session available');
 
 	await waitChatReady(page);
 
-	// 检查新建聊天按钮是否存在（仅 main session 才有）
-	const newChatBtn = page.getByTestId('btn-new-chat');
-	if (!(await newChatBtn.isVisible().catch(() => false))) {
-		test.skip(true, 'Not on main session, new chat button not available');
-		return;
-	}
+	// 移动视口下用 btn-new-topic-mobile（旧的 btn-new-chat 已不存在）
+	const newTopicBtn = page.getByTestId('btn-new-topic-mobile');
+	await expect(newTopicBtn).toBeVisible({ timeout: 5000 });
 
 	const urlBefore = page.url();
-	await newChatBtn.click();
+	await newTopicBtn.click();
 
-	// 等待导航到新 session（URL 改变）
-	await expect(async () => {
-		expect(page.url()).not.toEqual(urlBefore);
-	}).toPass({ timeout: 10_000 });
-
-	await expect(page).toHaveURL(/\/chat\//);
+	// 跳转到新建 topic 路由（/topics/new），URL 应改变
+	await expect(page).toHaveURL(/\/topics\/new(\?|$)/, { timeout: 10_000 });
+	expect(page.url()).not.toEqual(urlBefore);
 	await waitChatReady(page);
 
-	// 新 session 应为空（或只有极少内容）
-	const msgCount = await page.locator('[data-testid="chat-root"] main .px-3.py-3').count();
-	expect(msgCount).toBeLessThanOrEqual(1);
+	// 新建 topic 模式下消息列表为空（用稳定的 chat-msg-item testid，避免依赖 Tailwind 类）
+	await expect(page.getByTestId('chat-msg-item')).toHaveCount(0);
 });
 
 // ================================================================
