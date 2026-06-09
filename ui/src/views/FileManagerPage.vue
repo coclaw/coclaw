@@ -12,7 +12,7 @@
 		</MobilePageHeader>
 
 		<!-- 桌面端 header -->
-		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-elevated pl-2 py-1 md:flex">
+		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-default pl-2 py-1 md:flex">
 			<UButton
 				class="cc-icon-btn-lg shrink-0"
 				size="xl"

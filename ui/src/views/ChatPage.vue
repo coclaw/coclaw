@@ -44,7 +44,7 @@
 				/>
 			</template>
 		</MobilePageHeader>
-		<header class="z-10 hidden shrink-0 min-h-12 items-center justify-between border-b border-default bg-elevated pl-4 pr-1 lg:pl-5 lg:pr-2 py-1 md:flex">
+		<header class="z-10 hidden shrink-0 min-h-12 items-center justify-between border-b border-default bg-default pl-4 pr-1 lg:pl-5 lg:pr-2 py-1 md:flex">
 			<h1 class="min-w-0 flex-1 truncate text-base">
 				<template v-if="headerLabel">
 					<span>{{ headerLabel.agent }}</span>

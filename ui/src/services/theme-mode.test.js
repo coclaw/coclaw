@@ -234,3 +234,110 @@ describe('syncThemeModeFromSettings', () => {
 		expect(document.documentElement.classList.contains('dark')).toBe(true);
 	});
 });
+
+describe('initThemeModeWatcher', () => {
+	// 这些用例依赖模块级 activeMode / initialized 状态，故每个用例 resetModules 后动态重导入取干净实例
+	let mod;
+	let prefersDark;
+	let changeListeners;
+	let addSpy;
+
+	/** matchMedia mock：matches 动态读 prefersDark；捕获 change 监听以便手动派发 */
+	function installMatchMedia() {
+		changeListeners = [];
+		addSpy = vi.fn((type, cb) => {
+			if (type === 'change') changeListeners.push(cb);
+		});
+		window.matchMedia = vi.fn((query) => ({
+			matches: query === '(prefers-color-scheme: dark)' ? prefersDark : false,
+			media: query,
+			addEventListener: addSpy,
+			removeEventListener: vi.fn(),
+		}));
+	}
+
+	/** 派发系统明暗变化 change 事件 */
+	function dispatchChange() {
+		changeListeners.forEach((cb) => cb({ matches: prefersDark }));
+	}
+
+	function changeListenerCount() {
+		return addSpy.mock.calls.filter((c) => c[0] === 'change').length;
+	}
+
+	beforeEach(async () => {
+		vi.resetModules();
+		mod = await import('./theme-mode.js');
+		document.documentElement.classList.remove('dark');
+		delete document.documentElement.dataset.theme;
+		removeThemeColorMeta();
+		prefersDark = false;
+		installMatchMedia();
+	});
+
+	test('auto 模式下系统切到 dark → applyThemeMode 重跑（.dark 翻转、theme-color 刷新）', () => {
+		mod.applyThemeMode('auto'); // 系统当前 light → 不带 dark
+		expect(document.documentElement.classList.contains('dark')).toBe(false);
+		expect(document.querySelector('meta[name="theme-color"]').getAttribute('content')).toBe('#ffffff');
+
+		mod.initThemeModeWatcher();
+		// 系统翻到 dark 后派发 change
+		prefersDark = true;
+		dispatchChange();
+
+		expect(document.documentElement.classList.contains('dark')).toBe(true);
+		expect(document.documentElement.dataset.theme).toBe('dark');
+		expect(document.querySelector('meta[name="theme-color"]').getAttribute('content')).toBe('#202122');
+	});
+
+	test('dark 固定模式下 change 不触发重跑（系统转 light 仍保持 dark）', () => {
+		mod.applyThemeMode('dark');
+		expect(document.documentElement.classList.contains('dark')).toBe(true);
+
+		mod.initThemeModeWatcher();
+		// 系统是 light；若错误地重跑 applyThemeMode('auto') 会被解析为 light 而移除 dark
+		prefersDark = false;
+		dispatchChange();
+
+		expect(document.documentElement.classList.contains('dark')).toBe(true);
+		expect(document.documentElement.dataset.theme).toBe('dark');
+	});
+
+	test('light 固定模式下 change 不触发重跑（系统转 dark 仍保持 light）', () => {
+		mod.applyThemeMode('light');
+		expect(document.documentElement.classList.contains('dark')).toBe(false);
+
+		mod.initThemeModeWatcher();
+		// 系统是 dark；若错误地重跑 auto 会解析为 dark 而加上 dark
+		prefersDark = true;
+		dispatchChange();
+
+		expect(document.documentElement.classList.contains('dark')).toBe(false);
+		expect(document.documentElement.dataset.theme).toBe('light');
+	});
+
+	test('幂等：重复调用只注册一次 change 监听', () => {
+		mod.initThemeModeWatcher();
+		mod.initThemeModeWatcher();
+		mod.initThemeModeWatcher();
+		expect(changeListenerCount()).toBe(1);
+	});
+
+	test('非浏览器 / 无 matchMedia 时不注册监听', () => {
+		// (1) isBrowser() 为 false：删除 document
+		const originalDoc = globalThis.document;
+		delete globalThis.document;
+		mod.initThemeModeWatcher();
+		globalThis.document = originalDoc;
+
+		// (2) 有 document 但无 matchMedia
+		const originalMm = window.matchMedia;
+		delete window.matchMedia;
+		mod.initThemeModeWatcher();
+		window.matchMedia = originalMm;
+
+		// 两次早退均未置 initialized，恢复后再调用应能正常注册一次
+		mod.initThemeModeWatcher();
+		expect(changeListenerCount()).toBe(1);
+	});
+});

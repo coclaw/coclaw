@@ -4,7 +4,7 @@
 		<MobilePageHeader :title="pageTitle" fallback="/claws" />
 
 		<!-- 桌面端 header -->
-		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-elevated pl-2 pr-4 py-1 md:flex">
+		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-default pl-2 pr-4 py-1 md:flex">
 			<!-- 注意：icon-only 返回按钮无 aria-label——与 FileManagerPage 等姊妹页面一致；
 			     a11y 改进作为统一项见仓库 TODO -->
 			<UButton

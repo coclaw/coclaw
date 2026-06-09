@@ -10,6 +10,7 @@ import { initCapacitorApp } from './utils/capacitor-app.js';
 import { initTauriApp } from './utils/tauri-app.js';
 import { initElectronApp } from './utils/electron-app.js';
 import { startUpdateCheck } from './services/app-update.js';
+import { initThemeModeWatcher } from './services/theme-mode.js';
 import { buildUiStartText } from './services/env-snapshot.js';
 import { useRemoteLog } from './services/remote-log.js';
 import { useDraftStore } from './stores/draft.store.js';
@@ -43,6 +44,7 @@ useDraftStore().initPersist();
 initCapacitorApp(router);
 initTauriApp(router);
 initElectronApp(router);
+initThemeModeWatcher();
 startUpdateCheck();
 
 console.log('[app] mounted');
