@@ -7,3 +7,6 @@ tmp/
 # E2E cleanup sidecars (baseline/keeper claw snapshots)
 e2e/.baseline-claws.json
 e2e/.keeper-claws.json
+
+# E2E 测试浏览器弹窗位置（本机专属，多屏时弹到副屏）
+e2e/.window-position

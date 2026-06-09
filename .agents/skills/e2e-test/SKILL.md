@@ -78,6 +78,20 @@ WSL2 下 Chrome（headless 和 headed + WSLg）的动画帧渲染异常，导致
 
 `vitest.config.js` 必须排除 `e2e/**`，避免 `pnpm test` / `pnpm coverage` 误扫 Playwright 用例。详见 `docs/e2e-troubleshooting.md` 卡点 2。
 
+## 本机可视化测试（锁屏 / 焦点 / 多屏）
+
+在本机用 headed Playwright 或弹 Electron 客户端做可视化测试 / 调试时，用户能否离开屏幕取决于驱动的是哪一层：
+
+- **网页 UI（渲染区）**：经 CDP 驱动，锁屏、失焦、被别的窗口完全盖住都不影响发指令与截图；Electron 主窗已设 `backgroundThrottling: false`，被遮挡也不降帧。用户可放心锁屏 / 切到别的 app。CDP 注入的输入与系统物理键盘是两条独立通道——用户在另一屏正常打字不会串进被测窗口，测试也无需抢占用户焦点（仅拉起 / 启动窗口那一下可能短暂夺焦）。
+- **原生外壳**（托盘菜单、自定义标题栏的系统按钮、原生右键菜单 / 对话框、Dock）：CDP 够不着，只能系统级抓屏 + 模拟点击 → 锁屏会抓到黑屏，失焦会把点击打到前台别的窗口。这类测试要求屏幕解锁且被测窗口在最前台。
+- **开测前主动告知用户**这步验的是原生外壳还是网页 UI，让其知道当下能否锁屏 / 切走。
+
+多屏把测试浏览器弹到副屏（不挡终端）：
+
+- Playwright 位置来源优先级：环境变量 `E2E_WINDOW_POSITION="x,y"` > 本机专属文件 `e2e/.window-position`（gitignored）。坐标用 macOS 全局逻辑坐标（主屏左上角 0,0；副屏在右 x 为正、在左为负）。**4K 屏跑 2x 缩放时逻辑宽是 1920 而非 3840，必须用逻辑值**。
+- 不确定副屏原点时用 Electron 的 `screen.getAllDisplays()` 实测各屏 `bounds`（受缩放影响，别按物理像素猜）。
+- Electron 客户端的窗口位置由 `mainWindowState` 记住，手动拖到副屏一次即留在那。
+
 ## 踩坑记录
 
 完整踩坑记录见 `ui/docs/e2e-troubleshooting.md`。以下为编写测试时常见的逻辑陷阱：
