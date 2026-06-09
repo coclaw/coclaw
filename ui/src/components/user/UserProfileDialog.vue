@@ -7,7 +7,7 @@
 		@after:leave="$emit('after:leave')"
 	>
 		<template #body>
-			<UserProfilePanel />
+			<UserProfilePanel data-testid="profile-info" />
 		</template>
 	</UModal>
 </template>

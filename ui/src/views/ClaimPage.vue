@@ -23,7 +23,7 @@
 				</div>
 
 				<!-- 无认领码 -->
-				<div v-else class="flex flex-col items-center gap-3">
+				<div v-else data-testid="claim-no-code" class="flex flex-col items-center gap-3">
 					<UIcon name="i-heroicons-exclamation-triangle" class="size-12 text-warning" />
 					<p class="text-sm text-muted">{{ $t('claim.noCode') }}</p>
 				</div>

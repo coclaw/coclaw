@@ -43,7 +43,8 @@ test.describe('Claim Page @bind', () => {
 	test('should show noCode state when no code in query', async ({ page }) => {
 		await login(page);
 		await page.goto('/claim');
-		await expect(page.locator('main')).toContainText(/no code|认领码/i, { timeout: 5000 });
+		// 断言 locale 无关的稳定锚点（testid），不匹配文案——文案随语言变化会脆断
+		await expect(page.getByTestId('claim-no-code')).toBeVisible({ timeout: 5000 });
 	});
 
 	test('should claim successfully and navigate to /claws', async ({ page }) => {

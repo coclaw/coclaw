@@ -77,8 +77,8 @@ test('用户页：打开个人信息对话框 @ui', async ({ page }) => {
 	const dialog = page.locator('[role="dialog"]');
 	await expect(dialog).toBeVisible({ timeout: 5000 });
 
-	// 对话框内应有用户信息行（昵称、登录方式等）
-	await expect(dialog.locator('text=/test/')).toBeVisible({ timeout: 3000 });
+	// 对话框内应有用户信息区（昵称、登录方式等）——断言 locale 无关的稳定锚点，不匹配用户名/文案
+	await expect(dialog.getByTestId('profile-info')).toBeVisible({ timeout: 3000 });
 });
 
 // ================================================================
