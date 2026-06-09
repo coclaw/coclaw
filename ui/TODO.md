@@ -2,6 +2,28 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## Electron 自定义标题栏盖住高弹窗顶部（拖动色带吃掉超高对话框的标题 + 关闭叉上半截）
+
+**发现日期**：2026-06-10
+**来源**：本批待 push commit（自定义标题栏特性 `1710206e`）的发布前 review（renderer 维度 subagent + 主线核实 z-index/形态）
+
+- 症状：桌面壳（Mac + Windows 自定义标题栏模式）顶部 38px 不透明拖动色带（`ElectronTitleBar.vue`：`fixed top-0 z-[60] bg-elevated` + `app-region: drag`）层级高于 @nuxt/ui 弹窗。弹窗 overlay/content 在主题里都**无 z-index**（生成主题 `overlay: 'fixed inset-0'`、content 居中 `max-h-[calc(100dvh-2rem)]`；项目 `modal-theme.js` 覆盖也不加 z-index），故恒在 z-60 之下。绝大多数弹窗矮、居中、顶离屏顶很远，无碍；但**几乎占满屏高的弹窗**（provider catalog `AddProviderDialog`、`PrimaryModelPickerDialog`、`WebAgentPickerDialog` 等长列表撑到 max-h）顶边顶到约 16px，其 header（`min-h-13`=52px）的标题与关闭叉上半截落进 0–38px 色带：被不透明色带盖住 + 落在拖动区 → 点那块是拖窗而非关窗。叉的下半截仍可点，弹窗非彻底关不掉。
+- 影响范围：仅桌面壳、仅自定义标题栏开着、仅那几个超高弹窗；web/Capacitor 完全不受影响（整套样式锁在 `html.cc-electron-custom` 作用域，二者拿不到该类——已核实此前提成立）。Mac 与 Windows 均中招（非 Windows 独有）。
+- 严重度：中。非崩溃/丢数据/安全；是本批新特性在主力桌面端的可见瑕疵——高弹窗 header 顶部被裁、关闭叉被吃掉一半，观感像坏了。
+- 修法方向（任一）：在 `main.css` 的 `html.cc-electron-custom` 作用域给弹窗 overlay/content 让出 38px 顶距（top inset / padding-top）；或把色带 z 压到弹窗之下（但弹窗无 z-index，按 DOM 顺序决胜不稳，更稳是给弹窗在该作用域显式抬 z 或加 inset）。配套补回归：高弹窗 + 自定义标题栏下断言 header/close 不落进色带区。
+- 范围：仅 UI（`ElectronTitleBar.vue` / `main.css` / 受影响弹窗或全局 modal 主题）。
+
+## Electron 自定义标题栏的几个低优项（窄屏移动 header / toaster 安全区重复 / HMR 监听未注销 / 红绿灯未居中）
+
+**发现日期**：2026-06-10
+**来源**：同上发布前 review（renderer + 主进程维度）
+
+1. **窄于 md(768px) 时移动 header 钻到色带下**：`MobilePageHeader`（`sticky top-0 z-10`）在自定义模式下任何宽度都渲染；内容滚动后 sticky header 升到 top:0，落在 z-60 色带与拖动区之下，返回键不可点。仅"桌面窗口拖到手机宽"的边角，但属真功能缺失。
+2. **toaster 顶距重复叠加 safe-area**：`main.css` `.cc-toaster-viewport` 用 `top: calc(--cc-titlebar-h + 1rem + safe-area-inset-top)`，而 viewport 已带 `mt-[safe-area-inset-top]`（`vite.config.js`）。桌面端 safe-area=0 故无害，仅冗余、属死代码。
+3. **主题 matchMedia 监听未注销**：`theme-mode.js` 的 `auto` 跟随系统监听只有模块级 `initialized` 守重复注册；Vite HMR 模块替换会重置 `initialized` 而留下旧监听。仅 dev-HMR 受影响，生产 boot-once 干净。
+4. **Mac 红绿灯在加高标题栏里未竖直居中**：`main.js` 用 `titleBarStyle:'hidden'` + 38px 带但未设 `trafficLightPosition`，红绿灯停在默认内距、可能未居中；纯观感，真机一瞥即可定。
+（浅色主题启动闪一下深色背景 `backgroundColor:'#202122'` 属已知接受取舍，`window-chrome.js` 已注明，不另登记。）
+
 ## Electron 托盘"退出"退不掉（带活跃 RTC 连接时）— fork 的看门狗修法已实机证伪并 revert
 
 **发现日期**：2026-06-10
