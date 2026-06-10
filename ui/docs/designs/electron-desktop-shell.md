@@ -507,6 +507,8 @@ function initTray(app, win) {
 module.exports = { initTray };
 ```
 
+模块另含退出守卫 `installQuitGuard(app)`（main.js 在启动时安装）：在 `before-quit` 统一置位 `app.isQuitting`。没有它，不经托盘菜单的退出入口（Cmd+Q / 菜单 quit role / SIGTERM / 自动更新 quitAndInstall / 注销关机）发起的 `app.quit()` 触发窗口 close 后，会被上面 close 处理器的 `preventDefault` 收进托盘，整个退出流程随之取消——进程健康活着但永远退不掉。窗口 X 关闭只走 close、不触发 `before-quit`，「收进托盘」行为不受影响。
+
 ### 4.6 deep-link.js — Deep Link 处理
 
 ```js
@@ -653,6 +655,8 @@ win.webContents.setWindowOpenHandler(({ url }) => {
 | 关闭窗口时 | 最小化到托盘 | 设置页切换为"直接退出" |
 | 托盘图标左键单击 | 显示/隐藏主窗口 | — |
 | 托盘右键菜单 | 显示窗口 / 退出 | — |
+
+「最小化到托盘」靠 close 事件 `preventDefault` 实现，必须配套退出守卫（`before-quit` 置位 `isQuitting`，见 4.5），否则 Cmd+Q / SIGTERM / 自动更新等退出入口发起的 quit 会被该拦截取消、进程永远退不掉。
 
 ### 6.2 托盘菜单
 
