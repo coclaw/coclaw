@@ -1473,3 +1473,16 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 - 读盘 IO 错误维持抛出（不要吞成空），让调用方能区分"取不到"与"出错"
 
 **范围**：跨 UI + plugin（plugin 加信号 + UI 消费做精确文案），需双 changeset。属健壮性增强，**低优先、非阻塞**——当前 UI 中性"已不可用"文案已覆盖主场景（真没正文）。实施时 UI 侧把占位文案按 status 细分（见 ui 工作区对应改造）。
+
+---
+
+## 自动升级链路 blocker：上游把 install records 迁入共享 SQLite state DB，updater 仍直读旧 JSON
+
+**发现日期**：2026-06-10（/check-openclaw-compat 补跑，baseline e2898eaa→050c0813，报告唯一 blocker；上游 2026.6.5 train，#89102/#88585）
+**关联**：`src/auto-upgrade/updater.js`（`loadInstallRecord` 直读 `<state-dir>/plugins/installs.json`，legacy 回落 loadConfig）；`scripts/_lib.sh`（同 JSON 直读，且硬编码 `$HOME/.openclaw` 无视自定义 state-dir，预存瑕疵顺带修）；上游 `src/plugins/installed-plugin-index-store-path.ts`（`resolveInstalledPluginIndexStorePath` → `resolveOpenClawStateSqlitePath`）、`installed-plugin-index-store.ts`（SQLite 行 `install_records_json`，显式 JSON 路径已宣布 retired）
+
+**影响**：host 升到 ≥2026.6.x 后新装/升级记录只写 SQLite，JSON 仅迁移/doctor 时读取——updater 读到陈旧或缺失记录，升级路径判断**静默错位**，自动升级链路断裂（成本最高事故类别）。老版本 host 不受影响（两级 JSON 回落仍有效）。
+
+**修复方向**：updater 增加第三数据源——先调研上游是否已暴露查询面（SDK/CLI；`updater.js` 注释"SDK 未暴露查询 API"系 SQLite 迁移前旧结论，需重核），没有则直读 SQLite；保留两级 JSON fallback 兼容老 host。同根趋势见 check-openclaw-compat 必查清单 L 类：新增状态读取一律优先 SDK/CLI，别再添 JSON 直读。
+
+**暂缓决策**：2026-06-10 用户拍板留 TODO 不立即修（老 host 回落仍有效、未着火）。**下次插件发版前必须先闭环本条**——发版前跑 /check-openclaw-compat 也会再次撞上提醒。

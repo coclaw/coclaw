@@ -33,8 +33,8 @@ disable-model-invocation: true
 > 每次跑完都把这一行更新成本次的 HEAD。
 
 ```
-baseline-commit: e2898eaa881b34e36c09d6fb2119fc6810bfaac1
-baseline-checked-at: 2026-05-07
+baseline-commit: 050c0813b39f5347789291c728c0fa5fa3c6b827
+baseline-checked-at: 2026-06-10
 ```
 
 ## 核心关切（为什么这个命令存在）
@@ -154,6 +154,15 @@ baseline-checked-at: 2026-05-07
   - **K4 `models.list` view 契约**：view 枚举（`packages/gateway-protocol/src/schema/agents-models-skills.ts`，现 `default`/`configured`/`all`）与 `view:'all'` **跳过凭据过滤**的语义（`src/gateway/server-methods/models.ts` 与 `models-list-result.ts`）——任一变化会让 `coclaw.model.set` 的 catalog 存在性校验误判（合法模型被判 not found）
   - **K5 plugin-sdk 子路径**：`models-provider-runtime`（`buildModelsProviderData`）与 `agent-runtime`（`loadModelCatalog`）是否仍在 dist `package.json` exports、导出名未变
 - 风险等级：**中** —— 不影响自动升级链路，但 K1/K4 命中会让输出上限或加模型校验**静默错位**（症状：长回复被截 8192、合法模型被判 not found），无 deprecation 警告、排查链条长
+
+### L. JSON state store → 共享 SQLite state DB 迁移潮
+
+- **历史踩点（2026.6.5 train，#89102/#88585）**：install records 与 auth profiles 迁入共享 SQLite state DB（`resolveOpenClawStateSqlitePath`），cron legacy JSON store 走 doctor 迁移；显式 JSON 路径被上游宣布 retired，legacy JSON 只在迁移/doctor 时读取
+- 检查：
+  - 我方所有**直读 `<state-dir>` 下 JSON 状态文件**的代码（`plugins/installs.json`、`auth-profiles.json`、cron stores 等），对应上游 store 是否已迁 SQLite、JSON 是否仍被写入
+  - 新增状态类需求一律优先 SDK / CLI 查询路径，不再添置 JSON 直读
+- 上游锚点：`src/plugins/installed-plugin-index-store-path.ts`、`src/state/openclaw-state-db.paths.ts`（`resolveOpenClawStateSqlitePath`）；grep `installRecords` / `auth-profiles`
+- 风险等级：**高** —— 直读方在新版本 host 上读到陈旧快照，无报错静默错位；自动升级链路是第一受害者
 
 ## 工作流
 
