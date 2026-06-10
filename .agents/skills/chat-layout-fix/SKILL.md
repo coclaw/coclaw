@@ -20,7 +20,7 @@ ChatPage（`ui/src/views/ChatPage.vue`）的核心布局是一个**固定视口�
 | 元素 | 必须有 | 禁止有 | 原因 |
 |---|---|---|---|
 | ChatPage 根 `<div>` | `flex-col overflow-hidden` + 正确的动态类 | 同时使用 `flex-1` 和 `h-dvh-safe` | 不定高度 flex 列中 `flex-basis: 0%` 会使高度解析为 max-content，布局链被撑开 |
-| `<main>` | `flex-1 min-h-0 overflow-x-hidden overflow-y-auto` | — | flex-1 填充剩余空间；min-h-0 覆盖默认 `min-height: auto`，使内容在 `<main>` 内部滚动 |
+| `<main>` | `flex-1 min-h-0 overflow-x-hidden overflow-y-auto` | — | flex-1 填充剩余空间；min-h-0 覆盖默认 `min-height: auto`，使内容在 `<main>` 内部滚动；overflow-y 非 visible 时 overflow-x 会退化为 auto，需显式 hidden 禁止横向滚动 |
 | ChatInput | 作为 flex 列最后子元素 | `sticky`/`fixed` 定位 | 依赖 flex 列布局自然定位 |
 
 ## 验证

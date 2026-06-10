@@ -15,7 +15,7 @@
 
 - 入口 `src/index.js`（dev/start 均由它启动）；`app.js` 装配 Express 应用，`server.js` 装配 HTTP/WS 服务
 - `src/routes/` 放 `*.route.js`；`src/services/` 放 `*.svc.js`；`src/repos/` 放 `*.repo.js`（目录与文件名后缀均用缩写）
-- `src/db/prisma.js` 是 Prisma 客户端单例（含对 prisma 扩展的安装）；`src/generated/` 为 Prisma Client 生成目录（lint 已忽略）
+- `src/db/prisma.js` 是 Prisma 客户端单例（如未来引入 prisma 扩展也在此安装）；`src/generated/` 为 Prisma Client 生成目录（lint 已忽略）
 - 其余按职责归入 `src/middlewares|validators|config|utils|cli`；SSE/WS hub 类模块平铺在 `src/` 根（如 `claw-ws-hub.js`、`rtc-signal-hub.js`）
 - Prisma schema 与迁移在 `prisma/`（`schema.prisma`、`migrations/`）
 

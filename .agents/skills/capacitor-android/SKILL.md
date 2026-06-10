@@ -1,6 +1,6 @@
 ---
 name: capacitor-android
-description: Capacitor Android 开发规范与约束。Use when 进行 Android App 构建、调试、配置、原生插件开发等工作。
+description: Capacitor Android 开发规范、常用命令与约束。Use when 进行 Android App 构建、调试、配置、原生插件开发等工作。
 ---
 
 # Capacitor Android 开发
@@ -19,6 +19,23 @@ description: Capacitor Android 开发规范与约束。Use when 进行 Android A
 - 环境变量（`JAVA_HOME`、`ANDROID_HOME`）已配置在 `~/.bashrc`
 - 网络受限时给 Gradle/SDK 下载配置本机 HTTP 代理
 - WSL2 环境，无法直接使用 Android 模拟器
+
+## 常用命令
+
+构建链路仅 WSL2 开发机可用（见上节）；命令起点为仓库根。
+
+```bash
+# 同步前端产物到原生工程（cap sync 要求 webDir 即 ui/dist 存在；App 运行时实际加载线上前端）
+cd ui && pnpm build && npx cap sync android
+
+# Debug APK（默认 debug 签名，无前置）
+cd ui/android && ./gradlew assembleDebug   # 产出 app/build/outputs/apk/debug/coclaw-<version>-debug.apk
+
+# Release APK（前置：keystore 与 local.properties 签名配置，见 ui/docs/android-release-config.md）
+cd ui/android && ./gradlew assembleRelease # 产出 app/build/outputs/apk/release/coclaw-<version>.apk
+```
+
+装机/真机调试：仓库内无脚本与文档支持，不收录命令。
 
 ## 何时需要 build APK
 

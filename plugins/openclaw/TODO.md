@@ -1,5 +1,14 @@
 # Plugin TODO
 
+## plugin-sdk 研究文档的 overrides 指引过时：仍写"根 package.json 的 pnpm.overrides"
+
+**发现日期**：2026-06-10（文档小修批次中发现；预存过时描述，非本次造成）
+
+- `docs/openclaw-research/plugin-sdk-and-runtime.md` 的「2026-06-02 更新」段写"用根 `package.json` 的 `pnpm.overrides.openclaw → tools/openclaw-peer-stub`"，与现状不符——overrides 已收口到根 `pnpm-workspace.yaml`（根 package.json 已无 overrides）。
+- 本工作区 AGENTS.md 本体已改对，但其指向的这份研究文档未同步，需修订该段。
+
+---
+
 ## 文档引用失效两处：docs 指向 CLAUDE.md/AGENTS.md 的章节不存在或名称已变
 
 **发现日期**：2026-06-10（CLAUDE.md 全面梳理 review 发现；预存断链，非本次梳理造成）

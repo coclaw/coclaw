@@ -1,5 +1,5 @@
 ---
-description: 扫描 openclaw-repo/ 在 baseline 之后的上游破坏性变更（重点保自动升级链路），发新版前必跑；只读、出报告、跑完推进 baseline
+description: 扫描 openclaw-repo/ 在 baseline 之后的上游破坏性变更（重点保自动升级链路），发新版前必跑；不改代码、出报告、跑完推进 baseline
 disable-model-invocation: true
 ---
 
@@ -176,7 +176,7 @@ baseline-checked-at: 2026-06-10
    - 如果范围 > 200 commits 或 baseline 不存在，先告诉用户、问是否继续
 
 3. **逐项过清单**：
-   - 对必查清单 A-K 每一项：grep / read 上游相关文件，看是否有变更
+   - 对必查清单每一项：grep / read 上游相关文件，看是否有变更
    - 重点 grep："`deprecated`"、"`@deprecated`"、"`BREAKING`"、"`removed`"、"`renamed`"
    - 看 `openclaw-repo/CHANGELOG.md`（如有）的 baseline 之后段落
 
@@ -188,7 +188,7 @@ baseline-checked-at: 2026-06-10
 
 6. **更新 baseline**：把本文件 `baseline-commit` 改为本次的 `git -C openclaw-repo rev-parse HEAD`，`baseline-checked-at` 改为今天。
 
-7. **若发现新类别坑**（不在 A-K 之内）：按"演进规则"追加到清单。
+7. **若发现新类别坑**（不属于现有清单类别）：按"演进规则"追加到清单。
 
 ## 报告格式
 
@@ -200,16 +200,16 @@ OpenClaw 上游兼容性扫描报告
   每条含：类别 | 一句话变更摘要 | 上游锚点（文件+符号 或 commit）| 我方依赖处 |
   影响（重点：会不会让老插件无法自升级）| 建议修复
 ─ Warnings (M)：上游变了但我方暂未依赖（记录留心），格式同上
-─ 必查清单核查：A–K 逐项给 [PASS / NEW-BLOCKER / NEW-WARNING]，一项不漏
+─ 必查清单核查：每一项给 [PASS / NEW-BLOCKER / NEW-WARNING]，一项不漏
 ─ 新发现的踩坑模式（若有）：说明 + 已追加到本命令必查清单 ✓
 ─ 结论：PASS / FAIL（二选一）；baseline 已推进至 <new HEAD hash> (<日期>)
 ```
 
 ## 演进规则（很重要）
 
-执行过程中如果发现**不属于现有 A-K 类别**的不兼容模式：
+执行过程中如果发现**不属于现有清单类别**的不兼容模式：
 
-1. 把它命名（`L.` `M.` ...）并加进"必查清单"段，描述清楚：
+1. 把它命名（接续清单末项的编号）并加进"必查清单"段，描述清楚：
    - 历史踩点（这次撞到的具体上游变更）
    - 检查要点（以后该看什么）
    - 上游锚点（文件路径 + 符号 / grep 关键词，不写行号）
@@ -223,7 +223,7 @@ OpenClaw 上游兼容性扫描报告
 - 不改任何代码（包括我方 `plugins/openclaw/` 与上游 `openclaw-repo/`）
 - 不 commit / 不发布
 - 不"顺手"修发现的不兼容
-- 不在没跑完清单的情况下就出 PASS——清单 A-K 每一项都要明确给出 PASS / NEW-BLOCKER / NEW-WARNING
+- 不在没跑完清单的情况下就出 PASS——清单每一项都要明确给出 PASS / NEW-BLOCKER / NEW-WARNING
 - 不漏更新 baseline——下次会重复扫同样的 commits
 - 不漏追加新发现的坑——下次还会撞同样的雷
 

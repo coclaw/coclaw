@@ -47,11 +47,13 @@ pnpm changeset
 
 ```markdown
 ---
-"@coclaw/<workspace-name>": patch | minor | major
+"<package-name>": patch | minor | major
 ---
 
 变更描述（英文）
 ```
+
+`<package-name>` 取对应工作区 `package.json` 的 `name`。
 
 ### 何时需要 changeset
 

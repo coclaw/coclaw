@@ -33,7 +33,7 @@ UI <──res── {status: "ok"/"error", ...}   ← Phase 2: Final（终态）
 
 ## 详细协议与实现
 
-- 协议规范（消息处理流程、agentParams 结构、特殊情况）：`docs/architecture/gateway-agent-rpc-protocol.md`
+- 协议规范（消息处理流程、特殊情况）：`docs/architecture/gateway-agent-rpc-protocol.md`
 - 判定逻辑三方镜像详述：`docs/designs/dc-rpc-response-unicast.md`
 - RPC 传输层：`ui/src/services/claw-connection.js`（`request()` 支持 `onAccepted` 两阶段回调）
 - 调用端：`ui/src/stores/chat.store.js`（`sendMessage` action）
