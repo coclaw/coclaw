@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # 默认安装设备清单（按需追加；名字以 `xcrun simctl list devices available` 为准）
-DEFAULT_DEVICES=("iPhone 17" "iPad Air 11-inch (M4)")
+# 前两台 iOS 26.5（最新端），后两台 iOS 15.5（app 最低支持版本，真 Safari 15 内核）
+DEFAULT_DEVICES=("iPhone 17" "iPad Air 11-inch (M4)" "iPhone 13" "iPad (9th generation)")
 
 DERIVED_DATA=/tmp/coclaw-ios-build
 APP_SRC="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/App.app"
