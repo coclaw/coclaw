@@ -1,5 +1,10 @@
 # TODO
 
+## 文档引用失效：plugin-sdk-and-runtime.md 引用 CLAUDE.md 不存在的"总纲"（2026-06-10，CLAUDE.md 梳理 review 发现，预存断链）
+
+- `docs/openclaw-research/plugin-sdk-and-runtime.md` 多处引用 CLAUDE.md 的"总纲：gateway RPC > runtime API > SDK > 手搓"——根/plugin 两级 CLAUDE.md 均无此句，引用悬空。
+- 修复方向：在合适的 CLAUDE.md（或该文档自身）补全总纲表述，或改写引用为自包含；该优先序原则本身仍有效。
+
 ## server 镜像 prisma 引擎的两处遗留耦合（2026-06-08 review 中发现，非活跃 bug，低风险加固）
 
 > 背景：历史上容器启动 `prisma migrate deploy` 因缺引擎二进制去网络下载而卡死数十分钟，已由 commit `33e32153` 修复（构建期把两类引擎都烤进镜像）。下面两条是当时遗留的隐式耦合，平时不犯、但脆弱。

@@ -1,5 +1,10 @@
 # Deploy TODO
 
+## deploy/README.md 中 compose.dev.yaml 标注过时（发现日期 2026-06-10）
+
+- `deploy/README.md` 目录结构里 compose.dev.yaml 标注「本地开发（仅 MySQL）」，实际该文件含 mysql 与 coturn 两个服务，待修正。
+- 来源：CLAUDE.md 梳理 review 中核实的预存问题，按规范不顺手修。
+
 ## coturn 月度无脑重启（部署机 root crontab，每月 1 号 03:00）
 
 - 现状：`certbot renew --cert-name edge.coclaw.net --standalone ... --quiet && docker compose restart coturn`。`certbot renew` 不论是否真续都返回 0，导致 coturn 每月被白重启一次（影响 TURN 连接）。

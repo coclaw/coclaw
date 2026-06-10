@@ -2,6 +2,21 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## 文档引用失效：model-config.md 把根文件的测试原则说成 ui 工作区 CLAUDE.md
+
+**发现日期**：2026-06-10
+**来源**：CLAUDE.md 全面梳理 review 发现；预存断链，与本次梳理任务无关
+
+- `ui/docs/model-config.md:524` 称"ui 工作区 CLAUDE.md 的配套测试原则"——该原则实际一直在根 AGENTS.md「单元测试规范」，ui 工作区文件从未承载。修复方向：改写该句指向根文件。
+
+## Tauri 残留待清理决策（脚本/目录/设计稿与既定 Electron 方案并存）
+
+**发现日期**：2026-06-10
+**来源**：CLAUDE.md 全面梳理 review；预存问题，与本次梳理任务无关
+
+- 现状：package.json 仍有 7 个 tauri 相关脚本（`tauri` / `tauri:*`）、`src-tauri/` 目录、`docs/designs/tauri-desktop-shell.md`，而桌面壳方案已定为 Electron（ui/AGENTS.md 已加一句定性"早期评估残留，勿再使用"）。
+- 待决策：删除残留（脚本 + 目录 + 相关 devDependencies），或保留归档；删除需确认 `src-tauri/` 无被引用的共享资源。
+
 ## Electron 自定义标题栏盖住高弹窗顶部（拖动色带吃掉超高对话框的标题 + 关闭叉上半截）
 
 **发现日期**：2026-06-10

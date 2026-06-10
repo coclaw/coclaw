@@ -3,72 +3,50 @@
 > 适用范围：对整个 `coclaw` 仓库生效。
 > coclaw 旗下各 Workspace 可补充规则。
 
-General Instructions
+## General Instructions
+
 - 收到用户的任务请求后，首先应理解并向用户澄清需求，待用户确认后再实际执行任务
 - 避免过度设计
 - 严格遵循移动端优先的设计思路
 
 ## 项目简介
 
-- **项目名**：CoClaw（`coclaw`）
-- **组织**：CoClaw
-- **域名**：`coclaw.net`
+- **项目名**：CoClaw（`coclaw`）；组织：CoClaw；域名：`coclaw.net`
 - **License**：Apache-2.0（暂定）
 - **核心目标**：让用户即使与 OpenClaw 处于网络隔离状态，也能通过 CoClaw 平台与其 OpenClaw 交互
 - **产品定位**：功能形态类似 OpenClaw WebChat，但在平台能力与产品细节上做更深入扩展
-- 支持多语言：默认跟随浏览器语言，不支持的语言回退为英文
-
-**对项目开发的一句话原则**：pnpm 统一管理、优先成熟依赖、严格测试闭环、文档持续同步、按模块分层收敛复杂度。
+- 多语言：默认跟随浏览器语言，不支持的语言回退为英文
+- **开发一句话原则**：pnpm 统一管理、优先成熟依赖、严格测试闭环、文档持续同步、按模块分层收敛复杂度
 
 ## 文档体系
 
-项目文档的**第一阅读者是 Agent（你自己），第二阅读者是开发者**。文档由 Agent 在开发过程中自动维护——架构变更、协议演进、关键设计决策等应及时反映到文档中。
+项目文档的**第一阅读者是 Agent（你自己）**，第二阅读者是开发者；由 Agent 在开发过程中维护——架构变更、协议演进、关键设计决策应及时反映到文档。
 
 **局部代码看不到架构全貌**——涉及架构、通信、协议、状态机、跨模块契约的判断，必须先读 `docs/architecture/` 下相关文档再下结论，不要凭局部代码反推整体设计。
 
-### 阅读路径
+阅读路径：
 
 1. [docs/architecture/overview.md](docs/architecture/overview.md) — 系统全景
 2. [docs/architecture/communication-model.md](docs/architecture/communication-model.md) — 通信模型
-3. [docs/README.md](docs/README.md) — 完整索引，按需深入
+3. [docs/README.md](docs/README.md) — 完整索引与各目录定位，按需深入
 
-### 文档分类
+组织原则：
 
-| 目录 | 内容 | 更新频率 |
-|------|------|---------|
-| `docs/architecture/` | 系统架构（当前真相） | 随架构演进持续更新 |
-| `docs/decisions/` | 架构决策记录 (ADR) | 决定后较少变动 |
-| `docs/designs/` | 功能设计稿（过程文档，头部标注状态） | 完结后归档，不再追新；架构当前真相看 `docs/architecture/` |
-| `docs/openclaw-research/` | OpenClaw 上游机制研究 | 按需 |
-| 工作区 `docs/` | 该工作区特有文档 | 按需 |
-
-### 组织原则：按关注范围归属
-
-- 理解文档需要**多个工作区**的上下文 → 放 `docs/`（如通信模型、绑定流程、RPC 协议）
-- 仅需**单个工作区**的上下文 → 放该工作区 `docs/`（如 UI 文件浏览器、chat 状态架构、Android 签名配置）
+- 按关注范围归属——需要**多个工作区**上下文的文档放根 `docs/`（如通信模型、绑定流程、RPC 协议），仅需**单个工作区**上下文的放该工作区 `docs/`（如 chat 状态架构、Android 签名配置）
+- `docs/architecture/` 是当前真相、随演进持续更新；`docs/designs/` 是过程文档（头部标注状态，完结归档后不再追新）
 
 ## 核心术语
 
 | CoClaw 术语 | OpenClaw 对应 | 含义 |
 |-------------|--------------|------|
-| **chat** | sessionKey | 无限对话流（长期身份），如 `agent:main:main` |
-| **session** | sessionId | chat 中的一个片段；reset 时产生新 session，旧 session 成为孤儿 |
-| **topic** | 无对应 | 用户主动发起的独立对话，脱离 OpenClaw sessionKey 体系 |
+| **chat** | sessionKey（一一对应） | 无限对话流（长期身份），如 `agent:main:main` |
+| **session** | sessionId（一一对应） | chat 内的一段对话；每次 reset 产生新 session，旧 session 成为孤儿 |
+| **topic** | 无对应 | 用户主动发起的独立对话，由 CoClaw 自管理，以 `agent(sessionId=<uuid>)` 发起，不关联 sessionKey |
 
-- chat 与 sessionKey 一一对应：一条 chat 即一个 sessionKey，代表持续的对话流
-- session 与 sessionId 一一对应：是 chat 内的一段对话，每次 reset 产生新的 session
-- topic 由 CoClaw 自管理，使用 `agent(sessionId=<uuid>)` 发起，不关联 sessionKey
+## 包管理与依赖
 
-## 包管理器
-
-- 本仓库 **仅使用 `pnpm`**
-- 禁止提交 `package-lock.json`
-- 统一维护 `pnpm-lock.yaml`
-
-## 依赖策略
-
-- 通用需求优先使用工业标准级开源库，禁止造轮子
-- 仅当无合适开源库时，才自行编写并放入 `src/utils`
+- 本仓库**仅使用 `pnpm`**：统一维护 `pnpm-lock.yaml`，禁止提交 `package-lock.json`
+- 通用需求优先使用工业标准级开源库，禁止造轮子；仅当无合适开源库时才自行编写并放入 `src/utils`
 
 ## JavaScript 编码规范（适用于前后端及插件）
 
@@ -76,24 +54,17 @@ General Instructions
 - 用 TAB 缩进；开发者阅读代码时会按 1TAB=2空格 设置阅读器
 - 语句末尾原则上应添加分号
 - 标识符命名应简洁清晰，优选社区通用缩写（如 `prev`、`cur`/`curr`、`msg`、`cfg`、`ctx`、`conn`、`btn`、`idx`、`fn`、`cb`、`req`/`res`、`err`、`args`、`params`、`opts`、`info`、`init` 等）
-- 函数风格
-  - 顶层/具名函数优先 `function` 声明
-  - 内联回调优先箭头函数以保持简洁
-  - 涉及词法 `this` 时必须使用箭头函数
-- 对于异步操作，优选 `async/await`，除非链式写法明显更清晰
-- 网络请求优选用 `axios`
+- 函数风格：顶层/具名函数优先 `function` 声明；内联回调优先箭头函数以保持简洁；涉及词法 `this` 时必须使用箭头函数
+- 异步操作优选 `async/await`，除非链式写法明显更清晰
+- 网络请求优选 `axios`
 - class 的 private 方法名不要用 `#` 前缀，需要添加前缀时用 `__`
 - 抛出异常中的 message 用英文描述
 - 注释规范
-  - 注释主要供你阅读，应尽量简洁
-  - 注释一律用简体中文，因为有时开发者也会阅读
-  - 对于行内注释，多数情况下只需在注释与代码之间用一个空格分隔即可，无需相邻行间纵向对齐
-  - JSDoc 数组用 `[]` 语法，如 `string[]`，不用 `Array<string>`
-  - JSDoc `@param` 使用 `name - 描述` 格式
+  - 注释主要供你阅读，应尽量简洁；一律用简体中文（开发者有时也会阅读）
+  - 行内注释与代码之间用一个空格分隔即可，无需相邻行间纵向对齐
+  - JSDoc 数组用 `[]` 语法（如 `string[]`）；`@param` 用 `name - 描述` 格式
 - 除 Vue 单文件组件或配置文件等框架/工具链明确约定使用 default export 的情形外，所有 JavaScript 模块（包括 Utils、Services、Repos 等）均采用具名导出 (named export)
-- 导入部分 node 模块的命名约定
-  - 在导入 node path 模块时，将导出名称设置为 nodePath，即 `import nodePath from 'path'`
-  - js 的单元测试代码直接使用 node 的 test，而不使用 it 方式
+- 导入 node path 模块时，将导出名称设置为 nodePath，即 `import nodePath from 'path'`
 
 ## 单元测试规范
 
@@ -103,15 +74,19 @@ General Instructions
 - 测试文件与源码同目录，命名为 `[filename].test.js`
 - 测试运行必须非交互、可自动执行
 - 在执行单元测试前，必须先通过静态检查（至少包含 `lint`，必要时含 type check）
+- 测试框架默认用 Node 原生测试器 `node:test`；使用 `test()`，不要使用 `it()` 风格
 
-### 测试框架风格
+### 统一命令语义
 
-- 默认使用 Node 原生测试器：`node:test`
-- 使用 `test()`，不要使用 `it()` 风格
+各工作区与仓库根统一提供：
+
+- `pnpm check`：lint + typecheck 静态检查
+- `pnpm test`：运行测试 + 覆盖率门禁
+- `pnpm verify`：`pnpm check && pnpm test`
 
 ### 覆盖率基线
 
-- 各工作区的覆盖率门槛已提升至较高水平，具体阈值以各自的测试配置为准（server ≥90%、plugin ≥95%、ui branches ≥90% 其余 ≥95%）
+- 覆盖率门槛固化在各工作区测试配置（package.json 的 test 脚本 / vitest 配置）中，以其为准
 - `??` / `?.` fallback 分支不强制覆盖
 - 新增/改动代码应优先补齐关键路径覆盖；若暂时无法达标，需在变更说明中明确差距与补齐计划
 
@@ -137,6 +112,7 @@ General Instructions
 - 遵循最小变更原则：非需求要求下，不进行大范围重构/重命名/目录搬迁
 - 涉及跨模块改动（`ui <-> server <-> plugin`）时，先更新 `docs` 中的接口/协议说明，再改实现
 - 不在本阶段推进 `admin` 实质开发，除非明确指令
+- 当系统或用户的要求有违对应技术栈的最佳实践时，应明确指出，让用户确认是否修改
 
 ## Bug 修复流程
 
@@ -148,8 +124,7 @@ General Instructions
 
 ## TODO.md 维护
 
-- 每条 TODO 写明 **发现日期**，标题描述自解释（便于 grep 关键词回头追溯）
-- section 组织（平铺 / 分组）按写入情境自然来，不强制
+- 每条写明**发现日期**，标题自解释（便于 grep 关键词回头追溯）；section 组织（平铺 / 分组）按写入情境自然来，不强制
 - 完成后整段删除；确有需要时沉淀/融入到对应文档
 
 ## E2E 测试
@@ -183,33 +158,18 @@ General Instructions
 
 ## 移动端与桌面端
 
-- **移动端（Android / iOS）**：Capacitor —— 将 `ui` 的 Vite 构建产物打包为原生 App
-- **桌面端（Windows / macOS）**：Electron（待后续启动）
-- 决策详情见 `docs/decisions/adr-mobile-desktop-framework.md`
-- Android 开发规范与命令见 `capacitor-android` skill
-- 前端代码与 Web 端完全共用，不维护多套 UI
+- **移动端（Android / iOS）**：Capacitor——将 `ui` 的 Vite 构建产物打包为原生 App；Android 开发规范与命令见 `capacitor-android` skill
+- **桌面端（Windows / macOS）**：Electron，已落地；壳子代码在 `ui/electron/`，开发与构建规范见 `ui/AGENTS.md`
+- 前端代码与 Web 端完全共用，不维护多套 UI；框架决策详情见 `docs/decisions/adr-mobile-desktop-framework.md`
 
 ## 部署执行约定（内部）
 
 - 涉及部署时，优先使用 `scripts/deploy-*.sh`，避免临时手敲分散命令
-- 部署说明与参数以 `docs/deploy-ops.md` 为准
+- 部署说明与参数以 `docs/operations/deploy-ops.md` 为准
 - 默认内部发布域名为 `im.coclaw.net`
-
-## 遵循对应最佳实践
-
-- 没有提及的规范/约束，应遵循对应技术栈的最佳实践
-- 当系统或用户的要求有违对应的最佳实践时，应明确指出，让用户确认是否修改
 
 ## OpenClaw 开发参考
 
-OpenClaw 是较新的项目，且处于快速迭代阶段，训练数据中未包含其最新细节。请务必通过"阅读源码"和"查阅文档"来获取准确信息。
-
-CoClaw 项目（尤其是 `plugins/openclaw`）与 OpenClaw 生态紧密结合。需要时，查阅已同步到仓库根下的 `openclaw-repo/` 中的 OpenClaw 仓库内容，该目录下的内容与本地安装和运行的 OpenClaw 版本基本一致。
-
-OpenClaw 网络资源：
-- Source: https://github.com/openclaw/openclaw
-- Community: https://discord.com/invite/clawd
-
-OpenClaw 通过子命令控制和管理 Gateway 守护进程：
-- `openclaw gateway status`
-- `openclaw gateway start / stop / restart`
+- OpenClaw 较新且迭代快，训练数据不含其最新细节——务必通过阅读源码和查阅文档获取准确信息。仓库根 `openclaw-repo/` 已同步 OpenClaw 仓库内容，与本地安装运行的版本基本一致，需要时直接查阅
+- Gateway 守护进程用子命令控制：`openclaw gateway status / start / stop / restart`
+- Source: https://github.com/openclaw/openclaw ；Community: https://discord.com/invite/clawd

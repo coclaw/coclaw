@@ -1,5 +1,14 @@
 # Plugin TODO
 
+## 文档引用失效两处：docs 指向 CLAUDE.md/AGENTS.md 的章节不存在或名称已变
+
+**发现日期**：2026-06-10（CLAUDE.md 全面梳理 review 发现；预存断链，非本次梳理造成）
+
+- `docs/rpc-dc-file-queue.md:259` 引"根 CLAUDE.md「OPENCLAW 状态目录」约束"——根文件无此节，该约束实际在本工作区 AGENTS.md「State / sessions 路径解析」。
+- `docs/node-datachannel-notes.md:82` 引旧章节名「Hook 与 Gateway Method 的模块实例隔离」——现名「Hook / RPC 双实例陷阱（`--link` 安装模式）」。
+
+---
+
 ## worktree 重构建并跑时主网关偶发被 SIGTERM 重启（隔离网关基础设施落地时发现）
 
 **发现日期**：2026-05-31（worktree 插件验证基础设施 `scripts/worktree-gateway.sh` 落地实测时发现）

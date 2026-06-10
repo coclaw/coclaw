@@ -1,7 +1,7 @@
 # 桌面端（Electron）发布产物分发
 
 > 适用范围：Windows / macOS 的 Electron 安装包与自动更新分发。
-> 壳子构建命令见 `ui/CLAUDE.md` 的 “Electron 桌面壳子开发”；签名/公证见 `ui/.env.example`。
+> 壳子构建命令见 `ui/CLAUDE.md` 的 “Electron 桌面壳子”；签名/公证见 `ui/.env.example`。
 
 桌面端走 electron-updater 的 generic provider，更新源就是本部署自己的 CDN
 （`https://<域名>/releases/{win,mac}/`），规避 GitHub Releases 国内访问不稳定。

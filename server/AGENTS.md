@@ -13,26 +13,11 @@
 
 ## 目录与命名约定
 
-```
-server/
-  src/
-    routes/         # *.route.js
-    services/       # *.svc.js，文件名后缀采用缩写
-    repos/          # *.repo.js，目录和文件名后缀均采用缩写
-		db/
-		  prisma.js     # 单例文件，包括对可能的 prisma 扩展进行安装
-			*.ext.js      # 可能的 prisma 扩展
-		generated/
-		  prisma/       # Prisma Client 生成目录
-    middlewares/
-    validators/
-    config/
-    app.js
-    server.js
-  prisma/
-    schema.prisma
-    migrations/
-```
+- 入口 `src/index.js`（dev/start 均由它启动）；`app.js` 装配 Express 应用，`server.js` 装配 HTTP/WS 服务
+- `src/routes/` 放 `*.route.js`；`src/services/` 放 `*.svc.js`；`src/repos/` 放 `*.repo.js`（目录与文件名后缀均用缩写）
+- `src/db/prisma.js` 是 Prisma 客户端单例（含对 prisma 扩展的安装）；`src/generated/` 为 Prisma Client 生成目录（lint 已忽略）
+- 其余按职责归入 `src/middlewares|validators|config|utils|cli`；SSE/WS hub 类模块平铺在 `src/` 根（如 `claw-ws-hub.js`、`rtc-signal-hub.js`）
+- Prisma schema 与迁移在 `prisma/`（`schema.prisma`、`migrations/`）
 
 ## 分层职责边界
 
@@ -43,14 +28,14 @@ server/
 ## 技术栈
 
 - Node.js + ESM（仅 `import/export`）
-- Express + express-session + Passport
-- Prisma + MySQL
+- Express 5（与 Express 4 行为差异较大）+ express-session + Passport
+- Prisma + MySQL；入参校验用 zod；WebSocket 用 ws
 
 ## 其他约定
 
 - REST API path 统一前缀：/api/v1
-- 修订 prisma.schema 后，须用户确认后才能进行 migrate
+- 修订 schema.prisma 后，须用户确认后才能进行 migrate
 
-## 单元测试覆盖率要求
+## 跑单测前置
 
-覆盖率门槛（90%）已固化在 `pnpm test` 命令中。
+`pnpm test` 不会像 `pnpm dev` 那样自动拉起 dev docker。前置：mysql 已起、迁移已应用（`pnpm prisma:migrate:deploy`）、已 `export DB_URL=...`（`node --test` 不读 `.env`）。
