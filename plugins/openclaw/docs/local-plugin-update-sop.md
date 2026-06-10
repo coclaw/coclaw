@@ -71,10 +71,10 @@ OpenClaw 的 file logger（`/tmp/openclaw/openclaw-*.log`）只收 `logger.*` �
 - `~/.openclaw/openclaw.json` 中：
   - `plugins.load.paths` 包含 stage 目录路径（`plugins/openclaw/.build/link-stage`）
   - `plugins.entries.openclaw-coclaw.enabled = true`
-- `~/.openclaw/plugins/installs.json` 中（OpenClaw 2026.5 起新增的安装记账文件，`plugins.installs` 已被显式标记为 transient 不再持久化到 `openclaw.json`）：
-  - `installRecords.openclaw-coclaw.source = "path"`
-  - `installRecords.openclaw-coclaw.sourcePath === installPath`（指向 stage 目录）
-- 脚本 `_lib.sh` 的 `get_install_mode()` 据此判定当前是否处于 link 模式
+- 安装记录验法：`openclaw plugins inspect openclaw-coclaw --json`，顶层 `install` 字段即原始 record（OpenClaw ≥2026.6.1 记录已迁入共享 SQLite，旧 JSON 账本停更，**勿直读文件**）：
+  - `install.source === "path"`
+  - `install.sourcePath === install.installPath`（指向 stage 目录）
+- 脚本 `_lib.sh` 的 `get_install_mode()` 同走 inspect 判定当前是否处于 link 模式
 
 ## 模式切换
 

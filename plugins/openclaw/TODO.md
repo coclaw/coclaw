@@ -286,6 +286,8 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：用文件级 advisory lock（如 `proper-lockfile` 或 flock）保护 read-modify-write 段。改动跨进程协议，影响面大；当前接受现状，标 TODO 提示长尾。
 
+**2026-06-11 注记**（摆脱账本改造评审再确认）：维持"已接受模式"结论——gateway 与 worker 的写入由 `upgrade.lock` 时序隔离（worker 在跑时 scheduler 跳过整轮 check），新增的 L2 no-op 路径状态写入（addSkippedVersion / updateLastUpgrade / appendLog）同受此隔离，不另开条目。
+
 ## bridge async listener 其他真隐患（C 阶段维度 1）
 
 **发现日期**：2026-05-02
@@ -682,25 +684,23 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **影响**：仅 UI 诊断信息（peer transport 信号）丢失，不影响 RPC 业务。
 
+**修复方向**：装配 rpcQueue 后主动调一次 `__sendPeerTransport(connId)`（条件：`session.pc.selectedCandidatePair` 已 nominate 完成），或在 sendTo 失败回滚 sig 后注册一个"等 rpcQueue 就绪重试"的钩子。（2026-06-11 归位：本段原误插在下方"上游契约演进"条目内）
+
 ## 跟踪 OpenClaw 上游契约演进对 auto-upgrade 的影响
 
 **发现日期**：2026-05-06
 
 **背景**：自动升级链路跨"gateway 进程内 spawner"和"detached worker 子进程"两段，对 OpenClaw 的依赖面分成两块。任何一块的契约变更都可能让自动升级整体失效或误回滚，需统一跟踪。
 
-### 1. 账本格式（spawner 端依赖，已发生过事故）
+### 1. 账本格式（已闭环：账本直读全部移除，2026-06-11）
 
-**锚点**：`plugins/openclaw/src/auto-upgrade/updater.js` 的 `loadInstallRecord` / `INSTALLS_LEDGER_RELATIVE_PATH`
+2026-06-11（commit 1f2cae34）起 updater 与 `scripts/_lib.sh` 不再直读任何账本文件（旧 JSON / 新 SQLite 均不读），安装记录一律经 `openclaw plugins inspect <id> --json`（依赖契约见第 2 节表末行）。历史教训保留：上游两次搬家（2026.4.25 `openclaw.json` → `plugins/installs.json`；2026.6.1 → 共享 SQLite）都曾打断升级链——后续任何"新增状态读取"一律优先 CLI/SDK，禁止再添文件直读。
 
-OpenClaw 2026.4.25 把插件安装记录从 `openclaw.json` 的 `plugins.installs` 迁移到独立账本 `<state-dir>/plugins/installs.json`（key `installRecords[<pluginId>]`），并在 `loadConfig()` 返回前剥掉老字段——这次 0.19.2 → 0.20.0 升不动就是这条契约变更触发的。当前 `loadInstallRecord` 硬编码新路径与字段名，新旧 gateway 兼容靠"账本不存在 → 回落到 loadConfig"互斥分流。
+**措辞更正（2026-06-11）**：本条旧版称"SDK 侧已有 `loadInstalledPluginIndexInstallRecordsSync` helper，可考虑切换到 SDK API"——失准。该 helper 是上游内部模块，**从未经 plugin-sdk exports 暴露**（exports 实查），插件侧从来不存在可用的 SDK 安装记录查询面；CLI inspect 是唯一官方契约。
 
-**风险**：上游若再搬家（路径/文件名/字段名变更）或 strip 行为收紧（连兜底字段都不返）会让自动升级再次失效。SDK 侧已有 `loadInstalledPluginIndexInstallRecordsSync` helper（`src/plugins/installed-plugin-index-record-reader.ts`），但需要插件先依赖 `@openclaw/plugin-sdk`，且该 helper 的最低 host 版本高于当前插件 `minHostVersion`。
+### 2. CLI 契约（gateway L1 门禁 + worker 端依赖）
 
-**应对**：升级 OpenClaw 时关注 `src/plugins/installed-plugin-index-store-path.ts` / `installed-plugin-index-record-reader.ts` 是否变更；若 SDK 公开 install records helper 且最低 host 版本可接受，考虑切换到 SDK API。
-
-### 2. CLI 契约（worker 端依赖，目前未踩坑）
-
-worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--pluginDir` 传入），全程靠子进程调 `openclaw` CLI，因此对 CLI 行为强耦合：
+worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--pluginDir` 传入），gateway 的 L1 来源门禁与 worker 全程靠子进程调 `openclaw` CLI，因此对 CLI 行为强耦合：
 
 | 调用 | 锚点 | 失败后果 |
 |---|---|---|
@@ -709,12 +709,13 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 | `openclaw gateway restart` | `worker-verify.js:80` | 验证前 gateway 不被主动重启，依赖 watcher 自恢复 |
 | `openclaw gateway call <method> --json` | `worker-verify.js:114` | 见下条 |
 | `--json` 输出 = RPC result 原值（无 envelope） | 同上 | 若上游加 `{ok,result}` 包装，`JSON.parse(output).version` 取到 undefined → 一直 missing-version → 验证超时 → 误判为"新版本坏掉"并 skipVersion + 回滚 |
+| `openclaw plugins inspect <id> --json`（2026-06-11 新增依赖） | `updater-check.js` `inspectPluginInstall`（gateway L1 来源门禁 + worker L2 结局核对共用）；`_lib.sh` `load_install_record` | L1 失败 → 本周期跳过（去重 `upgrade.gate-inspect-failed`，下周期自愈）；L2 失败 → 保守按真升级走 restart+verify。**契约点**：exit code（未安装非 0）、顶层 `install` 字段透传原始 record（含 `source`/`installPath`/`version`/`sourcePath`） |
 
 **风险等级**：CLI 子命令名长期稳定（CHANGELOG 没出现过重命名），但 `--json` 输出包装是历史相对短的接口，`docs/auto-upgrade.md` 里也标了"`coclaw.upgradeHealth` 返回格式 → 待定"。
 
-**应对**：升级 OpenClaw 时关注 `src/cli/gateway-cli/call.ts` 与 `plugins-*.ts` 是否变更子命令名/参数 schema/输出格式；尤其留意 `gateway call --json` 是否加 envelope。如确实加包装，worker-verify 的解析需相应放开（兼容两种形态）。
+另一条语义依赖（按设计稿 P5 核实结论注记，2026-06-11）：`plugins update` 对 path/archive 装置与**缺安装记录**的行为是"干净 skip + exit 0"（先于任何磁盘写）——L2 no-op 分支（record 未推进 → 立即 skipVersion）依赖此语义；上游若把 skip 改成报错或部分写盘，worker 结局矩阵需重审。
 
-**修复方向**：装配 rpcQueue 后主动调一次 `__sendPeerTransport(connId)`（条件：`session.pc.selectedCandidatePair` 已 nominate 完成），或在 sendTo 失败回滚 sig 后注册一个"等 rpcQueue 就绪重试"的钩子。
+**应对**：升级 OpenClaw 时关注 `src/cli/gateway-cli/call.ts` 与 `plugins-*.ts` 是否变更子命令名/参数 schema/输出格式；尤其留意 `gateway call --json` 是否加 envelope（如加包装，worker-verify 的解析需兼容两种形态）、`plugins inspect --json` 的 exit code 与 `install` 字段透传是否变化。
 
 ## 2026-05-06 deep-review（claw-config host adapter）抓出的预存问题
 
@@ -1483,15 +1484,51 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 **范围**：跨 UI + plugin（plugin 加信号 + UI 消费做精确文案），需双 changeset。属健壮性增强，**低优先、非阻塞**——当前 UI 中性"已不可用"文案已覆盖主场景（真没正文）。实施时 UI 侧把占位文案按 status 细分（见 ui 工作区对应改造）。
 
----
+## 2026-06-11 auto-upgrade 摆脱账本改造记 TODO 不修的预存/残余问题
 
-## 自动升级链路 blocker：上游把 install records 迁入共享 SQLite state DB，updater 仍直读旧 JSON
+**发现日期**：2026-06-11（设计稿 `docs/designs/auto-upgrade-ledger-free-gate.md` 残余风险节 + 实施 review）
+**关联**：`src/auto-upgrade/`、`scripts/_lib.sh`。均不阻塞、独立可修；state.js 无锁 read-modify-write 一条并入上方既有条目"auto-upgrade state read-modify-write 缺跨进程互斥"的 2026-06-11 注记，不在此重复。
 
-**发现日期**：2026-06-10（/check-openclaw-compat 补跑，baseline e2898eaa→050c0813，报告唯一 blocker；上游 2026.6.5 train，#89102/#88585）
-**关联**：`src/auto-upgrade/updater.js`（`loadInstallRecord` 直读 `<state-dir>/plugins/installs.json`，legacy 回落 loadConfig）；`scripts/_lib.sh`（同 JSON 直读，且硬编码 `$HOME/.openclaw` 无视自定义 state-dir，预存瑕疵顺带修）；上游 `src/plugins/installed-plugin-index-store-path.ts`（`resolveInstalledPluginIndexStorePath` → `resolveOpenClawStateSqlitePath`）、`installed-plugin-index-store.ts`（SQLite 行 `install_records_json`，显式 JSON 路径已宣布 retired）
+### worker 备份 .bak 目录可能被 npm prune 清理
 
-**影响**：host 升到 ≥2026.6.x 后新装/升级记录只写 SQLite，JSON 仅迁移/doctor 时读取——updater 读到陈旧或缺失记录，升级路径判断**静默错位**，自动升级链路断裂（成本最高事故类别）。老版本 host 不受影响（两级 JSON 回落仍有效）。
+新 npm 托管布局（`<state-dir>/npm/projects/`）下 `.bak` 备份目录与插件目录同级、落在 npm 管理的目录树内，`plugins update` 触发的 npm 操作（prune/dedupe）理论上可能清掉这个非 package 目录，使回滚失去物理备份（届时走 npm 兜底重装旧版，网络不可用时回滚失败）。修向：备份挪到 npm 树外（如 `<state-dir>/coclaw/` 下）。
 
-**修复方向**：updater 增加第三数据源——先调研上游是否已暴露查询面（SDK/CLI；`updater.js` 注释"SDK 未暴露查询 API"系 SQLite 迁移前旧结论，需重核），没有则直读 SQLite；保留两级 JSON fallback 兼容老 host。同根趋势见 check-openclaw-compat 必查清单 L 类：新增状态读取一律优先 SDK/CLI，别再添 JSON 直读。
+### 托管布局回滚后"新依赖+旧代码"混搭风险
 
-**暂缓决策**：2026-06-10 用户拍板留 TODO 不立即修（老 host 回落仍有效、未着火）。**下次插件发版前必须先闭环本条**——发版前跑 /check-openclaw-compat 也会再次撞上提醒。
+备份只覆盖插件目录本身；托管布局下依赖树可能由 npm 在插件目录之外统一管理，mv 回旧代码后依赖仍是新版安装时改写的状态，形成"新依赖+旧代码"混搭。同族限制：布局迁移场景（老布局升级 → record 指新托管路径）回滚不完美——备份的是旧实体、record 已指新处（`worker-verify.js` 头注释已有记述）。
+
+### engines.node >=18 名存实亡
+
+源码 4 处 `import.meta.dirname` 需 Node ≥20.11；minHostVersion 对应宿主实际要求 Node ≥22.16。`package.json` engines 声明应抬高到与事实一致（patch 级，待下次代码批次顺手改）。
+
+### worker-backup.js 头注释过时
+
+头注释的 `.bak` 命名约束论证基于旧 `extensions/` 目录扫描机制（"gateway 启动时扫描 extensions/ 下所有子目录"）；新 npm 托管布局经安装记录加载、不靠目录扫描。约束本身无害可保留，rationale 需对齐现状。
+
+### upgrade.skipped 信号每小时重发无去重（含稳定 mismatch 态 upgrade.available 同模式重发）
+
+`upgrade.skipped`（latest 已在 skippedVersions）每周期重发一条 remoteLog，无 `__gateSignalOnce` 类去重——预存模式。review 第二轮确认：稳定 mismatch 态（有新版、L1 放行、但升级始终未完成且未 skip）下 `upgrade.available` 也同模式逐周期重发。修向：并入既有 (原因, toVersion) 去重。
+
+### runtime 缺失时 spawner 传给 worker 的 env state-dir 兜底理论错位
+
+`updater-spawn.js` 经 `state.js` `resolveStateDir()`（runtime → env → `~/.openclaw` 三级）取值传 `OPENCLAW_STATE_DIR` 给 worker；runtime 不可用时兜底值可能与上游真实 state-dir（profile / CLI flag 派生）分叉，worker 的 state 文件写错位置。理论场景——scheduler 正常运行时 runtime 必在。
+
+### updater.js 外层 catch-all 的 err.message 无可选链
+
+`__check` 外层 catch 直接插值 `err.message`；内部 throw 非 Error（字符串等）时插值为 undefined，remoteLog/日志信息劣化。与项目 `err?.message ?? String(err)` 惯例不一致，顺手修即可。
+
+### worker.js 成功路径 updateLastUpgrade/appendLog 未包 try/catch
+
+成功分支末尾的 `updateLastUpgrade` / `appendLog` 是全文件唯一未包 try/catch 的状态写入；state 目录异常时 worker fatal exit 1——但升级实际已成功且备份已删，lastUpgrade 不落盘，scheduler 下轮无 result 可报。修向：与其它状态写入对齐，包 try/catch 记日志不阻断。
+
+### _lib.sh symlink 泄漏核对的 find|head 管线在 pipefail 下有 SIGPIPE 提前打断风险
+
+`ensure_stage` 核对段 `find ... | while ... | head -1`：head 读满一行即退出，上游收 SIGPIPE（exit 141）；调用方脚本均 `set -euo pipefail`，理论上可把"找到一个泄漏"或正常核对误变成脚本中断。预存写法（本次改造未触碰），修向：改用 `awk 'NR==1{print;exit}'` 或先收集再取首行。
+
+### updater-spawn↔worker 的 argv flag 字面量契约无共享锚
+
+6 个 flag（`--pluginDir/--fromVersion/--toVersion/--baselineVersion/--pluginId/--pkgName`）在 `updater-spawn.js` 拼 args 与 `worker.js` parseArgs options 各写一份字面量，两侧测试各测各的——一侧改名另一侧测试不红（strict parseArgs 会让 worker 启动即报错，但只有线上能发现）。修向：共享常量模块或加一条跨侧契约测试。
+
+### worker.test.js chmod 注入故障法以 root 跑测时失效
+
+多处用 `fs.chmod(0o444/0o555)` 制造写失败注入故障；root（CAP_DAC_OVERRIDE）下权限不生效，故障分支不触发 → 用例断言失败或假绿。环境依赖性失败源——CI/容器以 root 跑测会撞。修向：用例前置探测 root 时 skip，或换不依赖权限的注入法（mock fs）。
