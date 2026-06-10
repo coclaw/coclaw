@@ -54,11 +54,11 @@ export default {
 	},
 
 	watch: {
-		// 类的增删走同步 watcher（flush:'pre'，与渲染同一次 flush）；
+		// 全屏态同步走同步 watcher（flush:'pre'，与渲染同一次 flush）；
 		// 禁止 defer 到 rAF/setTimeout/flush:'post'——否则条 v-if 与作用域 CSS 跨帧 desync、离开全屏瞬间一帧压内容
 		isFullScreen: {
 			handler() {
-				this.__syncTitlebarClass();
+				this.__syncTitlebarScope();
 			},
 			flush: 'pre',
 		},
@@ -76,8 +76,9 @@ export default {
 			this.__fsUnsub();
 			this.__fsUnsub = null;
 		}
-		// HMR / 单测 / 异常重挂残留防护：始终摘掉根类
+		// HMR / 单测 / 异常重挂残留防护：始终摘掉根类与全屏 inline 变量
 		document.documentElement.classList.remove('cc-electron-custom');
+		document.documentElement.style.removeProperty('--cc-titlebar-h');
 	},
 
 	methods: {
@@ -92,8 +93,8 @@ export default {
 			// 立即写 data.custom，否则根类虽挂上、但父级 v-if="custom" 不会挂出 <ElectronTitleBar>
 			this.custom = true;
 			this.titlebarPlatform = api.platform || '';
-			// 同步段（任何 await 之前）即按 custom && !isFullScreen 挂作用域类：首帧就让出 38px、不压内容
-			this.__syncTitlebarClass();
+			// 同步段（任何 await 之前）即挂作用域类：首帧就让出 38px、不压内容
+			this.__syncTitlebarScope();
 			// 订阅实时全屏事件——必须早于 getFullScreen，否则「挂类后、getter 前后」窗口里漏掉的 enter/leave 无从补回
 			this.__primed = false;
 			this.__fsUnsub = api.onFullScreenChange((isFs) => {
@@ -112,10 +113,18 @@ export default {
 				.catch(() => {});
 		},
 
-		// 按 custom && !isFullScreen 同步增删根类；该类是 cc-electron-custom 作用域 CSS 的唯一开关
-		__syncTitlebarClass() {
-			const on = this.custom && !this.isFullScreen;
-			document.documentElement.classList.toggle('cc-electron-custom', on);
+		// 同步作用域状态：根类只按 custom 常驻挂载（到 beforeUnmount 才摘），全屏切换只动 --cc-titlebar-h 变量。
+		// 全屏不可摘类——类一摘，.cc-app-content 的容器滚动规则消失、滚动容器换人，scrollTop 即丢（跳回顶部）；
+		// 变量置 0 后所有 calc 规则自动退化为基线布局（margin 0、容器高 100vh 等），容器身份不变 → 滚动位原地保留。
+		// 标题栏条本身的全屏显隐由 ElectronTitleBar 内部 v-if="!isFullScreen" 负责，与此处无关。
+		__syncTitlebarScope() {
+			const root = document.documentElement;
+			root.classList.toggle('cc-electron-custom', this.custom);
+			if (this.isFullScreen) {
+				root.style.setProperty('--cc-titlebar-h', '0px');
+			} else {
+				root.style.removeProperty('--cc-titlebar-h');
+			}
 		},
 	},
 };

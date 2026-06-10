@@ -1,6 +1,6 @@
 # Electron 自定义标题栏（作用域类模型）
 
-> 状态：评审修订中（已折入两轮 codex + 独立 review 的发现，含 z 层级 `#app.isolate` 单值解；末轮确认中） ｜ 待实施 ｜ 2026-06-09
+> 状态：已实施 ｜ 2026-06-09 成稿；2026-06-11 随「Electron 容器滚动」落地修订——滚动收进 `.cc-app-content` 容器，全屏改为类常驻 + inline 变量 `--cc-titlebar-h:0px` 驱动布局退化（§5.2/§5.3）
 > 关联：[electron-desktop-shell.md](electron-desktop-shell.md)（壳子总体设计，本稿是其「自定义标题栏」专题增量）；**依赖** [header-flatten-auto-theme.md](header-flatten-auto-theme.md) 的 auto 主题 watcher（见「主题同步」）。
 > 由原 `desktop-titlebar-coherence.md` 拆分并重构而来。
 > 定位：**Electron 是次要、尽力而为的目标**；移动端（Capacitor）与 web 才是主目标。
@@ -29,7 +29,7 @@ macOS Electron 下当前是**原生标题栏**（commit `9912b077` 把之前的 
 
 **所有标题栏相关的布局偏移与复杂度，全部收进一个作用域类 `html.cc-electron-custom` 之下；web / Capacitor 永远不挂这个类，故其 CSS 行为逐字节不变、不可能被本功能改脆。**（精确表述：变的只是 **CSS 行为**——为让作用域覆盖有处可落，DOM 上会给所有端新增一个 router-view 包裹 wrapper、并连同侧边栏根 / toaster 视口共挂**三个惰性 marker 类**（`cc-app-content`/`cc-desktop-sidebar`/`cc-toaster-viewport`），它们无任何作用域规则命中、不改布局，但严格说不是「零 DOM 改动」，故主目标需补一条 DOM/layout 回归测，见 §10。）
 
-- App.vue 仅在「自定义壳模式且非全屏」时给 `document.documentElement` 挂 `cc-electron-custom` 类。
+- App.vue 在自定义壳模式下给 `document.documentElement` **常驻**挂 `cc-electron-custom` 类（custom 即挂、到卸载才摘）；全屏不摘类，改由 inline style 把 `--cc-titlebar-h` 置 `0px` 驱动布局退化——滚动容器身份不变、滚动位保留（§5.2/§5.3）。
 - 一切偏移（内容下移、满高根减条高、侧边栏顶边、浮层避让）都写成 `html.cc-electron-custom <…> { … }` 的**作用域覆盖**。
 - **不改业务页/布局的满高工具类**（不动 AuthedLayout / ChatPage / Login / Register / NuxtUiDemo / 侧边栏的 `min-h-screen`/`h-dvh-safe`/`h-screen`），改为在作用域下**覆盖工具类本身的行为**；只在 router-view 外层、侧边栏根、toaster 视口上各挂一个**壳级惰性 marker 类**（共三个：`cc-app-content`/`cc-desktop-sidebar`/`cc-toaster-viewport`；web 无规则命中、纯惰性，见 §5.2/§5.3）。
 
@@ -56,7 +56,7 @@ macOS Electron 下当前是**原生标题栏**（commit `9912b077` 把之前的 
 
 `main.js` 据 `buildWindowChrome` 返回值设 `BrowserWindow` 选项，并把 `custom` 经 `webPreferences.additionalArguments`（如 `--cc-titlebar-custom=1`）下发给 preload。**平台判定 + §8 override 只此一处**，preload 只读不重算（§4.2）。
 
-全屏：监听 `enter-full-screen`/`leave-full-screen` 转发渲染进程；另提供 `window:getFullScreen` handler 供渲染进程拉当前态。要点：①只认**原生全屏**——非全屏的 maximize/zoom（mac 绿钮填满但不进全屏）**不发**这两个事件，此时红绿灯/WCO 仍在、条必须保留（即「非全屏的 zoom/maximize 不摘类」）；②事件是 `isFullScreen` 唯一真相源、初值 `false`；③反向风险：`isFullScreen` 误卡 `true` 而窗口实为普通态 → 类被摘 → 红绿灯压内容（`9912b077` 复发），故事件不能漏/乱序，并配合当前态拉取（§4.2、§5.2）；④**逐窗口接线（两步分清、勿混为一句）**：`additionalArguments` 是**窗口创建期**写入——`new BrowserWindow({ webPreferences:{ additionalArguments:['--cc-titlebar-custom=1', …] } })` 时就定死，创建后无法再补；而 `attachWindowChromeEvents(win)` 是**窗口创建后**才调、只负责把 `enter/leave-full-screen` 监听挂到这个 `win` 上。两者都落在 `createWindow()` 内、对每个新建窗口各做一次——mac `activate` 在无窗口时会重建窗口，一次性全局注册会漏掉重建出来的新窗口。
+全屏：监听 `enter-full-screen`/`leave-full-screen` 转发渲染进程；另提供 `window:getFullScreen` handler 供渲染进程拉当前态。要点：①只认**原生全屏**——非全屏的 maximize/zoom（mac 绿钮填满但不进全屏）**不发**这两个事件，此时红绿灯/WCO 仍在、条必须保留（即「非全屏的 zoom/maximize 不触发布局退化」）；②事件是 `isFullScreen` 唯一真相源、初值 `false`；③反向风险：`isFullScreen` 误卡 `true` 而窗口实为普通态 → inline 变量被误置 `0px`、布局退化 → 红绿灯压内容（`9912b077` 复发），故事件不能漏/乱序，并配合当前态拉取（§4.2、§5.2）；④**逐窗口接线（两步分清、勿混为一句）**：`additionalArguments` 是**窗口创建期**写入——`new BrowserWindow({ webPreferences:{ additionalArguments:['--cc-titlebar-custom=1', …] } })` 时就定死，创建后无法再补；而 `attachWindowChromeEvents(win)` 是**窗口创建后**才调、只负责把 `enter/leave-full-screen` 监听挂到这个 `win` 上。两者都落在 `createWindow()` 内、对每个新建窗口各做一次——mac `activate` 在无窗口时会重建窗口，一次性全局注册会漏掉重建出来的新窗口。
 
 ### 4.2 preload（`preload.cjs`）
 
@@ -91,42 +91,27 @@ App.vue 是 `custom`/`isFullScreen` 的唯一持有者与 `cc-electron-custom` �
 3. 新增 `data` 持 `custom`/`isFullScreen`，**`custom` 初值 `false`、`isFullScreen` 初值 `false`**（`custom` 初值 false 保证父级 `v-if` 在收口判定前不误挂组件）。
 4. **标题栏逻辑抽成独立方法 `initElectronTitlebar()`，在既有 `mounted` 里 `initResize()` 之后调用**——**切勿把 `if(!custom)return` 放到 `mounted` 顶部**，那会连 `initResize()` 一起跳过、桌面浏览器的 resize 初始化就没了；早返回只守住 `initElectronTitlebar()` 自己。方法内**顺序与同步性是关键（多轮 review 反复踩到的危险区）**：
    - **先 `const api = window.electronAPI; const custom = !!api?.titleBar?.custom; if (!custom) return;` 一道收口**——**必须走 `window.electronAPI`**：裸标识符 `electronAPI` 在浏览器是未声明全局、可选链也救不了、会直接抛 `ReferenceError`，等于每个浏览器用户在挂载抛错（恰是本架构要防的主目标破版从 JS 这层钻回来）。浏览器/Capacitor 下 `window.electronAPI` 为 undefined、老壳无 `titleBar` 字段；`custom===true` 这一个门同时兜住浏览器/Capacitor/老壳/Linux/原生栏/forceNative 全部"无条"分支。**收口通过后立即写 `this.custom = true`（data）**——否则根类虽挂上、但 `data.custom` 仍是 false，父级 `v-if="custom"` 不会挂出 `<ElectronTitleBar>`（条不渲染）。
-   - **再在同步段内（任何 `await` 之前）按 `custom && !isFullScreen`（用 `isFullScreen` 同步默认值 `false`）给 `documentElement` 挂 `cc-electron-custom` 类**。Vue 初始挂载同步、首帧 paint 在整棵 mounted 跑完之后——类在同步段内挂上，作用域 CSS 即生效、首帧就让出 38px、不压内容。**切勿"先 `await getFullScreen()` 再挂类"**：那会把挂类推到 await 之后、可能晚于首帧 paint，自定义壳首帧无偏移 → 红绿灯/WCO 压内容（`9912b077` 复发在用户看到的第一帧、一两帧后才自纠；打包壳+真实 IPC 延迟下偶现，单测测不到）。
+   - **再在同步段内（任何 `await` 之前）给 `documentElement` 挂 `cc-electron-custom` 类（custom 即常驻挂载，全屏不参与挂类判断、由 inline 变量处理，见第 5 条）**。Vue 初始挂载同步、首帧 paint 在整棵 mounted 跑完之后——类在同步段内挂上，作用域 CSS 即生效、首帧就让出 38px、不压内容。**切勿"先 `await getFullScreen()` 再挂类"**：那会把挂类推到 await 之后、可能晚于首帧 paint，自定义壳首帧无偏移 → 红绿灯/WCO 压内容（`9912b077` 复发在用户看到的第一帧、一两帧后才自纠；打包壳+真实 IPC 延迟下偶现，单测测不到）。
    - **紧接着、仍在同步段（`getFullScreen()` 之前）订阅 `onFullScreenChange` 接管实时事件**——订阅必须早于 getter，否则「挂类后、getter 前后」这段窗口里漏掉的 enter/leave 事件无从补回。
-   - **最后异步 `getFullScreen()` 仅用于纠正"冷启即处于全屏"这一少数态**（resolve 后若为全屏则摘类）。**防陈旧覆盖**：先订阅后 getter，`primed` 标志在收到首个实时事件即置位、此后忽略 getter 回填（getter 若晚于实时事件 resolve，旧值不得覆盖新值）。最坏：冷启即全屏时首帧短暂多一条空带、随即塌缩——**无害方向**（远好于内容压按钮）。
-5. **类的增删走 `isFullScreen` 的同步 watcher（`flush:'pre'`，与渲染同一次 flush）、禁止 defer 到 `requestAnimationFrame`/`setTimeout`/`flush:'post'`**——否则条 `v-if` 与作用域 CSS 跨帧 desync，离开全屏瞬间出现"红绿灯已回、留白还在/已无"的一帧压内容。
-6. 在既有 `beforeUnmount` 内追加退订，**并 `document.documentElement.classList.remove('cc-electron-custom')`**——否则 HMR / 单测 / 异常重挂会把类残留在 `<html>` 上。
+   - **最后异步 `getFullScreen()` 仅用于纠正"冷启即处于全屏"这一少数态**（resolve 后若为全屏则把 inline 变量 `--cc-titlebar-h` 置 `0px`，类不动）。**防陈旧覆盖**：先订阅后 getter，`primed` 标志在收到首个实时事件即置位、此后忽略 getter 回填（getter 若晚于实时事件 resolve，旧值不得覆盖新值）。最坏：冷启即全屏时首帧短暂多一条空带、随即塌缩——**无害方向**（远好于内容压按钮）。
+5. **全屏切换不摘类——类常驻，`isFullScreen` 的同步 watcher（`flush:'pre'`，与渲染同一次 flush）只动 inline 变量：进全屏 `--cc-titlebar-h` 置 `0px`、退全屏移除（回落作用域常量 38px）**。变量置 0 后全部 calc 规则自动退化为基线布局、滚动容器身份不变、`scrollTop` 原地保留；若摘类，`.cc-app-content` 的容器滚动规则消失、滚动容器换人、滚动位即丢（跳回顶部）。禁止 defer 到 `requestAnimationFrame`/`setTimeout`/`flush:'post'`——否则条 `v-if` 与作用域 CSS 跨帧 desync，离开全屏瞬间出现"红绿灯已回、留白还在/已无"的一帧压内容。
+6. 在既有 `beforeUnmount` 内追加退订，**并摘掉 `cc-electron-custom` 根类 + 清掉 inline 变量 `--cc-titlebar-h`**——否则 HMR / 单测 / 异常重挂会把类/变量残留在 `<html>` 上。
 
-> **最易踩**：用裸 `electronAPI` 而非 `window.electronAPI`（浏览器全员 `ReferenceError`）、把 `if(!custom)return` 放到 `mounted` 顶部从而跳过 `initResize`、漏 `if(!custom)return` 收口、把挂类放到 await 之后（自定义壳首帧压内容）、订阅晚于 getter（漏全屏事件）、把类增删 defer 到下一帧（离开全屏一帧压内容）、漏退订或漏摘根类、新钩子覆盖掉 `initResize`/`destroyResize`。注意：只要 `window.electronAPI` 收口正确，即便其余 JS 全错，**也只伤 Electron**——web/Capacitor 因 `if(!custom)return` 直接返回、且根本没有作用域 CSS 命中。
+> **最易踩**：用裸 `electronAPI` 而非 `window.electronAPI`（浏览器全员 `ReferenceError`）、把 `if(!custom)return` 放到 `mounted` 顶部从而跳过 `initResize`、漏 `if(!custom)return` 收口、把挂类放到 await 之后（自定义壳首帧压内容）、订阅晚于 getter（漏全屏事件）、把全屏变量增删 defer 到下一帧（离开全屏一帧压内容）、全屏误摘类（滚动位丢失跳顶）、漏退订或卸载漏清根类/inline 变量、新钩子覆盖掉 `initResize`/`destroyResize`。注意：只要 `window.electronAPI` 收口正确，即便其余 JS 全错，**也只伤 Electron**——web/Capacitor 因 `if(!custom)return` 直接返回、且根本没有作用域 CSS 命中。
 
 ### 5.3 作用域 CSS（本方案的隔离落点）
 
 写在 `main.css`（或专用 `electron-titlebar.css`），**全部挂在 `html.cc-electron-custom` 之下**。**必须**作为不分层（非 `@layer`）的 author 规则写：Tailwind v4 把 utilities 放进 `@layer utilities`，未分层 author 规则优先级高于具名 layer 规则，故 `html.cc-electron-custom .min-h-screen` 能稳定盖过 `.min-h-screen`（已核实：项目 `main.css` 先 `@import "tailwindcss"`/`@import "@nuxt/ui"` 再写项目规则；`.h-dvh-safe` 本身也是项目的未分层规则，作用域版特异性更高、vh 与 100dvh 两分支都赢）。**禁止 `!important` / Tailwind important 模式**（会与作用域覆盖互相打架）：
 
-```css
-/* web / Capacitor 永不挂 cc-electron-custom → 以下规则对它们完全不存在 */
-html.cc-electron-custom {
-  --cc-titlebar-h: 38px;            /* 作用域内常量；web 看不到、无 IACVT 风险 */
-}
-/* 内容区让出条高（marker，惰性挂在 router-view 包裹容器上） */
-html.cc-electron-custom .cc-app-content { padding-top: var(--cc-titlebar-h); }
-/* 满高根：覆盖工具类本身 → 自动覆盖当前+未来所有用到它们的根，无需逐页改 */
-html.cc-electron-custom .min-h-screen { min-height: calc(100vh - var(--cc-titlebar-h)); }
-html.cc-electron-custom .h-dvh-safe   { height: calc(100vh - var(--cc-titlebar-h)); }
-@supports (height: 100dvh) {
-  html.cc-electron-custom .h-dvh-safe { height: calc(100dvh - var(--cc-titlebar-h)); }
-}
-/* 侧边栏：sticky 顶边下移 + 高度减条（marker，惰性挂在侧边栏根上） */
-html.cc-electron-custom .cc-desktop-sidebar { top: var(--cc-titlebar-h); height: calc(100vh - var(--cc-titlebar-h)); }
-/* 顶部浮层避让（toast teleport 到 body、仍是 html 后代，故能命中；+1rem 保留 Nuxt UI 默认 top-4 的 16px 视觉间距） */
-html.cc-electron-custom .cc-toaster-viewport { top: calc(var(--cc-titlebar-h) + 1rem + var(--safe-area-inset-top, 0px)); }
-```
+现行规则要点（web / Capacitor 永不挂 `cc-electron-custom` → 这批规则对它们完全不存在；具体值以 `main.css` 为准）：
 
-要点：
-- `min-h-screen` / `h-dvh-safe` 靠**覆盖工具类**自动覆盖全部满高根（闭集枚举不再是脆弱点；`h-dvh-safe` 的 Capacitor 分支在 Electron 下不渲染、互不干扰）。
-- 内容包裹容器、侧边栏根、toaster 视口各需一个**惰性 marker 类**（`cc-app-content` / `cc-desktop-sidebar` / `cc-toaster-viewport`，共三个），因它们要调 `padding`/`top`、无法靠覆盖通用工具类精确命中；marker 在 web 上无任何作用域规则匹配，纯惰性。
-- 变量 `--cc-titlebar-h` 只定义在作用域内，web 路径**完全没有**这个变量，从根上杜绝 IACVT。
-- 全屏时摘掉 `cc-electron-custom` 类 → 以上全部失效 → 内容用满视口（全屏本就无条、无红绿灯），正确。
+- **作用域常量**：`--cc-titlebar-h: 38px` 只定义在 `html.cc-electron-custom` 内——web 路径**完全没有**这个变量，从根上杜绝 IACVT。全屏由 App.vue 以 inline style 把它置 `0px`（inline 优先级盖过作用域常量），全部 calc 规则随之退化为基线布局；类不摘、滚动容器身份不变、滚动位保留（§5.2）。
+- **内容滚动容器**（marker `cc-app-content`，惰性挂在 router-view 包裹容器上）：`margin-top` 让出条高 + `height` 定为视口减条高 + `overflow-y:auto`——滚动从 document 收进标题栏下方的容器，滚动条不再贯穿标题栏（Windows 上 document 滚动条的上箭头会被系统窗口控件盖住不可点），容器内 sticky 元素天然锚到标题栏下缘。
+- **body 兜底**：`overflow:hidden` + `min-height:0`——滚动已全部收进容器、文档永不滚；min-height 必须归零，否则容器塌缩到 body 外缘的条高 margin 叠加全局 `min-height:100vh` 会留下一条高的文档溢出（overflow:hidden 挡不住 focus/程序式滚动）。
+- **满高根**：覆盖 `min-h-screen` / `h-dvh-safe` 工具类本身 → 自动覆盖当前+未来所有满高根，无需逐页枚举（闭集枚举不再是脆弱点；`h-dvh-safe` 的 Capacitor 分支在 Electron 下不渲染、互不干扰）。覆盖值必须恒等于容器高（视口减条高）：定高页（如 ChatPage 根）恰好填满容器、不出第二根滚动条。
+- **侧边栏**（marker `cc-desktop-sidebar`）：sticky 锚点已是容器顶=标题栏下缘，`top:0`；高度减条高。
+- **toaster 避让**（marker `cc-toaster-viewport`）：top 偏移条高 + 1rem（保留 Nuxt UI 默认 `top-4` 的 16px 视觉间距；toast teleport 到 body、仍是 html 后代，作用域规则能命中）。
+- 三个**惰性 marker 类**（`cc-app-content` / `cc-desktop-sidebar` / `cc-toaster-viewport`）是因为这三处要调 `margin`/`overflow`/`top`、无法靠覆盖通用工具类精确命中；marker 在 web 上无任何作用域规则匹配，纯惰性。
 
 ### 5.4 顶部浮层避让（自定义壳模式必做）
 
@@ -192,11 +177,11 @@ html.cc-electron-custom .cc-toaster-viewport { top: calc(var(--cc-titlebar-h) + 
 - `ElectronTitleBar.vue` 组件测：`isFullScreen` 真时不渲染、否则渲染且具 `app-region:drag`（本组件不再收 `custom` prop——父级 `custom` gate 由 App.vue 测覆盖：`custom=false` 时根本不挂出 `<ElectronTitleBar>`）；品牌分支：`platform='win32'` 渲染 logo+产品名且尺寸间距类对齐侧边栏图标列（`size-6` / `ml-4`=16px / `gap-3` / `text-sm`），`darwin`/缺省不渲染品牌。
 - **App.vue 浏览器路径回归测（主目标保护，关键）**：`electronAPI` undefined（浏览器）时 mounted **不抛、不挂 `cc-electron-custom` 类、不订阅 `onFullScreenChange`**——锁住 `if(!custom)return` 收口。
 - **App.vue 首帧同步（M-1）**：把 `getFullScreen` mock 成未决 promise，断言 custom 下 mounted 返回时 `documentElement` 已挂 `cc-electron-custom` 类（锁"同步先挂、异步只纠正全屏"）。
-- 全屏：`isFullScreen` 初值 false；maximize（非原生全屏）不摘类；当前态经 `getFullScreen()`（非缓存）；`primed` 后实时事件不被陈旧 getter 回填覆盖。
+- 全屏：`isFullScreen` 初值 false；类常驻不摘——进全屏只置 inline 变量 `--cc-titlebar-h:0px`、退全屏移除变量（回落作用域常量）；maximize（非原生全屏）不动变量；当前态经 `getFullScreen()`（非缓存）；`primed` 后实时事件不被陈旧 getter 回填覆盖。
 - `showSidebarBrand` 平台门控回归锁（v1.1：Windows Electron 隐藏+`pt-2` 补偿；web / macOS Electron 保留、无 `pt-2`）。
-- **生命周期/降级补项**：mounted 不跳过 `initResize`、`beforeUnmount` 调 `destroyResize` 且摘掉 `cc-electron-custom` 根类；`getFullScreen()` reject 时不抛、不影响挂类；`setTitleBarOverlay` reject 被 `.catch` 吞掉、不影响 `.dark`；preload 精确解析 `--cc-titlebar-custom=1`（无此 arg → falsy）；订阅 `onFullScreenChange` 早于 `getFullScreen()`。
+- **生命周期/降级补项**：mounted 不跳过 `initResize`、`beforeUnmount` 调 `destroyResize` 且摘掉 `cc-electron-custom` 根类、清掉 inline 变量 `--cc-titlebar-h`；`getFullScreen()` reject 时不抛、不影响挂类；`setTitleBarOverlay` reject 被 `.catch` 吞掉、不影响 `.dark`；preload 精确解析 `--cc-titlebar-custom=1`（无此 arg → falsy）；订阅 `onFullScreenChange` 早于 `getFullScreen()`。
 - **DOM 回归（主目标，配合 §3 精确表述）**：浏览器/Capacitor 下 marker/wrapper 节点虽新增但不改布局——补一条各路由 DOM/layout（或关键容器结构）回归，锁住「惰性 marker 不影响主目标布局」。
-- E2E：浏览器里 `titleBar.custom` 恒 falsy、不挂类，故标题栏条 E2E 测不到（靠组件/单测）。
+- E2E：浏览器里 `titleBar.custom` 恒 falsy、不挂类，故标题栏条本身 E2E 测不到（靠组件/单测）；但作用域 CSS 几何可在 e2e 里 evaluate 手动挂类/置 inline 变量模拟（容器滚动、侧栏锚定、全屏往返布局退化+滚动位保留、浏览器形态不泄漏等，见 `e2e/electron-layout.e2e.spec.js`）。
 - **打包壳冒烟（发布门禁，非单测能替代）**：mac/Windows 打包壳截图验 reload、全屏中 reload、`activate` 重建窗口、modal/popover/select/toast 不被条遮（slideover/drawer/tooltip 当前项目未用，引入时一并验）、首帧不压内容——单测只能证明 mounted 返回时类已挂，证不了打包壳真实首帧。
 
 ## 11. 前提清单
@@ -222,7 +207,7 @@ html.cc-electron-custom .cc-toaster-viewport { top: calc(var(--cc-titlebar-h) + 
 ## 12. 实施顺序
 
 1. 壳子侧：`electron/window-chrome.js`（纯函数）+ `main.js` 据其设窗口选项并经 `additionalArguments` 下发 `custom` + preload `titleBar`/`setTitleBarOverlay`/`onFullScreenChange`/`getFullScreen` + ipc 两个 handler。（先有信号）
-2. Web 侧：`ElectronTitleBar` + App.vue 挂载逻辑（**严格按 §5.2 的收口/同步纪律**：`window.electronAPI` 收口 + `this.custom=true` + 抽出 `initElectronTitlebar()`（`initResize` 不跳过）→ 同步挂类 → 同步订阅 `onFullScreenChange` → `getFullScreen()` 异步纠正全屏 → 同步 watcher 不 defer → 卸载摘根类，全部并入既有钩子；`<ElectronTitleBar>` 由父级 `v-if="custom"` 门控、wrapper 为纯空壳）+ §5.3 作用域 CSS（含三个惰性 marker：router-view 包裹 / 侧边栏 / toaster 视口）+ §5.4 条 `z-[60]`（不碰浮层 z）与 toaster 偏移 + §6 主题同步（WCO 色，light=`#f1f5f9` 钉死）+ §7 `showSidebarBrand` 简化。
+2. Web 侧：`ElectronTitleBar` + App.vue 挂载逻辑（**严格按 §5.2 的收口/同步纪律**：`window.electronAPI` 收口 + `this.custom=true` + 抽出 `initElectronTitlebar()`（`initResize` 不跳过）→ 同步挂类（常驻） → 同步订阅 `onFullScreenChange` → `getFullScreen()` 异步纠正全屏 → 全屏走同步 watcher 只动 inline 变量、不摘类、不 defer → 卸载摘根类+清 inline 变量，全部并入既有钩子；`<ElectronTitleBar>` 由父级 `v-if="custom"` 门控、wrapper 为纯空壳）+ §5.3 作用域 CSS（含三个惰性 marker：router-view 包裹 / 侧边栏 / toaster 视口）+ §5.4 条 `z-[60]`（不碰浮层 z）与 toaster 偏移 + §6 主题同步（WCO 色，light=`#f1f5f9` 钉死）+ §7 `showSidebarBrand` 简化。
 3. 单测（尤其 **App.vue 浏览器路径不挂类不抛**、M-1 首帧同步）+ mac 实机验 + `pnpm check && pnpm test`。
 4. 发布：**先上线并验证新 web、`latest*.yml` 最后才传**（§9），过 §8 的 Windows WCO 硬门禁。
    - **需 changeset**：改动落在 `ui/`（`src/` 标题栏组件/挂载逻辑/作用域 CSS + `electron/` 壳子码），均 `@coclaw/ui` 包行为变更（一条 changeset 同时覆盖壳子改动，是已定调整）。

@@ -38,6 +38,11 @@ test('should render title', () => {
 	expect(wrapper.find('h1').text()).toBe('我的页面');
 });
 
+test('should expose mobile-page-header testid on root (E2E sticky anchor)', () => {
+	const wrapper = createWrapper();
+	expect(wrapper.find('header').attributes('data-testid')).toBe('mobile-page-header');
+});
+
 test('should render back button', () => {
 	const wrapper = createWrapper();
 	const btn = wrapper.find('button');

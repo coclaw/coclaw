@@ -50,18 +50,22 @@ function mountApp() {
 
 const root = () => document.documentElement;
 const hasScopeClass = () => root().classList.contains('cc-electron-custom');
+// 全屏态驱动的 inline CSS 变量（未设置时返回空串）
+const inlineTitlebarH = () => root().style.getPropertyValue('--cc-titlebar-h');
 
 // 排干所有微任务（getFullScreen 的 Promise.resolve(p).then 链需多个 tick）：setTimeout(0) 宏任务在微任务全清后才跑
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
 	root().classList.remove('cc-electron-custom');
+	root().style.removeProperty('--cc-titlebar-h');
 	delete window.electronAPI;
 });
 
 afterEach(() => {
 	delete window.electronAPI;
 	root().classList.remove('cc-electron-custom');
+	root().style.removeProperty('--cc-titlebar-h');
 });
 
 describe('App.vue 浏览器路径回归（主目标保护）', () => {
@@ -141,38 +145,42 @@ describe('App.vue 自定义壳挂载时序（§5.2）', () => {
 		expect(wrapper.find('.ettb-stub').attributes('data-platform')).toBe('');
 	});
 
-	test('全屏事件：enter 摘类（条收 isFullScreen=true），leave 复原', async () => {
+	test('全屏事件：enter 类保留 + inline 变量置 0（条收 isFullScreen=true），leave 变量移除', async () => {
 		let cb;
 		const onFullScreenChange = vi.fn((fn) => { cb = fn; return () => {}; });
 		stubCustomShell({ onFullScreenChange });
 		const w = mountApp();
 		expect(hasScopeClass()).toBe(true);
+		expect(inlineTitlebarH()).toBe('');
 		await w.vm.$nextTick();
 		expect(w.find('.ettb-stub').attributes('data-fs')).toBe('false');
 
-		// 进入全屏 → 摘类、prop 翻 true
+		// 进入全屏 → 类保留（滚动容器身份不变）、变量置 0、prop 翻 true
 		cb(true);
 		await w.vm.$nextTick();
-		expect(hasScopeClass()).toBe(false);
+		expect(hasScopeClass()).toBe(true);
+		expect(inlineTitlebarH()).toBe('0px');
 		expect(w.find('.ettb-stub').attributes('data-fs')).toBe('true');
 
-		// 离开全屏 → 复原
+		// 离开全屏 → inline 变量移除（回落作用域常量 38px）
 		cb(false);
 		await w.vm.$nextTick();
 		expect(hasScopeClass()).toBe(true);
+		expect(inlineTitlebarH()).toBe('');
 		expect(w.find('.ettb-stub').attributes('data-fs')).toBe('false');
 	});
 
-	test('maximize（非原生全屏，不发 fullscreen 事件）：getFullScreen(false) 后类仍保留', async () => {
+	test('maximize（非原生全屏，不发 fullscreen 事件）：getFullScreen(false) 后类仍保留、变量未置 0', async () => {
 		const getFullScreen = vi.fn(() => Promise.resolve(false));
 		stubCustomShell({ getFullScreen });
 		const w = mountApp();
 		await flush();
 		await w.vm.$nextTick();
 		expect(hasScopeClass()).toBe(true);
+		expect(inlineTitlebarH()).toBe('');
 	});
 
-	test('冷启即全屏：无实时事件时 getFullScreen(true) 纠正为全屏并摘类', async () => {
+	test('冷启即全屏：无实时事件时 getFullScreen(true) 纠正为全屏（类保留 + 变量置 0）', async () => {
 		const getFullScreen = vi.fn(() => Promise.resolve(true));
 		stubCustomShell({ getFullScreen });
 		const w = mountApp();
@@ -180,7 +188,8 @@ describe('App.vue 自定义壳挂载时序（§5.2）', () => {
 		expect(hasScopeClass()).toBe(true);
 		await flush();
 		await w.vm.$nextTick();
-		expect(hasScopeClass()).toBe(false);
+		expect(hasScopeClass()).toBe(true);
+		expect(inlineTitlebarH()).toBe('0px');
 		expect(w.vm.isFullScreen).toBe(true);
 	});
 
@@ -192,10 +201,11 @@ describe('App.vue 自定义壳挂载时序（§5.2）', () => {
 		stubCustomShell({ onFullScreenChange, getFullScreen });
 		const w = mountApp();
 
-		// 实时事件先到：进入全屏 → primed 置位、摘类
+		// 实时事件先到：进入全屏 → primed 置位、变量置 0（类保留）
 		cb(true);
 		await w.vm.$nextTick();
-		expect(hasScopeClass()).toBe(false);
+		expect(hasScopeClass()).toBe(true);
+		expect(inlineTitlebarH()).toBe('0px');
 		expect(w.vm.isFullScreen).toBe(true);
 
 		// getter 迟到 resolve(false)（陈旧）——primed 已置位，必须被忽略
@@ -203,7 +213,7 @@ describe('App.vue 自定义壳挂载时序（§5.2）', () => {
 		await flush();
 		await w.vm.$nextTick();
 		expect(w.vm.isFullScreen).toBe(true);
-		expect(hasScopeClass()).toBe(false);
+		expect(inlineTitlebarH()).toBe('0px');
 	});
 
 	test('getFullScreen reject：不抛、不影响已挂的类', async () => {
@@ -216,17 +226,24 @@ describe('App.vue 自定义壳挂载时序（§5.2）', () => {
 		await w.vm.$nextTick();
 		// reject 被 .catch 吞掉，类不受影响
 		expect(hasScopeClass()).toBe(true);
+		expect(inlineTitlebarH()).toBe('');
 	});
 
-	test('beforeUnmount：调 destroyResize、退订 onFullScreenChange、摘掉根类', () => {
+	test('beforeUnmount：调 destroyResize、退订 onFullScreenChange、摘掉根类与 inline 变量', async () => {
 		const unsub = vi.fn();
-		const onFullScreenChange = vi.fn(() => unsub);
+		let cb;
+		const onFullScreenChange = vi.fn((fn) => { cb = fn; return unsub; });
 		stubCustomShell({ onFullScreenChange });
 		const w = mountApp();
 		expect(hasScopeClass()).toBe(true);
+		// 全屏态下卸载：inline 变量必须一并清掉，防 HMR / 重挂残留
+		cb(true);
+		await w.vm.$nextTick();
+		expect(inlineTitlebarH()).toBe('0px');
 		w.unmount();
 		expect(uiStoreMock.destroyResize).toHaveBeenCalledTimes(1);
 		expect(unsub).toHaveBeenCalledTimes(1);
 		expect(hasScopeClass()).toBe(false);
+		expect(inlineTitlebarH()).toBe('');
 	});
 });

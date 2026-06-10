@@ -31,6 +31,18 @@
 }
 
 /*
+ * color-scheme：告知浏览器当前明暗主题，让原生 UI（滚动条、表单控件、autofill 配色等）跟随。
+ * 缺它时 Chromium 在暗色主题下仍画亮色滚动条（Electron 暗色下白色滚动条的根因）。
+ * .dark 类由 theme-mode.js 挂在 <html> 上，与下方语义色变量同一开关。
+ */
+:root {
+	color-scheme: light;
+}
+.dark {
+	color-scheme: dark;
+}
+
+/*
  * dvh 安全回退：不支持 dvh 的浏览器回退到 vh
  * Capacitor 壳内无地址栏，vh === dvh，不受影响
  */
@@ -112,19 +124,41 @@ body {
 }
 
 /*
- * Electron 自定义标题栏作用域（设计稿 docs/designs/electron-custom-titlebar.md §5.3）
+ * Electron 自定义标题栏作用域（设计稿 docs/designs/electron-custom-titlebar.md）
  * 全部挂在 html.cc-electron-custom 之下；web / Capacitor 永不挂此类 → 以下规则对它们完全不存在、零脆弱面。
  * 写成不分层（非 @layer）的 author 规则，优先级高于 Tailwind 的 @layer utilities，能稳定盖过 .min-h-screen/.h-dvh-safe；
  * 禁止 !important / Tailwind important 模式（会与作用域覆盖互相打架）。
  */
 html.cc-electron-custom {
-	--cc-titlebar-h: 38px; /* 作用域内常量；web 看不到、无 IACVT 风险 */
+	/* 作用域内常量；web 看不到、无 IACVT 风险。全屏时由 App.vue 以 inline style 把本变量置 0（类常驻不摘），calc 规则整体退化为基线布局、滚动容器身份不变、滚动位保留 */
+	--cc-titlebar-h: 38px;
 }
-/* 内容区让出条高（marker，惰性挂在 router-view 包裹容器上） */
+/*
+ * 内容滚动容器（marker，惰性挂在 router-view 包裹容器上）：
+ * 滚动从 document 收进标题栏下方的容器——滚动条不再贯穿标题栏（Windows 上滚动条
+ * 上箭头会被系统窗口控件盖住不可点），且容器内 sticky 元素天然锚到标题栏下缘。
+ * overflow-x 维持原 body overflow-x:hidden 的横向裁剪行为。
+ */
 html.cc-electron-custom .cc-app-content {
-	padding-top: var(--cc-titlebar-h);
+	margin-top: var(--cc-titlebar-h);
+	height: calc(100vh - var(--cc-titlebar-h));
+	overflow-y: auto;
+	overflow-x: hidden;
 }
-/* 满高根：覆盖工具类本身 → 自动覆盖当前+未来所有用到它们的根，无需逐页改 */
+/*
+ * 兜底：滚动已全部收进 .cc-app-content，文档永不滚。
+ * min-height 必须归零：容器的 38px margin 会塌缩到 body 外缘，叠加全局 min-height:100vh
+ * 让文档比视口高 38px——overflow:hidden 挡不住 focus/程序式滚动，归零后文档零溢出。
+ */
+html.cc-electron-custom body {
+	overflow: hidden;
+	min-height: 0;
+}
+/*
+ * 满高根：覆盖工具类本身 → 自动覆盖当前+未来所有用到它们的根，无需逐页改。
+ * 两值必须恒等于 .cc-app-content 容器高 calc(100vh - 条高)：定高页（如 ChatPage
+ * 根 h-dvh-safe）恰好填满容器 → 容器无溢出、不出第二根滚动条。
+ */
 html.cc-electron-custom .min-h-screen {
 	min-height: calc(100vh - var(--cc-titlebar-h));
 }
@@ -136,9 +170,9 @@ html.cc-electron-custom .h-dvh-safe {
 		height: calc(100dvh - var(--cc-titlebar-h));
 	}
 }
-/* 侧边栏：sticky 顶边下移 + 高度减条（marker，惰性挂在侧边栏根上） */
+/* 侧边栏（marker，惰性挂在侧边栏根上）：sticky 锚点已是容器顶=标题栏下缘，top 归零；高度减条 */
 html.cc-electron-custom .cc-desktop-sidebar {
-	top: var(--cc-titlebar-h);
+	top: 0;
 	height: calc(100vh - var(--cc-titlebar-h));
 }
 /* 顶部浮层避让（toast teleport 到 body、仍是 html 后代，故能命中；+1rem 保留 Nuxt UI 默认 top-4 的 16px 视觉间距） */

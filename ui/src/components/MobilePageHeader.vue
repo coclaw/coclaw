@@ -1,5 +1,5 @@
 <template>
-	<header class="sticky top-0 z-10 flex items-center gap-1 border-b border-default bg-default px-1 py-[3px] pt-[3px] md:hidden">
+	<header data-testid="mobile-page-header" class="sticky top-0 z-10 flex items-center gap-1 border-b border-default bg-default px-1 py-[3px] pt-[3px] md:hidden">
 		<UButton
 			size="xl"
 			variant="ghost"
