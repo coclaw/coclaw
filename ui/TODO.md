@@ -13,7 +13,7 @@
 - 修法方向（任一）：在 `main.css` 的 `html.cc-electron-custom` 作用域给弹窗 overlay/content 让出 38px 顶距（top inset / padding-top）；或把色带 z 压到弹窗之下（但弹窗无 z-index，按 DOM 顺序决胜不稳，更稳是给弹窗在该作用域显式抬 z 或加 inset）。配套补回归：高弹窗 + 自定义标题栏下断言 header/close 不落进色带区。
 - 范围：仅 UI（`ElectronTitleBar.vue` / `main.css` / 受影响弹窗或全局 modal 主题）。
 
-## Electron 自定义标题栏的几个低优项（窄屏移动 header / toaster 安全区重复 / HMR 监听未注销 / 红绿灯未居中）
+## Electron 自定义标题栏的几个低优项（窄屏移动 header / toaster 安全区重复 / HMR 监听未注销 / 页面 zoom 与系统按钮错位）
 
 **发现日期**：2026-06-10
 **来源**：同上发布前 review（renderer + 主进程维度）
@@ -21,8 +21,8 @@
 1. **窄于 md(768px) 时移动 header 钻到色带下**：`MobilePageHeader`（`sticky top-0 z-10`）在自定义模式下任何宽度都渲染；内容滚动后 sticky header 升到 top:0，落在 z-60 色带与拖动区之下，返回键不可点。仅"桌面窗口拖到手机宽"的边角，但属真功能缺失。
 2. **toaster 顶距重复叠加 safe-area**：`main.css` `.cc-toaster-viewport` 用 `top: calc(--cc-titlebar-h + 1rem + safe-area-inset-top)`，而 viewport 已带 `mt-[safe-area-inset-top]`（`vite.config.js`）。桌面端 safe-area=0 故无害，仅冗余、属死代码。
 3. **主题 matchMedia 监听未注销**：`theme-mode.js` 的 `auto` 跟随系统监听只有模块级 `initialized` 守重复注册；Vite HMR 模块替换会重置 `initialized` 而留下旧监听。仅 dev-HMR 受影响，生产 boot-once 干净。
-4. **Mac 红绿灯在加高标题栏里未竖直居中**：`main.js` 用 `titleBarStyle:'hidden'` + 38px 带但未设 `trafficLightPosition`，红绿灯停在默认内距、可能未居中；纯观感，真机一瞥即可定。
-（浅色主题启动闪一下深色背景 `backgroundColor:'#202122'` 属已知接受取舍，`window-chrome.js` 已注明，不另登记。）
+4. **页面 zoom（Cmd+/-）下色带与系统按钮区纵向错位**（2026-06-10 红绿灯居中修复时发现，预存）：应用菜单开着 `zoomIn`/`zoomOut`，而 mac `trafficLightPosition` 按 point 固定、Windows WCO `height:38` 按 DIP 固定，38px CSS 色带却随 zoom 缩放——zoom≠100% 时按钮相对色带偏移（mac 偏上，Windows 按钮区矮于色带）。显示器 DPI/Retina 缩放**无此问题**（CSS px 与原生坐标同系等比缩放）。修法方向：监听 zoom 变化按 zoomFactor 重算 `setWindowButtonPosition` / `setTitleBarOverlay({height})`，或收掉 zoom 菜单角色。用户主动 zoom 才触发、纯观感，暂不修。
+（浅色主题启动闪一下深色背景 `backgroundColor:'#202122'` 属已知接受取舍，`window-chrome.js` 已注明，不另登记。原第 4 条"Mac 红绿灯未竖直居中"已由 `trafficLightPosition` 垂直居中修复。）
 
 ## Electron 托盘"退出"退不掉（带活跃 RTC 连接时）— fork 的看门狗修法已实机证伪并 revert
 
