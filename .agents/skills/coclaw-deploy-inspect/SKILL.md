@@ -45,7 +45,7 @@ ssh <host> 'cd ~/coclaw && docker compose logs --since=<DURATION> --no-color -t 
 
 关键参数：
 - `--since=20m` / `--since=2h` 限定窗口，避免一次拖满。
-- `-t` 打上 server 容器侧时间戳（UTC, RFC3339Nano）——server **接收**到该行的时刻。注意区分行里内嵌的 `[ts=<ISO_UTC>]` 字段：那是 UI/plugin 端 **事件发生** 时刻（也是 UTC）。两个 ts 都是 UTC，差值即跨端时延，可估链路健康。agent 按时序梳理日志时优先用 `[ts=...]`（事件先后），用 docker `-t` 当辅助。
+- `-t` 打上 server 容器侧**接收**时间戳；它与行内 `[ts=...]`（端侧**事件发生**时刻）的区分与用法见第 5 节"时间线拼接要点"。
 - `--no-color` 否则 ANSI 会污染 grep。
 - `2>&1` compose logs 会把 container stderr 也混进来（很多插件侧是走 stderr 的）。
 
@@ -53,20 +53,7 @@ ssh <host> 'cd ~/coclaw && docker compose logs --since=<DURATION> --no-color -t 
 
 1. **别 `docker compose logs -f`**：会阻塞 SSH；用 `--since` 拉快照。
 2. **grep 要 binary-safe**：日志混有二进制字节，普通 `grep` 会返回 `Binary file (standard input) matches` 然后丢弃行。**必须 `LC_ALL=C grep -a`**。
-3. **先 dump 再过滤**：把原始日志落到远端 `/tmp/srv.log`，后面多次 grep 复用。不要每次都重新 `docker compose logs`。
-
-### 典型用法
-
-```bash
-# 1) 先落盘
-ssh <host> 'cd ~/coclaw && docker compose logs --since=25m --no-color -t server > /tmp/srv.log 2>&1; wc -l /tmp/srv.log'
-
-# 2) 按 user / claw / connId 过滤
-ssh <host> "LC_ALL=C grep -aE '143579687452|148571708137|c_7fd224ff' /tmp/srv.log > /tmp/srv_u.log; wc -l /tmp/srv_u.log"
-
-# 3) 拉回本地看
-ssh <host> 'cat /tmp/srv_u.log'
-```
+3. **先 dump 再过滤**：把原始日志落到远端 `/tmp/srv.log`，后面多次 grep 复用。不要每次都重新 `docker compose logs`。落盘→过滤→拉回的三步模板见第 9 节"快速自检模板"。
 
 ## 4. 日志标签字典
 
@@ -150,23 +137,20 @@ ssh <host> 'cat /tmp/srv_e.log'
 `(b)` + `(c)` 已封装成 `scripts/fetch-and-filter.sh`：
 
 ```bash
-.claude/skills/coclaw-deploy-inspect/scripts/fetch-and-filter.sh <host> <since> [<regex>]
+.agents/skills/coclaw-deploy-inspect/scripts/fetch-and-filter.sh <host> <since> [<regex>]
 # 示例：./fetch-and-filter.sh im.coclaw.net 30m 'c_7fd224ff|143579687452'
 ```
 
 ### 落到本地多次复用比反复 ssh 划算
 
-跨度比较大、或要做多维度横向对照时，可以考虑先把窗口拉一份到本地，之后所有 grep 直接对本地文件。`fetch-and-filter.sh` 在传 regex 时把过滤结果 `cat` 到 stdout，重定向即可：
+多维度横向对照时，先把窗口拉一份到本地，之后所有 grep 直接对本地文件（`fetch-and-filter.sh` 传 regex 时把过滤结果输出到 stdout，重定向即可）：
 
 ```bash
-./scripts/fetch-and-filter.sh im.coclaw.net 24h '<USER_ID>|<RUN_ID>|<CLAW_A>|<CLAW_B>' \
-	> tmp/diag-window.log
-
+./scripts/fetch-and-filter.sh im.coclaw.net 24h '<USER_ID>|<RUN_ID>|<CLAW_A>' > tmp/diag-window.log
 LC_ALL=C grep -aE 'agent\.run\.|conn\.rejectPending' tmp/diag-window.log
-LC_ALL=C grep -aE 'claw\.fullInit|claw\.online'      tmp/diag-window.log
 ```
 
-什么时候值得预先落地，按手感判断——大致看排查会涉及多少个独立维度、要不要反复横向对照。窗口小、单条线索追到底的简单排查，直接 stdout 看就够了。
+是否预先落地按手感判断——看涉及几个独立维度、要不要反复横向对照；窗口小、单条线索追到底的排查，直接 stdout 看就够。
 
 剩下的就是读日志讲故事——按现象选 playbook（见下方"参考文档"）。
 

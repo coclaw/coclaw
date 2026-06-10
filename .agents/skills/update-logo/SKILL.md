@@ -19,7 +19,9 @@ description: 更新 CoClaw App logo/icon。Use when 用户上传新 logo 图片�
 
 ## 硬规则：只圆 Electron 的 .ico/.icns
 
-共享 master（`public/*`、`src/assets`、Android、iOS、Tauri、以及 Electron 的 `icon.png`/`tray-icon.png`）必须保持**方形满幅**——各 OS 自行套圆角/圆形遮罩，源图圆角会和系统遮罩叠加出双层圆角。**只有** Electron 桌面的 `build-resources/icon.ico`（Windows）和 `build-resources/icon.icns`（macOS）需要预烘圆角，由 `mask-electron-icons.py` 生成中间图后再喂给 png2icons。
+共享 master（`public/*`、`src/assets`、Android、iOS、以及 Electron 的 `icon.png`/`tray-icon*.png`）必须保持**方形满幅**——各 OS 自行套圆角/圆形遮罩，源图圆角会和系统遮罩叠加出双层圆角。**只有** Electron 桌面的 `build-resources/icon.ico`（Windows）和 `build-resources/icon.icns`（macOS）需要预烘圆角，由 `mask-electron-icons.py` 生成中间图后再喂给 png2icons。
+
+`src-tauri/` 为早期评估残留（ui/AGENTS.md 已宣告勿用），更新 logo 时**跳过**其下所有图标。
 
 ## 需要更新的文件清单
 
@@ -81,32 +83,15 @@ Android Adaptive Icon 会对前景层施加遮罩（圆形/圆角方形等），
 |---|---|---|
 | `build-resources/icon.png` | 512x512 PNG | BrowserWindow icon，**方形满幅**（不圆角） |
 | `build-resources/tray-icon.png` | 32x32 PNG | 系统托盘，方形 |
+| `build-resources/tray-icon@2x.png` | 64x64 PNG | 托盘高分屏变体（Electron 按 `@2x` 命名自动取用） |
+| `build-resources/tray-icon-unread.png` | 32x32 PNG | 托盘未读态（右上角未读角标），`ui/electron/tray.js` 引用 |
+| `build-resources/tray-icon-unread@2x.png` | 64x64 PNG | 未读态高分屏变体 |
 | `build-resources/icon.ico` | ICO | Windows 安装包/任务栏，**预烘全幅圆角矩形**（半径 22%） |
 | `build-resources/icon.icns` | ICNS | macOS app bundle，**预烘方圆贴片**（squircle n=5，贴片 80%，内容裁 bbox+4% 呼吸边、最长边填满贴片 90%） |
 
-### 5. Tauri — src-tauri/icons/
+> unread 版 = tray-icon 同图叠加未读角标，仓库无生成脚本，**需人工合成角标**（在新 tray-icon 基础上重做角标版，四个托盘文件一起换，避免新旧图标混用）。
 
-| 文件 | 尺寸 |
-|---|---|
-| `src-tauri/icons/icon.png` | 512x512 |
-| `src-tauri/icons/32x32.png` | 32x32 |
-| `src-tauri/icons/128x128.png` | 128x128 |
-| `src-tauri/icons/128x128@2x.png` | 256x256 |
-| `src-tauri/icons/tray-icon.png` | 32x32 |
-| `src-tauri/icons/icon.ico` | ICO |
-| `src-tauri/icons/icon.icns` | ICNS |
-| `src-tauri/icons/StoreLogo.png` | 50x50 |
-| `src-tauri/icons/Square30x30Logo.png` | 30x30 |
-| `src-tauri/icons/Square44x44Logo.png` | 44x44 |
-| `src-tauri/icons/Square71x71Logo.png` | 71x71 |
-| `src-tauri/icons/Square89x89Logo.png` | 89x89 |
-| `src-tauri/icons/Square107x107Logo.png` | 107x107 |
-| `src-tauri/icons/Square142x142Logo.png` | 142x142 |
-| `src-tauri/icons/Square150x150Logo.png` | 150x150 |
-| `src-tauri/icons/Square284x284Logo.png` | 284x284 |
-| `src-tauri/icons/Square310x310Logo.png` | 310x310 |
-
-### 6. iOS (Capacitor) — ios/App/App/Assets.xcassets/AppIcon.appiconset/
+### 5. iOS (Capacitor) — ios/App/App/Assets.xcassets/AppIcon.appiconset/
 
 | 文件 | 尺寸 | 说明 |
 |---|---|---|
@@ -124,7 +109,6 @@ ASSETS="ui/src/assets"
 RES="ui/android/app/src/main/res"
 IOS_ICON="ui/ios/App/App/Assets.xcassets/AppIcon.appiconset"
 BUILD="ui/build-resources"
-TAURI="ui/src-tauri/icons"
 
 # === 1. Web/PWA ===
 npx sharp-cli -i "$SRC" -o "$PUB/icon-512.png" resize 512 512
@@ -140,8 +124,8 @@ cp "$PUB/favicon-32.png" "$PUB/favicon.ico"
 npx sharp-cli -i "$SRC" -o "$ASSETS/coclaw-logo.jpg"
 
 # === 3. Android (Capacitor) ===
-# 读取自适应图标背景色
-BG=$(grep -oP '#[0-9A-Fa-f]+' "$RES/values/ic_launcher_background.xml")
+# 读取自适应图标背景色（grep -E 而非 -P，BSD/macOS grep 无 -P）
+BG=$(grep -oE '#[0-9A-Fa-f]+' "$RES/values/ic_launcher_background.xml")
 TMP="/tmp/coclaw-fg-tmp.png"
 
 for density_spec in "mdpi 48 72 18" "hdpi 72 108 27" "xhdpi 96 144 36" "xxhdpi 144 216 54" "xxxhdpi 192 288 72"; do
@@ -156,38 +140,27 @@ for density_spec in "mdpi 48 72 18" "hdpi 72 108 27" "xhdpi 96 144 36" "xxhdpi 1
 done
 rm -f "$TMP"
 
-# === 6. iOS (Capacitor) ===
+# === 5. iOS (Capacitor) ===
 npx sharp-cli -i "$SRC" -o "$IOS_ICON/AppIcon-512@2x.png" resize 1024 1024
 
 # === 4. Electron ===
 # icon.png / tray 保持方形 master（绝不圆角）
 npx sharp-cli -i "$SRC" -o "$BUILD/icon.png" resize 512 512
 npx sharp-cli -i "$SRC" -o "$BUILD/tray-icon.png" resize 32 32
+npx sharp-cli -i "$SRC" -o "$BUILD/tray-icon@2x.png" resize 64 64
+# tray-icon-unread{,@2x}.png 无脚本：人工在上面两张基础上合成未读角标后放回
 # .ico/.icns 先烘圆角中间图（win 512 圆角矩形 / mac 1024 方圆贴片），再喂 png2icons
 SKILL_DIR=".agents/skills/update-logo"
 mkdir -p /tmp/icon-build
 python3 "$SKILL_DIR/mask-electron-icons.py" "$SRC" /tmp/icon-build/win.png /tmp/icon-build/mac.png
 npx png2icons /tmp/icon-build/win.png "$BUILD/icon" -icowe -bz   # Windows 圆角 ICO
 npx png2icons /tmp/icon-build/mac.png "$BUILD/icon" -icns -bz    # macOS 方圆 ICNS
-
-# === 5. Tauri ===
-npx sharp-cli -i "$SRC" -o "$TAURI/icon.png" resize 512 512
-npx sharp-cli -i "$SRC" -o "$TAURI/32x32.png" resize 32 32
-npx sharp-cli -i "$SRC" -o "$TAURI/128x128.png" resize 128 128
-npx sharp-cli -i "$SRC" -o "$TAURI/128x128@2x.png" resize 256 256
-npx sharp-cli -i "$SRC" -o "$TAURI/tray-icon.png" resize 32 32
-npx sharp-cli -i "$SRC" -o "$TAURI/StoreLogo.png" resize 50 50
-for sq in 30 44 71 89 107 142 150 284 310; do
-  npx sharp-cli -i "$SRC" -o "$TAURI/Square${sq}x${sq}Logo.png" resize $sq $sq
-done
-npx png2icons "$SRC" "$TAURI/icon" -icowe -bz
-npx png2icons "$SRC" "$TAURI/icon" -icns -bz
 ```
 
 ## 注意事项
 
-- ICO 使用 `-icowe` 参数生成 Windows 可执行文件兼容格式（含多尺寸 BMP），避免 Electron/Tauri 打包后图标显示异常
-- Electron 的 `.ico`/`.icns` 走 `mask-electron-icons.py` 预烘圆角；其余所有输出（含 `icon.png`、Tauri、Android、iOS）保持方形满幅，**不要**把圆角中间图喂给它们（详见上方“硬规则”）
+- ICO 使用 `-icowe` 参数生成 Windows 可执行文件兼容格式（含多尺寸 BMP），避免 Electron 打包后图标显示异常
+- Electron 的 `.ico`/`.icns` 走 `mask-electron-icons.py` 预烘圆角；其余所有输出（含 `icon.png`、托盘、Android、iOS）保持方形满幅，**不要**把圆角中间图喂给它们（详见上方"硬规则"）
 - 验证圆角：用 PIL 打开生成的 `.ico`/`.icns`，检查最大尺寸帧四角 alpha 为 0（透明）
 - 更新后用 `ls -lh` 验证所有文件已生成且大小合理
 - 如新增了 logo 相关文件（如新平台或 PWA manifest 引用新尺寸），需同步更新此 skill

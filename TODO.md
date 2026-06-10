@@ -36,3 +36,8 @@
   1. Mac 原生 `brew install coturn` bind 127.0.0.1 —— 两端都在宿主、回环即达，完全绕开 colima。
   2. 本机 `server/.env` 指向远端 coturn（`TURN_DOMAIN=im.coclaw.net` / `TURN_PORT` / `TURN_SECRET` 对上远端 static-auth-secret）—— 最省事，但 dev relay 流量绕生产。
 - **红线**：别为修 mac 去改 committed 的 `deploy/compose.dev.yaml` coturn 块——mac 上 UDP 也不转发救不了，反而会破坏 Linux/WSL2 现有 `network_mode: host` 路径。
+
+## 文档引用失效：docs/README.md "Product" 段指向不存在的 docs/product/（2026-06-10，skills/commands 梳理 review 发现，预存断链）
+
+- `docs/README.md:74-82` "Product — 产品文档"段列出 7 个 `docs/product/*.md`，但 `docs/product/` 目录不存在，整段为坏指针。
+- 修复方向：查 git 史确认这些文档去向（恢复目录或更新路径），否则删除该段。

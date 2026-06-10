@@ -45,5 +45,5 @@ description: 处理 GitHub Pull Requests。Use when 用户要求处理、审查�
 
 ## 交叉引用
 
-- 涉及 bug 修复的 PR，合并后应确认对应 issue 被正确关闭（参考 handle-issues skill 的关闭策略）
+- 涉及 bug 修复的 PR，合并后应确认对应 issue 被正确关闭
 - 涉及代码改动的 PR，review 时应参考对应工作区的 instructions（ui/server/plugin 的 CLAUDE.md）

@@ -32,41 +32,23 @@ CoClaw 的发布有三种模式，按用户意图区分。**默认是模式 A**�
 
 ### 1. 确保 changeset 文件存在
 
-检查 `.changeset/` 下是否已有 `.md` 文件（不算 README.md）。没有则先创建：
-
-```markdown
----
-"@coclaw/<workspace-name>": patch | minor | major
----
-
-变更描述（英文）
-```
+检查 `.changeset/` 下是否已有 `.md` 文件（不算 README.md）；没有则先创建——文件格式、何时需要、级别规则见 `docs/versioning.md`。
 
 > **C 模式硬规则**：`.changeset/` 中只能有 `@coclaw/openclaw-coclaw` 的 changeset。如有非插件的（ui/server），先 `mv .changeset/<non-plugin>.md /tmp/` 隔离，npm 发布完再移回。
 
 ### 2. 检查 changeset status
 
-```bash
-pnpm changeset:status
-```
-
-确认将要 bump 的工作区与级别。A/B 模式下每个工作区的级别要符合预期；C 模式下应只看到 `@coclaw/openclaw-coclaw`。**向用户确认后再继续**。
+`pnpm changeset:status` 确认将要 bump 的工作区与级别：A/B 模式下每个工作区的级别要符合预期；C 模式下应只看到 `@coclaw/openclaw-coclaw`。**向用户确认后再继续**。
 
 ### 3. 消费 changeset
 
-```bash
-pnpm changeset:version
-```
-
-会做：删除消费过的 `.changeset/*.md`、更新对应工作区 `package.json` 的 version、更新 / 创建工作区 `CHANGELOG.md`。
+`pnpm changeset:version`——删除消费过的 `.changeset/*.md`、更新对应工作区 `package.json` 的 version、更新 / 创建工作区 `CHANGELOG.md`。
 
 ### 4. 同步 root 版本（A/B 必做，C 跳过）
 
 > **A/B 硬规则**：root `package.json` 的 `version` 取**所有工作区当前版本（含本次 bump 后）的最高**。changeset **不会自动同步 root**，必须手动 edit。
 
-判断方法：读取 ui / server / plugins/openclaw 当前 version，按 semver 比较取最高，写入 root `package.json`。即使 root 当前已 ≥ 最高，也要确认而非默认跳过——避免漏 bump。
-
-> **关于"取最高"的语义**：当前约定。略别扭（不对应任何具体包），但够用。未来插件发版节奏稳下来后，可能改为跟随 ui。
+判断方法：读取 ui / server / plugins/openclaw 当前 version，按 semver 比较取最高，写入 root `package.json`。即使 root 当前已 ≥ 最高，也要确认而非默认跳过——避免漏 bump。（"取最高"是当前约定，略别扭但够用；未来插件发版节奏稳定后可能改为跟随 ui。）
 
 ### 5. 提交
 
@@ -116,9 +98,7 @@ cd plugins/openclaw && pnpm release
 
 ## 模式 B：只 bump push
 
-通用 0–5 → push & tag → Release 判断。**步骤完全同 A，跳过 8A**。
-
-即使本次插件有 bump 也不发 npm——这是用户的明确意图，通常因为插件 bump 还不到要立即上 npm 的紧迫程度，留到下次 A 模式时再发。
+通用 0–5 → push & tag → Release 判断。**步骤完全同 A，跳过 8A**——即使本次插件有 bump 也不发 npm（用户的明确意图，留到下次 A 模式时再发）。
 
 > **B 后想补发 npm**（不再 bump、发当前版本）：直接 `cd plugins/openclaw && pnpm release`，相当于补做 8A。
 
@@ -126,25 +106,15 @@ cd plugins/openclaw && pnpm release
 
 ## 模式 C：紧急 npm
 
-通用 0–5（**跳过第 4 步**）→ 发 npm。**不 push、不 tag、不 Release**。
+通用 0–5（**跳过第 4 步**）→ `cd plugins/openclaw && pnpm release`。**不 push、不 tag、不 Release**。
 
-### 6C. 发布 npm
-
-```bash
-cd plugins/openclaw && pnpm release
-```
-
-### 7C. 提示用户
-
-明确告知："本地领先 origin N 个 commit，待下次 A/B 模式批量 push（包括本次的 bump commit）。"
+完成后明确告知用户："本地领先 origin N 个 commit，待下次 A/B 模式批量 push（包括本次的 bump commit）。"
 
 ---
 
 ## GitHub Release 判断规则（A/B 收尾）
 
 push 完成后按下表判断。**tag 必打，Release 视情况**。
-
-### 何时创建
 
 | 场景 | 是否创建 |
 |---|---|
@@ -153,12 +123,7 @@ push 完成后按下表判断。**tag 必打，Release 视情况**。
 | **patch bump**，含面向终端用户的**重要修复**（数据损坏、启动失败、安全等） | **Claude 判断，必要时提示用户确认** |
 | **patch bump**，普通小修 / 纯内部改动 | **不打**，累积到下次 minor |
 
-**"Claude 判断"的操作要求**：push 完成后综合评估：
-- 本次 patch 的变更规模、影响范围、是否面向终端用户
-- 距上一个已创建 Release 累积的 patch 数量与跨度（≥5 个可考虑补一个节点）
-- GitHub Releases 页面的既有节奏（`gh release list --limit 3`）
-
-→ 必要时一句话提示用户："本次是否创建 Release？理由：xxx"，等确认；明显无必要时不打扰，收尾时简述"本次 patch 未创建 Release（理由）"。
+**"Claude 判断"**：综合本次 patch 的变更规模与影响面、距上个已创建 Release 累积的 patch 数量（≥5 可考虑补一个节点）、既有节奏（`gh release list --limit 3`）；必要时一句话提示用户"本次是否创建 Release？理由：xxx"等确认，明显无必要时不打扰、收尾时简述理由。
 
 ### 创建 Release
 
@@ -169,16 +134,11 @@ gh release create v<version> \
   --notes-start-tag v<prev-release-tag>
 ```
 
-`<prev-release-tag>` 是 GitHub 上**上一个已存在的 Release 的 tag**（不是"上一个 git tag"）。用 `gh release list --limit 3` 确认。
+`<prev-release-tag>` 是 GitHub 上**上一个已存在的 Release 的 tag**（不是"上一个 git tag"），用 `gh release list --limit 3` 确认。
 
-### 新 minor 时的双 Release 操作
+### 新 minor 时的双 Release
 
-从 v0.N.x 跨入 v0.N+1.0 时，按顺序两次 create：
-
-1. 先为 v0.N 系列的**最终 patch** 创建 Release（起点为上一个已有 Release）
-2. 再为 v0.N+1.0 创建 Release（起点为第 1 步创建的 v0.N 最终 patch）
-
-两个 Release 的 notes 范围不重叠、衔接完整。
+从 v0.N.x 跨入 v0.N+1.0 时按顺序两次 create：先为 v0.N 系列的**最终 patch** 创建 Release（起点为上一个已有 Release），再为 v0.N+1.0 创建 Release（起点为前者）。两个 Release 的 notes 范围不重叠、衔接完整。
 
 ---
 
@@ -186,7 +146,6 @@ gh release create v<version> \
 
 - `@coclaw/admin` 已在 changeset config 中 ignore，不参与版本管理。
 - 发布到 npm 需要 `npm login` 已生效，如遇权限问题提示用户检查。
-- 模式 B 后若想补发当前 plugin 版本到 npm，直接 `cd plugins/openclaw && pnpm release`，不再 bump、不再 commit。
 
 ### Beta 发布（特殊场景）
 

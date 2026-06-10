@@ -43,6 +43,16 @@ pnpm changeset
 
 交互式选择受影响的包、变更级别（patch/minor/major）、描述。会在 `.changeset/` 下生成一个 markdown 文件，随代码一起提交。
 
+也可手动创建 `.changeset/<any-name>.md`，格式：
+
+```markdown
+---
+"@coclaw/<workspace-name>": patch | minor | major
+---
+
+变更描述（英文）
+```
+
 ### 何时需要 changeset
 
 - 修改了会影响包行为的代码（功能、修复、重构）→ 需要
@@ -67,15 +77,9 @@ pnpm changeset
 - `privatePackages.version: true`：private 包仍 bump 版本（部署追踪）
 - `privatePackages.tag: false`：private 包不打 git tag
 
-## 两类发布及其关系
+## 发布模式
 
-| 类型 | 触发词 | 范围 | 频率 |
-|---|---|---|---|
-| npm 发布 | "发布"、"release" | 仅 `@coclaw/openclaw-coclaw` | 高（每次插件变更后） |
-| GitHub Release | "GitHub 发布"、"项目发布" | 整体项目里程碑 | 低（重要节点） |
-
-- 两者独立：可以只发 npm 不做 GitHub Release，反之亦然
-- 默认"发布"仅指 npm 发布
+发布的触发词语义与三种模式（完整发布 / 只 bump push / 紧急 npm）以 `/release` skill 为权威：不带限定的"发布"默认走完整发布（bump → push + tag → 视情建 GitHub Release → 若插件本次 bump 则发 npm）。npm publish 仅涉及 `@coclaw/openclaw-coclaw`；GitHub Release 是否创建按该 skill 的判断规则，与 npm 发布相互独立。
 
 ## 版本级别默认规则
 

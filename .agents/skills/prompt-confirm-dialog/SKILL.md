@@ -10,7 +10,6 @@ CoClaw UI 中 prompt（单行文本输入）和 confirm（确认操作）对话�
 ## 共享样式常量
 
 ```js
-// ui/src/constants/prompt-modal-ui.js
 import { promptModalUi } from '../constants/prompt-modal-ui.js';
 ```
 
@@ -22,10 +21,7 @@ setup() {
 },
 ```
 
-该常量的作用：
-- **缩小宽度**：`max-w-sm`（384px），适合轻量对话框，避免默认 `max-w-lg` 过宽
-- **去掉分割线**：`divide-y-0` 消除 header / body / footer 之间的 `divide-y`
-- **统一间距**：不区分 `sm` 断点，移动端与桌面端一致
+常量的具体值与设计意图见源文件 `ui/src/constants/prompt-modal-ui.js`（JSDoc 注释即文档）：缩窄宽度、去分割线、header 留呼吸感，仅作用于套用本覆盖的轻量弹窗。现有用法 grep `promptModalUi` 即得。
 
 ## Confirm 对话框模板
 
@@ -48,8 +44,6 @@ setup() {
 要点：
 - 标题通过 `:title` prop 放在 header（默认左对齐）
 - 描述文本放在 `#body`，不使用 `:description` prop（后者会挤在 header 中）
-- 破坏性操作的确认按钮用 `color="error"`
-- 非破坏性操作的确认按钮用默认 primary 色
 
 ## Prompt 对话框模板
 
@@ -77,20 +71,12 @@ setup() {
 
 要点：
 - `UInput` 必须加 `class="w-full"` 撑满宽度
-- `autofocus` 让输入框自动获焦
-- `@keydown.enter` 支持回车确认
+- `autofocus` 自动获焦；`@keydown.enter` 支持回车确认
 - 确认按钮在输入为空时 `:disabled`
 
-## Footer 按钮规范
+## Footer 按钮规范（两类模板通用）
 
 - 按钮区域使用 `<div class="flex w-full justify-end gap-2">` 包裹，右对齐
 - 取消按钮：`variant="ghost" color="neutral"`
 - 确认按钮：默认 primary 色，破坏性操作用 `color="error"`
 - 支持 `:loading` 状态防止重复提交
-
-## 现有使用示例
-
-| 文件 | 用途 |
-|------|------|
-| `ui/src/components/TopicItemActions.vue` | Topic 重命名（prompt）+ 删除确认（confirm） |
-| `ui/src/components/user/UserProfilePanel.vue` | 昵称编辑（prompt） |

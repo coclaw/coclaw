@@ -153,7 +153,7 @@
 - 代码改动涉及包行为变更时，需执行 `pnpm changeset` 声明变更，将生成的 `.changeset/*.md` 随代码一起提交
 - 仅改测试/文档/CI 时不需要 changeset
 - 版本级别默认规则：bug 修复/小调整 → patch；新功能 → minor。检测到破坏性变更时提示用户确认级别（开发阶段通常仍选 minor）。用户明确指定时以用户为准
-- 发布流程使用 `/release` skill。默认"发布"仅指 npm 发布（plugins/openclaw），用户明确说"GitHub 发布"时才额外创建 GitHub Release
+- 发布流程使用 `/release` skill。不带限定的"发布"默认走完整发布（bump → push + tag → 视情建 Release → 若插件本次 bump 则发 npm）；模式细分与触发词语义以该 skill 为准
 - 发布相关的描述文本（changeset 描述、CHANGELOG、release notes、`gh release` title/body 等）一律用英语
 
 ## 移动端与桌面端

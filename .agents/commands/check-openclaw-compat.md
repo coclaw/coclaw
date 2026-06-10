@@ -1,4 +1,5 @@
 ---
+description: 扫描 openclaw-repo/ 在 baseline 之后的上游破坏性变更（重点保自动升级链路），发新版前必跑；只读、出报告、跑完推进 baseline
 disable-model-invocation: true
 ---
 
@@ -50,6 +51,8 @@ baseline-checked-at: 2026-05-07
 4. 影响 CLI / 配置文件 schema 的变更
 5. 影响外围（sessions、transcript 等只读路径）的变更
 
+> 锚点写法约定：上游迭代快，**不写行号**，只写"文件路径 + 符号名 / grep 关键词"；文件本身也可能搬家，找不到时先 grep 符号再下结论。
+
 ## 必查清单（每次跑都要过一遍）
 
 > 这是历史踩点的台账。代码会演进，新风险可能不在列——发现新类别**必须追加**到本清单（见"演进规则"）。
@@ -60,7 +63,7 @@ baseline-checked-at: 2026-05-07
 - 检查：
   - install records 文件路径是否变化
   - records 字段名 / schema 是否变化（`source`、`sourcePath`、`installPath`、`version` 等）
-  - 我方代码里所有读 install record 的地方（`scripts/_lib.sh`、`auto-upgrade/updater.js` 的 legacy fallback）是否还能读到
+  - 我方代码里所有读 install record 的地方（`plugins/openclaw/scripts/_lib.sh`、`auto-upgrade/updater.js` 的 legacy fallback）是否还能读到
 
 ### B. 插件启动加载条件
 
@@ -78,7 +81,7 @@ baseline-checked-at: 2026-05-07
   - `runtime.logger`（pino 风格 `info/warn/error`）签名 / 方法集是否变化
   - `runtime.api` / 注册接口（`registerService`、`registerGatewayMethod`、`registerCli`、`api.on`）签名 / 行为是否变化
   - 是否新增了 deprecation 警告（grep `deprecated` / `warned`）
-- 上游锚点：`openclaw-repo/src/plugins/runtime/runtime-config.ts`、`types-core.ts`
+- 上游锚点：`openclaw-repo/src/plugins/runtime/runtime-config.ts`；类型定义 `src/plugins/types.ts`（grep `PluginRuntime`）
 
 ### D. state-dir / state-paths 解析
 
@@ -87,7 +90,7 @@ baseline-checked-at: 2026-05-07
   - state-dir 解析方式（env / profile / CLI flag 的优先级）是否变化
   - sessions / transcript 路径推导规则是否变化
   - `agents.<id>.store` / `entry.sessionFile` 等覆盖配置是否引入新分支
-- 上游锚点：`openclaw-repo/src/plugins/runtime/state-paths.ts`
+- 上游锚点：`openclaw-repo/src/plugin-sdk/state-paths.ts`（曾在 `src/plugins/runtime/` 下，已搬家——本条锚点自己就是漂移实例）
 
 ### E. gateway method / RPC 协议
 
@@ -95,14 +98,14 @@ baseline-checked-at: 2026-05-07
   - `respond` 回调的入参格式是否变化（错误响应 schema）
   - 我方注册的 method（`coclaw.*`）是否撞了新的保留前缀
   - `callGatewayMethod` 客户端协议是否变化
-- 上游锚点：`openclaw-repo/src/plugins/runtime/registration.ts` / gateway WS 协议相关文件
+- 上游锚点：`openclaw-repo/src/plugins/api-builder.ts`（grep `registerGatewayMethod`）；协议 schema 在 `openclaw-repo/packages/gateway-protocol/src/schema/`
 
 ### F. CLI 命令 / 参数
 
 - 影响 auto-upgrade worker（worker 调 `openclaw plugins install <pkg>` 等 CLI 命令）
 - 检查：
   - `openclaw plugins install/uninstall/doctor/list` 的参数 / 输出格式是否变化
-  - `openclaw gateway start/stop/restart/status` 的输出是否变化（`scripts/` 多处依赖）
+  - `openclaw gateway start/stop/restart/status` 的输出是否变化（`plugins/openclaw/scripts/` 多处依赖）
   - 是否新增了"必须传"的参数
 
 ### G. openclaw.json schema
@@ -117,8 +120,8 @@ baseline-checked-at: 2026-05-07
 - 检查：
   - `sessions.json` 索引格式
   - 单条 transcript JSONL 结构
-  - 多次 lifecycle:end / 顶层 timestamp 字段语义（已知陷阱：参考全局 memory `project_thinking_duration_format.md`、`reference_openclaw_multi_lifecycle_end.md`）
-- 上游锚点：`openclaw-repo/src/agents/runs/` 或对应目录
+  - 已知陷阱（变了会破坏 CoClaw 侧解析，重点盯）：同一 run 可能**多次**发 `lifecycle:end`，消费侧按幂等处理；"已思考时长"解析依赖 JSONL **顶层 ISO `timestamp`** 字段——事件重复语义或 timestamp 格式变更都会破坏我方功能
+- 上游锚点：sessions/transcript 代码散落多处（`src/agents/`、`src/infra/` 等）且历史上多次搬家，直接 grep `sessions.json` / `transcript` 定位
 
 ### I. 全局 Symbol / 内部 patch 点
 
@@ -132,25 +135,25 @@ baseline-checked-at: 2026-05-07
 
 ### J. plugin register 模式枚举值
 
-- **历史踩点（前瞻类）**：`api.registrationMode` 已经历过 `cli-metadata` / `discovery` / `full` 几代，未来还可能再加（如 `setup-only` / `setup-runtime` / 健康检查 / dry-run / 热重载）。我方 `index.js:135-156` 当前是**排除式白名单**——`cli-metadata` 单独走、`mode !== 'full'` early return、其余模式都注册 channel + CLI 但不起 service / RPC。任何上游新增模式都会落进"非 cli-metadata 非 full"的中间分支，跑了 channel/CLI 注册却**没起 bridge / 没装 RPC handler**，形成半残注册：channel 在但桥接没起、命令显出来但 RPC 不在
+- **历史踩点（前瞻类）**：`api.registrationMode` 已经历过 `cli-metadata` / `discovery` / `full` 几代，未来还可能再加（如 `setup-only` / 健康检查 / dry-run / 热重载）。我方 `plugins/openclaw/index.js` 的 mode 分叉（grep `registrationMode`）当前是**排除式白名单**——`cli-metadata` 单独走、`mode !== 'full'` early return、其余模式都注册 channel + CLI 但不起 service / RPC。任何上游新增模式都会落进"非 cli-metadata 非 full"的中间分支，形成**半残注册**：channel 在但桥接没起、命令显出来但 RPC 不在
 - 检查：
-  - `api.registrationMode` 上游枚举是否新增值（grep `registrationMode` / `RegistrationMode` 类型/枚举定义）
+  - `api.registrationMode` 上游枚举是否新增值（grep `registrationMode`，字符串字面量并集在 `src/plugins/types.ts`）
   - 新模式的语义（是否预期触发 service / RPC / hook）；半残注册是否会被上游健康检查识别为故障
-  - 我方 `index.js` 的 mode 分叉是否还能容纳新模式而不出半残
-- 上游锚点：`openclaw-repo/src/plugins/runtime/registration.ts` 或对应 register 入口；类型定义文件中 `registrationMode` 字符串字面量的并集
+  - 我方 mode 分叉是否还能容纳新模式而不出半残
+- 上游锚点：grep `registrationMode`（`openclaw-repo/src/plugins/loader.ts` / `api-builder.ts` / `types.ts`）
 - 修复方向（命中时）：把分叉改成**已知模式白名单**——未知模式默认 noop + warn，避免把副作用注册半截
 - 风险等级：**中** —— 上游加新模式不一定有 deprecation，半残注册的症状（channel 在但 RPC 找不到）排查链条较长
 
 ### K. 模型 catalog 来源 / 字段契约（CoClaw 自维护 minimax-portal 清单所依赖）
 
-- **背景（2026-05-27 主动核实，非事故）**：CoClaw 给扫码 provider `minimax-portal` 维护一张**硬编码**模型表写进 config（`plugins/openclaw/src/provider-auth/portal-model-catalog.js`）。曾论证能否改成"运行时从上游 catalog 白嫖、免维护、自动同步"，结论**不行**——根因落在下面几条上游契约上，**任何一条变了都该重评"是否还需自维护 / 是否还需硬写 maxTokens"**。完整调研见 `docs/openclaw-research/model-config-mental-model.md` 附录 F。
-- **K1. `DEFAULT_MODEL_MAX_TOKENS` 与缺省填充规则**：config 里模型缺 `maxTokens` 时上游归一化填 `min(DEFAULT_MODEL_MAX_TOKENS, contextWindow)`，当前 `DEFAULT_MODEL_MAX_TOKENS = 8192`（`openclaw-repo/src/config/defaults.ts:45` 定义、`:209-211` 填充）。minimax 真实 maxTokens=131072 → 不写就被截到 8192（16x）。检查：常量值 / 填充公式是否变；若上游抬高默认或改成按 provider 兜底，我方"必须硬写 maxTokens"的前提松动。
-- **K2. catalog 是否仍丢 maxTokens**：`loadModelCatalog` 把 pi-ai 条目映射成目录条目时只留 `{id,name,provider,contextWindow,contextTokens,reasoning,input,compat}`，**丢 `maxTokens`/`cost`**（`openclaw-repo/src/agents/model-catalog.ts:408-417`）。检查：若上游开始把 maxTokens 带进 catalog 输出，则"白嫖 catalog 免硬编码"变得可行 → 重评自维护方案。
-- **K3. pi-ai 出厂字典成员关系**：minimax/minimax-cn 的 M2.7 写死在 pi-ai 出厂字典（`node_modules/@mariozechner/pi-ai/dist/models.generated.js`，`"minimax"`/`"minimax-cn"` 块），无凭据也出；`minimax-portal` **不在**字典、注册时也不声明静态 models（OAuth 写 `models:[]`）→ 只能靠写 config。检查：升级后 pi-ai 字典里 minimax/minimax-cn 是否还在、M2.7 的 contextWindow/reasoning 是否变（变了我方静态表要对齐）、是否**新增了 minimax-portal**（新增则可考虑不再自写）。
-- **K4. `models.list` 的 view 契约**：合法值 `default`/`configured`/`all`（`openclaw-repo/src/gateway/protocol/schema/agents-models-skills.ts:198-205`），且 `view:'all'` 原样返回、**跳过凭据/可见性过滤**（`openclaw-repo/src/gateway/server-methods/models.ts:84-96`）——CoClaw 的 `coclaw.model.set` catalog 存在性校验依赖 `view:'all'` 能列出未配凭据的 provider。检查：view 枚举是否增删值、`view:'all'` 是否开始按凭据过滤（任一变化都会让 model-default handler 的校验误判：合法模型被判 not found）。
-- **K5. 取 catalog 的 plugin-sdk 子路径**：model-default handler 依赖 `openclaw/plugin-sdk/models-provider-runtime` 的 `buildModelsProviderData`；"白嫖"主路径会依赖 `openclaw/plugin-sdk/agent-runtime` 的 `loadModelCatalog`。检查：这两个子路径是否仍在 dist `package.json` exports、导出名是否变。
-- 上游锚点：见各条括注；pi-ai 字典 grep `@mariozechner/pi-ai/dist/models.generated.js` 的 `"minimax"` 块。
-- 风险等级：**中** —— 不影响自动升级链路，但 K1/K4 命中会让"已配模型默认输出上限"或"加模型校验"**静默错位**（症状：长回复被截到 8192、合法模型被判 not found），无 deprecation 警告、排查链条长。
+- **背景（2026-05-27 主动核实，非事故）**：CoClaw 给扫码 provider `minimax-portal` 维护一张**硬编码**模型表写进 config（`plugins/openclaw/src/provider-auth/portal-model-catalog.js`）。曾论证改成"运行时从上游 catalog 白嫖、免维护"，结论**不行**——根因是下面几条上游契约，**任何一条变了都该重评"是否还需自维护 / 是否还需硬写 maxTokens"**。完整论证见 `docs/openclaw-research/model-config-mental-model.md` 附录 F。
+- 检查要点（逐条 grep 上游核对现状是否仍成立）：
+  - **K1 缺省 maxTokens 填充**：`src/config/defaults.ts` 的 `DEFAULT_MODEL_MAX_TOKENS`（现 8192）与 `min(默认, contextWindow)` 填充公式——值或公式变宽，"必须硬写 maxTokens"的前提松动（minimax 真实 131072，不写被截 16x）
+  - **K2 catalog 仍丢 maxTokens**：`src/agents/model-catalog.ts` `loadModelCatalog` 的 pi-ai 条目映射仍不带 `maxTokens`/`cost`——若开始带，"白嫖 catalog"变可行 → 重评自维护
+  - **K3 pi-ai 出厂字典**：`node_modules/@mariozechner/pi-ai/dist/models.generated.js` 里 `minimax`/`minimax-cn` 是否还在、M2.7 参数是否变（变了我方静态表要对齐）、是否**新增 `minimax-portal`**（新增可考虑不再自写）
+  - **K4 `models.list` view 契约**：view 枚举（`packages/gateway-protocol/src/schema/agents-models-skills.ts`，现 `default`/`configured`/`all`）与 `view:'all'` **跳过凭据过滤**的语义（`src/gateway/server-methods/models.ts` 与 `models-list-result.ts`）——任一变化会让 `coclaw.model.set` 的 catalog 存在性校验误判（合法模型被判 not found）
+  - **K5 plugin-sdk 子路径**：`models-provider-runtime`（`buildModelsProviderData`）与 `agent-runtime`（`loadModelCatalog`）是否仍在 dist `package.json` exports、导出名未变
+- 风险等级：**中** —— 不影响自动升级链路，但 K1/K4 命中会让输出上限或加模型校验**静默错位**（症状：长回复被截 8192、合法模型被判 not found），无 deprecation 警告、排查链条长
 
 ## 工作流
 
@@ -183,52 +186,24 @@ baseline-checked-at: 2026-05-07
 ```
 OpenClaw 上游兼容性扫描报告
 
-─ 范围
-  baseline: <hash> (<日期>)
-  HEAD:     <hash>
-  commits:  N
-  appendix: <用户附加指令，若有>
-
+─ 范围：baseline <hash> (<日期>) → HEAD <hash>，N commits；附加指令（若有）
 ─ Blockers (N)：影响自动升级或加载
-  1. <类别> <一句话变更摘要>
-     上游锚点: <file:line 或 commit-hash>
-     我方依赖: <我方哪个文件 / 函数依赖了>
-     影响: <一句话说清后果，重点：会不会让老插件无法自升级>
-     建议修复: <一句话>
-
-─ Warnings (M)：上游变了但我方暂未依赖（仍记录，留心）
-  1. ...
-
-─ 必查清单核查
-  A. install records   [PASS / NEW-BLOCKER / NEW-WARNING]
-  B. 启动加载条件      [PASS / NEW-BLOCKER / NEW-WARNING]
-  C. runtime API       [...]
-  D. state-paths       [...]
-  E. RPC 协议          [...]
-  F. CLI               [...]
-  G. openclaw.json     [...]
-  H. sessions          [...]
-  I. 全局 Symbol       [...]
-  J. registrationMode  [...]
-  K. 模型 catalog 契约 [...]
-
-─ 新发现的踩坑模式（若有）
-  X. <新类别> <说明>
-     已追加到本命令的必查清单 ✓
-
-─ 结论
-  PASS / FAIL（二选一）
-  baseline 已推进至: <new HEAD hash> (<日期>)
+  每条含：类别 | 一句话变更摘要 | 上游锚点（文件+符号 或 commit）| 我方依赖处 |
+  影响（重点：会不会让老插件无法自升级）| 建议修复
+─ Warnings (M)：上游变了但我方暂未依赖（记录留心），格式同上
+─ 必查清单核查：A–K 逐项给 [PASS / NEW-BLOCKER / NEW-WARNING]，一项不漏
+─ 新发现的踩坑模式（若有）：说明 + 已追加到本命令必查清单 ✓
+─ 结论：PASS / FAIL（二选一）；baseline 已推进至 <new HEAD hash> (<日期>)
 ```
 
 ## 演进规则（很重要）
 
 执行过程中如果发现**不属于现有 A-K 类别**的不兼容模式：
 
-1. 把它命名（`I.` `J.` ...）并加进"必查清单"段，描述清楚：
+1. 把它命名（`L.` `M.` ...）并加进"必查清单"段，描述清楚：
    - 历史踩点（这次撞到的具体上游变更）
    - 检查要点（以后该看什么）
-   - 上游锚点（哪些文件 / 路径）
+   - 上游锚点（文件路径 + 符号 / grep 关键词，不写行号）
 2. 在报告"新发现的踩坑模式"里也列出来
 3. 这一步是**强制的**，不要"等下次再加"——下次大概率忘了
 

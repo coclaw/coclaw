@@ -58,6 +58,8 @@
 
 ## 故障排查
 
+取容器日志/远端排查运行时问题，优先使用 `.agents/skills/coclaw-deploy-inspect/` skill（含日志落盘、过滤、拉回流程）；以下为手动命令：
+
 ```bash
 # 检查服务状态
 ./scripts/deploy-check.sh

@@ -14,7 +14,7 @@
 **发现日期**：2026-06-10
 **来源**：CLAUDE.md 全面梳理 review；预存问题，与本次梳理任务无关
 
-- 现状：package.json 仍有 7 个 tauri 相关脚本（`tauri` / `tauri:*`）、`src-tauri/` 目录、`docs/designs/tauri-desktop-shell.md`，而桌面壳方案已定为 Electron（ui/AGENTS.md 已加一句定性"早期评估残留，勿再使用"）。
+- 现状：package.json 仍有 7 个 tauri 相关脚本（`tauri` / `tauri:*`）、`src-tauri/` 目录、`ui/scripts/tauri-build.sh|.ps1`（2026-06-10 skills/commands 梳理补充）、`docs/designs/tauri-desktop-shell.md`，而桌面壳方案已定为 Electron（ui/AGENTS.md 已加一句定性"早期评估残留，勿再使用"）。
 - 待决策：删除残留（脚本 + 目录 + 相关 devDependencies），或保留归档；删除需确认 `src-tauri/` 无被引用的共享资源。
 
 ## Electron 自定义标题栏盖住高弹窗顶部（拖动色带吃掉超高对话框的标题 + 关闭叉上半截）
@@ -891,3 +891,11 @@ X4 触及面比 X1 广，需要重新评估：
 ### D. 产品侧观察（非 bug，UX/健壮性，待斟酌）
 - **chat 输入受控竞态（严重度 LOW）**：`chat-textarea` 是完全受控输入（modelValue ↔ draftStore），冷加载时首条消息渲染触发的重渲染风暴若恰好压在打字窗口上，落后一拍的 draft 回写会覆盖刚敲入的字符（丢尾字符）。e2e 侧已用 `waitChatInputStable` 规避。真实用户手速很难命中亚秒窗口、丢了也会重打，故严重度低；如要根治可考虑输入防抖/非受控+受控同步/输入后校验。
 - **离线发送反馈偏弱**：业务 RPC 走 RTC DataChannel（与信令 WS 独立），断网后 DC 还续命（ICE ~3min 恢复预算），消息缓冲发出后挂起等 accept，最快反馈是 ~180s pre-acceptance 看门狗的"响应超时"——好处是不丢消息、能自动续上，代价是离线时缺即时"现在发不出去"提示，用户可能干等 3 分钟。建议斟酌在离线/信令断期间给轻量"网络不稳，消息将在重连后发出"提示。
+
+## topic-integration.spec.js 命名不符 `*.e2e.spec.js` 约定
+
+**发现日期**：2026-06-10
+**来源**：skills/commands 全面梳理 review 发现；预存问题，与本次梳理任务无关
+
+- `ui/e2e/topic-integration.spec.js` 不符合项目自声明的 `*.e2e.spec.js` 命名约定，靠 playwright `testDir: './e2e'` 默认 match 才被执行；e2e-test skill 已在命名规则处注明此例外。
+- 待决策：改名为 `topic-integration.e2e.spec.js`，或在约定处正式豁免。

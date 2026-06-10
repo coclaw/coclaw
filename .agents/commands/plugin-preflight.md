@@ -1,4 +1,5 @@
 ---
+description: openclaw-coclaw 插件 npm 发布前的只读兜底检查，围绕加载/自愈/可达性/回滚四条核心不变量出报告，不做 bump 不发布
 disable-model-invocation: true
 ---
 

@@ -1,4 +1,5 @@
 ---
+description: 手动加载 ui 与 server 两个工作区指令，供未自动加载工作区 CLAUDE.md 的场景（worktree、teammate 等）
 disable-model-invocation: true
 ---
 

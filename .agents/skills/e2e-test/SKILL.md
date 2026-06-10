@@ -25,7 +25,7 @@ pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 ## 浏览器内核（自动安装）
 
 - `run.js` 在跑测试前自动 `playwright install chromium`（幂等，已装秒过）：新机器 / CI / 升级 Playwright 后首次跑会自动补齐浏览器，无需手动安装。
-- 浏览器二进制**不走 npm registry**——`.npmrc` 的 registry 镜像对它无效。国内若安装卡在官方 CDN，另设 `PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright` 后重试（与 npm registry 是两套独立配置）。安装失败时 run.js 会打印显著提示。详见 `docs/e2e-troubleshooting.md` 卡点 8。
+- 浏览器二进制**不走 npm registry**——`.npmrc` 的 registry 镜像对它无效。国内若安装卡在官方 CDN，另设 `PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright` 后重试（与 npm registry 是两套独立配置）。安装失败时 run.js 会打印显著提示。详见 `ui/docs/e2e-troubleshooting.md` 卡点 8。
 
 ## 测试账号
 
@@ -36,21 +36,23 @@ pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 
 每个测试用例通过 title 中的 `@tag` 标注分类，配合 Playwright `--grep` 过滤使用。
 
-| 标签 | 含义 | 涉及文件 |
-|------|------|---------|
-| `@auth` | 登录/注册/认证故障 | `auth`, `register`, `api-failure-auth` |
-| `@bind` | 绑定/解绑/Claim | `claw-bind-unbind`, `claim` |
-| `@chat` | 核心聊天业务 | `chat-flow`, `chat-input`, `chat-cancel-restore`, `slash-command`, `topic-integration`, `multi-agent` |
-| `@resilience` | 异常/网络/容错 | `chat-resilience`, `network-offline`, `network-slow`, `api-failure-data` |
-| `@ui` | 导航/布局/设置/交互 | `navigation`, `about`, `user-profile-settings`, `chat-layout-debug`, `pull-refresh` |
-| `@rtc` | WebRTC 传输 | `rtc-transport` |
-| `@file` | 文件传输/浏览 | `file-transfer`, `file-browser` |
+| 标签 | 含义 |
+|------|------|
+| `@auth` | 登录/注册/认证故障 |
+| `@bind` | 绑定/解绑/Claim |
+| `@chat` | 核心聊天业务 |
+| `@resilience` | 异常/网络/容错 |
+| `@ui` | 导航/布局/设置/交互 |
+| `@rtc` | WebRTC 传输 |
+| `@file` | 文件传输/浏览 |
+
+某标签下具体有哪些测试文件，在 `ui/e2e/` 下 grep 标签即得。
 
 新增测试时须在 test title（或所属 describe title）中包含对应标签。
 
 ## 编写规范
 
-- 测试文件放在 `ui/e2e/`，命名为 `*.e2e.spec.js`
+- 测试文件放在 `ui/e2e/`，命名为 `*.e2e.spec.js`（现存例外：`topic-integration.spec.js` 不符约定但因 testDir 默认 match 仍被执行，已落账 TODO，勿据此误判它没在跑）
 - 公共 helper（登录、导航、安全输入等）统一放在 `e2e/helpers.js`，测试文件应优先从该模块导入
 - Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例
 
@@ -62,21 +64,21 @@ pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 
 - 对 `UTextarea` 等复合组件，必须使用 `e2e/helpers.js` 中的 `typeText()` 或 `pressSequentially()`
 - 对 `UInput`（如登录表单）`fill()` 目前表现正常，但不保证所有 Nuxt UI 组件均如此
-- 详见 `docs/e2e-troubleshooting.md` 卡点 3
+- 详见 `ui/docs/e2e-troubleshooting.md` 卡点 3
 
 ### headless 必须为 false
 
 `playwright.config.js` 中 `headless: false`，**禁止改为 true**。
 
-WSL2 下 Chrome（headless 和 headed + WSLg）的动画帧渲染异常，导致 Playwright actionability "stable" 检查永远无法通过，所有 `click()` 超时。详见 `docs/e2e-troubleshooting.md` 卡点 4。
+WSL2 下 Chrome（headless 和 headed + WSLg）的动画帧渲染异常，导致 Playwright actionability "stable" 检查永远无法通过，所有 `click()` 超时。详见 `ui/docs/e2e-troubleshooting.md` 卡点 4。
 
 ### webServer 命令
 
-`playwright.config.js` 中前端启动命令必须写 `pnpm dev ...`，不要写 `pnpm --filter @coclaw/ui dev ...`，否则会导致 webServer 启动异常或挂起。详见 `docs/e2e-troubleshooting.md` 卡点 1。
+`playwright.config.js` 中前端启动命令必须写 `pnpm dev ...`，不要写 `pnpm --filter @coclaw/ui dev ...`，否则会导致 webServer 启动异常或挂起。详见 `ui/docs/e2e-troubleshooting.md` 卡点 1。
 
 ### Vitest 排除 e2e
 
-`vitest.config.js` 必须排除 `e2e/**`，避免 `pnpm test` / `pnpm coverage` 误扫 Playwright 用例。详见 `docs/e2e-troubleshooting.md` 卡点 2。
+`vitest.config.js` 必须排除 `e2e/**`，避免 `pnpm test` / `pnpm coverage` 误扫 Playwright 用例。详见 `ui/docs/e2e-troubleshooting.md` 卡点 2。
 
 ## 本机可视化测试（锁屏 / 焦点 / 多屏）
 

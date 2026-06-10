@@ -21,11 +21,13 @@ description: 移动端子页面适配规范（MobilePageHeader + 路由 meta）�
 
 Props:
 - `title` (String) — 页面标题
+- `fallback` (String，默认 `'/'`) — 无浏览历史时返回按钮的跳转目标
 
 Slot:
+- 默认 slot — 自定义标题内容（替代 `title` prop）
 - `actions` — 右侧操作按钮区域（可选）
 
-返回逻辑：有浏览历史时 `router.back()`，否则 `router.replace('/')`。
+返回逻辑：走 `src/utils/nav-back.js` 的 `navBack(router, fallback)`——有上一页则 `router.back()`，否则 `router.replace(fallback)`（覆盖冷启动直进 deep link、history 栈为空的边界）。
 
 ## 路由 meta 约定
 
