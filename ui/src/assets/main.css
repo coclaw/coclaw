@@ -145,3 +145,44 @@ html.cc-electron-custom .cc-desktop-sidebar {
 html.cc-electron-custom .cc-toaster-viewport {
 	top: calc(var(--cc-titlebar-h) + 1rem + var(--safe-area-inset-top, 0px));
 }
+
+/*
+ * chrome 观感增强（同色 chrome 是主流惯例，原缺内角 hairline）：
+ * 标题栏带子加满宽底边 hairline，勾出与内容/侧栏顶的分界，配侧栏 border-r 成内角。
+ */
+html.cc-electron-custom .cc-electron-titlebar {
+	border-bottom: 1px solid var(--ui-border);
+}
+
+/*
+ * 可选增强（当前未启用，实机对比后拍板只留 hairline）：chrome 填充压深到 #161616，
+ * 与内容底色 #202122 拉开约 10/255。注意压的是海拔 token → electron 下所有 elevated 面
+ * 整体下移一档（侧栏/标题栏/聊天图片占位等；popover 用 bg-default 不受影响）。
+ * 以后想要更强的层次感，取消下段注释即可；须带 .dark 限定（同上方 .dark 块），浅色主题不适用此值。
+ */
+/*
+html.cc-electron-custom.dark {
+	--ui-bg-elevated: #161616;
+}
+*/
+
+/*
+ * 可选方案：原生全高侧栏（macOS / VS Code 式，实验截图 v3/v23 已验过布局）。取消下段注释启用。
+ * 侧栏顶到窗顶、盖住标题栏左段（z 高于带子 z-60），红绿灯落侧栏；品牌行（DesktopSidebar 的
+ * .cc-sidebar-top marker）让出红绿灯高度并保持可拖。
+ * 默认不启用：原生红绿灯 CDP 看不到、须真机眼判，且品牌行与内容 header 顶边会错位。
+ * 启用时须复验：① 弹层/遮罩仍盖过 z-61 的侧栏（此前只验过盖 z-60 带子）；
+ * ② 品牌行内若恢复折叠按钮等可点元素，须给它们 app-region: no-drag，否则点不到。
+ */
+/*
+html.cc-electron-custom .cc-desktop-sidebar {
+	top: 0;
+	height: 100vh;
+	z-index: 61;
+}
+html.cc-electron-custom .cc-sidebar-top {
+	padding-top: var(--cc-titlebar-h);
+	-webkit-app-region: drag;
+	app-region: drag;
+}
+*/

@@ -4,7 +4,8 @@
 		:style="{ width: uiStore.drawerWidth + 'px' }"
 	>
 		<div class="flex min-h-0 flex-1 flex-col">
-			<div v-if="showSidebarBrand" class="flex min-h-12 items-center gap-2 pl-3.5 pr-2 py-1">
+			<!-- cc-sidebar-top：惰性 marker，仅 main.css 内「原生全高侧栏」可选方案启用时生效；web / L 形默认下零影响 -->
+			<div v-if="showSidebarBrand" class="cc-sidebar-top flex min-h-12 items-center gap-2 pl-3.5 pr-2 py-1">
 				<img :src="logoSrc" alt="CoClaw" class="size-7 rounded" />
 				<span class="flex-1 truncate text-base font-semibold">{{ $t('layout.productName') }}</span>
 				<!-- TODO: 收起/展开 drawer 功能完成后恢复
