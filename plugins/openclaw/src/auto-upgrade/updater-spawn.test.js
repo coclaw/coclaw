@@ -48,7 +48,7 @@ test('spawnUpgradeWorker 使用正确参数调用 spawn', () => {
 	const { cmd, args, options } = calls[0];
 	assert.equal(cmd, process.execPath);
 	assert.equal(args[0], getWorkerPath());
-	// 命名参数格式
+	// 命名参数格式；未提供 baselineVersion 时不出现该 flag
 	assert.deepEqual(args.slice(1), [
 		'--pluginDir', '/tmp/plugin',
 		'--fromVersion', '1.0.0',
@@ -58,6 +58,46 @@ test('spawnUpgradeWorker 使用正确参数调用 spawn', () => {
 	]);
 	assert.equal(options.detached, true);
 	assert.equal(options.stdio, 'ignore');
+});
+
+test('spawnUpgradeWorker 提供 baselineVersion 时追加 --baselineVersion argv', () => {
+	const { spawnFn, calls } = createMockSpawn();
+	spawnUpgradeWorker({
+		pluginDir: '/tmp/plugin',
+		fromVersion: '1.0.0',
+		toVersion: '2.0.0',
+		baselineVersion: '1.0.0',
+		pluginId: 'test-plugin',
+		pkgName: '@test/pkg',
+		opts: { spawnFn },
+		logger: { info: () => {} },
+	});
+
+	const { args } = calls[0];
+	assert.deepEqual(args.slice(1), [
+		'--pluginDir', '/tmp/plugin',
+		'--fromVersion', '1.0.0',
+		'--toVersion', '2.0.0',
+		'--pluginId', 'test-plugin',
+		'--pkgName', '@test/pkg',
+		'--baselineVersion', '1.0.0',
+	]);
+});
+
+test('spawnUpgradeWorker baselineVersion 为空串时不追加 flag（基线不可得交 worker 退化）', () => {
+	const { spawnFn, calls } = createMockSpawn();
+	spawnUpgradeWorker({
+		pluginDir: '/tmp/plugin',
+		fromVersion: '1.0.0',
+		toVersion: '2.0.0',
+		baselineVersion: '',
+		pluginId: 'test-plugin',
+		pkgName: '@test/pkg',
+		opts: { spawnFn },
+		logger: { info: () => {} },
+	});
+
+	assert.ok(!calls[0].args.includes('--baselineVersion'));
 });
 
 test('spawnUpgradeWorker 调用 child.unref()', () => {

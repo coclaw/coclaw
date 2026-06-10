@@ -7,6 +7,7 @@ source "$(dirname "$0")/_lib.sh"
 
 echo "=== 从 npm 安装插件 ==="
 
+load_install_record # 主 shell 预载，子 shell 继承缓存（含下面的 get_installed_version）
 mode=$(get_install_mode)
 
 if [[ "$mode" == "npm" ]]; then

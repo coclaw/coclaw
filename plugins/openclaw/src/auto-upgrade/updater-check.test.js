@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { checkForUpdate, getLatestVersion, getPackageInfo, isNewerVersion } from './updater-check.js';
+import { checkForUpdate, getLatestVersion, getPackageInfo, inspectPluginInstall, isNewerVersion } from './updater-check.js';
 import { writeState } from './state.js';
 import { setRuntime } from '../runtime.js';
 
@@ -104,6 +104,61 @@ test('getLatestVersion - stdout 为 Buffer 时正常转字符串', async () => {
 	const fn = (_cmd, _args, _opts, cb) => cb(null, Buffer.from('2.0.0\n'));
 	const version = await getLatestVersion('@coclaw/openclaw-coclaw', { execFileFn: fn });
 	assert.equal(version, '2.0.0');
+});
+
+// --- inspectPluginInstall ---
+
+test('inspectPluginInstall - 正常解析 install 记录，execFile 选项对齐先例', async () => {
+	const calls = [];
+	const fn = (cmd, args, opts, cb) => {
+		calls.push({ cmd, args: [...args], opts });
+		cb(null, JSON.stringify({
+			plugin: { id: 'test-plugin' },
+			install: { source: 'npm', installPath: '/opt/p', version: '1.2.3' },
+		}));
+	};
+	const result = await inspectPluginInstall('test-plugin', { execFileFn: fn });
+	assert.equal(result.ok, true);
+	assert.deepEqual(result.install, { source: 'npm', installPath: '/opt/p', version: '1.2.3' });
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].cmd, 'openclaw');
+	assert.deepEqual(calls[0].args, ['plugins', 'inspect', 'test-plugin', '--json']);
+	// 30s timeout + win32 shell：对齐 npm view / worker runCmd 先例
+	assert.equal(calls[0].opts.timeout, 30_000);
+	assert.equal(calls[0].opts.shell, process.platform === 'win32');
+});
+
+test('inspectPluginInstall - JSON 中无 install 字段时返回 install=null（无安装记录）', async () => {
+	const fn = mockExecFile(null, JSON.stringify({ plugin: { id: 'test-plugin' } }));
+	const result = await inspectPluginInstall('test-plugin', { execFileFn: fn });
+	assert.deepEqual(result, { ok: true, install: null });
+});
+
+test('inspectPluginInstall - install 字段非对象时返回 install=null', async () => {
+	const fn = mockExecFile(null, JSON.stringify({ install: 'weird' }));
+	const result = await inspectPluginInstall('test-plugin', { execFileFn: fn });
+	assert.deepEqual(result, { ok: true, install: null });
+});
+
+test('inspectPluginInstall - CLI 退出非 0 时返回 ok=false（真失败）', async () => {
+	const fn = mockExecFile(new Error('exit 1'), '');
+	const result = await inspectPluginInstall('test-plugin', { execFileFn: fn });
+	assert.equal(result.ok, false);
+	assert.match(result.reason, /inspect failed.*exit 1/);
+});
+
+test('inspectPluginInstall - 输出非 JSON 时返回 ok=false（真失败）', async () => {
+	const fn = mockExecFile(null, 'Usage: openclaw plugins ...');
+	const result = await inspectPluginInstall('test-plugin', { execFileFn: fn });
+	assert.equal(result.ok, false);
+	assert.match(result.reason, /not valid JSON/);
+});
+
+test('inspectPluginInstall - stdout 为 Buffer 时正常转字符串', async () => {
+	const fn = (_cmd, _args, _opts, cb) => cb(null, Buffer.from(JSON.stringify({ install: { source: 'npm' } })));
+	const result = await inspectPluginInstall('test-plugin', { execFileFn: fn });
+	assert.equal(result.ok, true);
+	assert.equal(result.install.source, 'npm');
 });
 
 // --- isNewerVersion ---

@@ -8,7 +8,7 @@ import test from 'node:test';
 import {
 	AutoUpgradeScheduler,
 	getLockPath,
-	getPluginInstallPath,
+	isPathInside,
 	isUpgradeLocked,
 	shouldSkipAutoUpgrade,
 	writeUpgradeLock,
@@ -36,9 +36,8 @@ process.on('exit', () => {
 
 /**
  * 重置 runtime + state-dir。
- * 默认把 OPENCLAW_STATE_DIR 指向新建的临时空目录，确保 loadInstallRecord 走
- * "账本不存在 → 回落到 loadConfig" 路径，避免误读到机器上真实
- * `~/.openclaw/plugins/installs.json`（与本地 OpenClaw 共用 state-dir）。
+ * 默认把 OPENCLAW_STATE_DIR 指向新建的临时空目录，隔离 state 读写，
+ * 避免污染机器上真实的 `~/.openclaw`（与本地 OpenClaw 共用 state-dir）。
  */
 function resetEnv() {
 	setRuntime(null);
@@ -47,27 +46,14 @@ function resetEnv() {
 	process.env.OPENCLAW_STATE_DIR = dir;
 }
 
-/** 在指定 state-dir 写入新版账本文件。 */
-function writeInstallsLedger(stateDir, installRecords) {
-	const ledgerPath = nodePath.join(stateDir, 'plugins', 'installs.json');
-	nodeFs.mkdirSync(nodePath.dirname(ledgerPath), { recursive: true });
-	nodeFs.writeFileSync(ledgerPath, JSON.stringify({ version: 1, installRecords }), 'utf8');
-	return ledgerPath;
+/** 创建仅含 state.resolveStateDir 的模拟 runtime（L0 位置自检用） */
+function makeStateRuntime(stateDir) {
+	return { state: { resolveStateDir: () => stateDir } };
 }
 
-/** 创建模拟 runtime */
-function makeRuntime(installInfo = {}, pluginId = TEST_PLUGIN_ID) {
-	return {
-		config: {
-			loadConfig: () => ({
-				plugins: {
-					installs: {
-						[pluginId]: installInfo,
-					},
-				},
-			}),
-		},
-	};
+/** 标准 npm 安装记录的 inspectInstallFn mock */
+function npmInspectFn(install = { source: 'npm', installPath: '/opt/test-plugin', version: '1.0.0' }) {
+	return async () => ({ ok: true, install });
 }
 
 /** 静默 logger，记录所有日志（使用 .info 对齐 pino/gateway logger） */
@@ -87,246 +73,159 @@ function mockExecFile(err, stdout) {
 	return (_cmd, _args, _opts, cb) => cb(err, stdout);
 }
 
-// --- shouldSkipAutoUpgrade ---
+// --- isPathInside：包含谓词边角 ---
 
-test('shouldSkipAutoUpgrade - source 为 npm 时返回 false（不跳过）', () => {
+test('isPathInside - 相同目录视为在内', () => {
+	assert.equal(isPathInside('/a/b', '/a/b'), true);
+});
+
+test('isPathInside - 子路径在内', () => {
+	assert.equal(isPathInside('/a', '/a/b/c'), true);
+});
+
+test('isPathInside - ".." 前缀目录名不被误判为在外', () => {
+	// 裸 startsWith('..') 会把 "..foo" 误判成在外——钉死谓词回归锚
+	assert.equal(isPathInside('/a', '/a/..foo'), true);
+});
+
+test('isPathInside - 兄弟目录前缀不被误判为在内', () => {
+	assert.equal(isPathInside('/tmp/aaa', '/tmp/aaabbb'), false);
+});
+
+test('isPathInside - 父目录与 ".." 本身在外', () => {
+	assert.equal(isPathInside('/a/b', '/a'), false);
+});
+
+test('isPathInside - win32 跨盘符由 isAbsolute 兜住', () => {
+	assert.equal(isPathInside('C:\\state', 'D:\\pkg', nodePath.win32), false);
+});
+
+test('isPathInside - win32 大小写差异由 relative 天然归一', () => {
+	assert.equal(isPathInside('C:\\State\\dir', 'c:\\state\\dir\\pkg', nodePath.win32), true);
+});
+
+// --- shouldSkipAutoUpgrade（L0：Nix 短路 + 位置自检）---
+
+test('shouldSkipAutoUpgrade - 包根在 state-dir 内时不跳过', async () => {
 	resetEnv();
-	setRuntime(makeRuntime({ source: 'npm', installPath: '/x' }));
+	resetRemoteLog();
+	const stateDir = await makeTmpDir('coclaw-l0-state-');
+	try {
+		const pkgRoot = nodePath.join(stateDir, 'npm', 'projects', 'pkg');
+		await fs.mkdir(pkgRoot, { recursive: true });
+		setRuntime(makeStateRuntime(stateDir));
+		assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID, { pluginRoot: pkgRoot }), false);
+		assert.ok(!remoteLogBuffer.some(e => e.text.startsWith('upgrade.position-skip')));
+	} finally {
+		await fs.rm(stateDir, { recursive: true, force: true });
+		resetRemoteLog();
+	}
+});
+
+test('shouldSkipAutoUpgrade - 包根在 state-dir 外时跳过并 remoteLog position-skip', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const stateDir = await makeTmpDir('coclaw-l0-state-');
+	const pkgRoot = await makeTmpDir('coclaw-l0-pkg-');
+	try {
+		setRuntime(makeStateRuntime(stateDir));
+		assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID, { pluginRoot: pkgRoot }), true);
+		const entry = remoteLogBuffer.find(e => e.text.startsWith('upgrade.position-skip'));
+		assert.ok(entry, 'expected position-skip signal');
+		// 信号须携带两侧 realpath，便于远程定位
+		assert.ok(entry.text.includes(`pkgRoot=${nodeFs.realpathSync(pkgRoot)}`));
+		assert.ok(entry.text.includes(`stateDir=${nodeFs.realpathSync(stateDir)}`));
+	} finally {
+		await fs.rm(stateDir, { recursive: true, force: true });
+		await fs.rm(pkgRoot, { recursive: true, force: true });
+		resetRemoteLog();
+	}
+});
+
+test('shouldSkipAutoUpgrade - state-dir 为软链时 realpath 归一后不误判在外', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const realState = await makeTmpDir('coclaw-l0-real-');
+	const linkParent = await makeTmpDir('coclaw-l0-link-');
+	try {
+		const linkPath = nodePath.join(linkParent, 'state-link');
+		await fs.symlink(realState, linkPath, 'dir');
+		const pkgRoot = nodePath.join(realState, 'extensions', 'pkg');
+		await fs.mkdir(pkgRoot, { recursive: true });
+		// runtime 给软链路径、包根给真实路径：realpath 归一后应判定在内
+		setRuntime(makeStateRuntime(linkPath));
+		assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID, { pluginRoot: pkgRoot }), false);
+	} finally {
+		await fs.rm(linkParent, { recursive: true, force: true });
+		await fs.rm(realState, { recursive: true, force: true });
+		resetRemoteLog();
+	}
+});
+
+test('shouldSkipAutoUpgrade - runtime 缺失时放行到 L1 并 remoteLog state-dir-failed', () => {
+	resetEnv();
+	resetRemoteLog();
+	// resetEnv 已 setRuntime(null)；env 兜底不得用于"在外"判定
 	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), false);
-});
-
-test('shouldSkipAutoUpgrade - source 为 path 时返回 true（跳过）', () => {
-	resetEnv();
-	setRuntime(makeRuntime({ source: 'path', installPath: '/x' }));
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('shouldSkipAutoUpgrade - source 为 archive 时返回 true（跳过）', () => {
-	resetEnv();
-	setRuntime(makeRuntime({ source: 'archive', installPath: '/x' }));
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('shouldSkipAutoUpgrade - runtime 不可用时返回 true（跳过）', () => {
-	resetEnv();
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('shouldSkipAutoUpgrade - loadConfig 抛异常时返回 true（跳过）', () => {
-	resetEnv();
-	setRuntime({
-		config: {
-			loadConfig: () => { throw new Error('corrupt'); },
-		},
-	});
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('shouldSkipAutoUpgrade - 旧版账本读取异常时 remoteLog 推 legacy-config-read-failed', () => {
-	resetEnv();
-	resetRemoteLog();
-	setRuntime({
-		config: {
-			loadConfig: () => { throw new Error('corrupt'); },
-		},
-	});
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-	// 钉住 msg 段：仅匹配前缀会让 "丢失原因细节" 这种回归无声通过
-	assert.ok(
-		remoteLogBuffer.some(e => /^upgrade\.legacy-config-read-failed msg=corrupt$/.test(e.text)),
-		`expected legacy-config-read-failed with msg=corrupt, got: ${JSON.stringify(remoteLogBuffer.map(e => e.text))}`,
-	);
-});
-
-test('shouldSkipAutoUpgrade - config.current 与 config.loadConfig 都不存在时返回 true（跳过）', () => {
-	resetEnv();
-	setRuntime({ config: {} });
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('shouldSkipAutoUpgrade - plugins.installs 无对应插件时返回 true（跳过）', () => {
-	resetEnv();
-	setRuntime({
-		config: {
-			loadConfig: () => ({ plugins: { installs: {} } }),
-		},
-	});
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('shouldSkipAutoUpgrade - installInfo 无 source 字段时返回 true（跳过）', () => {
-	resetEnv();
-	setRuntime(makeRuntime({ installPath: '/x' }));
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('shouldSkipAutoUpgrade - loadConfig 返回 null 时返回 true（跳过）', () => {
-	resetEnv();
-	setRuntime({
-		config: {
-			loadConfig: () => null,
-		},
-	});
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-// --- getPluginInstallPath ---
-
-test('getPluginInstallPath - 正常返回 installPath', () => {
-	resetEnv();
-	setRuntime(makeRuntime({ source: 'npm', installPath: '/opt/plugins/coclaw' }));
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), '/opt/plugins/coclaw');
-});
-
-test('getPluginInstallPath - installPath 缺失时返回 null', () => {
-	resetEnv();
-	setRuntime(makeRuntime({ source: 'npm' }));
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('getPluginInstallPath - runtime 不可用时返回 null', () => {
-	resetEnv();
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('getPluginInstallPath - loadConfig 抛异常时返回 null', () => {
-	resetEnv();
-	setRuntime({
-		config: {
-			loadConfig: () => { throw new Error('broken'); },
-		},
-	});
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('getPluginInstallPath - config.current 与 config.loadConfig 都不存在时返回 null', () => {
-	resetEnv();
-	setRuntime({ config: {} });
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('getPluginInstallPath - plugins.installs 无对应插件时返回 null', () => {
-	resetEnv();
-	setRuntime({
-		config: {
-			loadConfig: () => ({ plugins: { installs: {} } }),
-		},
-	});
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('getPluginInstallPath - loadConfig 返回 null 时返回 null', () => {
-	resetEnv();
-	setRuntime({
-		config: {
-			loadConfig: () => null,
-		},
-	});
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-// --- 新账本路径（OpenClaw ≥ 2026.4.25）：installs.json 是真相 ---
-
-test('新账本 - source=npm 时 shouldSkip=false 且能拿到 installPath', () => {
-	resetEnv();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	writeInstallsLedger(dir, {
-		[TEST_PLUGIN_ID]: { source: 'npm', installPath: '/opt/pkg/test-plugin', version: '1.0.0' },
-	});
-	// runtime 不需要设置：新版 gateway 下 loadConfig 拿不到 plugins.installs，账本是唯一来源
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), false);
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), '/opt/pkg/test-plugin');
-});
-
-test('新账本 - source=path（link 模式）时 shouldSkip=true', () => {
-	resetEnv();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	writeInstallsLedger(dir, {
-		[TEST_PLUGIN_ID]: { source: 'path', installPath: '/opt/local/test-plugin' },
-	});
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('新账本 - source=archive 时 shouldSkip=true', () => {
-	resetEnv();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	writeInstallsLedger(dir, {
-		[TEST_PLUGIN_ID]: { source: 'archive', installPath: '/opt/tar/test-plugin' },
-	});
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-});
-
-test('新账本 - 账本里没有本插件时 shouldSkip=true，且不回落到 loadConfig 老字段', () => {
-	resetEnv();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	// 账本存在但只列了别的插件
-	writeInstallsLedger(dir, {
-		'some-other-plugin': { source: 'npm', installPath: '/opt/other' },
-	});
-	// 老字段里就算有 npm 安装记录也不能被用，否则会在新 gateway 下错判
-	setRuntime(makeRuntime({ source: 'npm', installPath: '/should/not/be/used' }));
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('新账本 - JSON 损坏时 shouldSkip=true、不回落，并 remoteLog 诊断信号', () => {
-	resetEnv();
-	resetRemoteLog();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	const ledgerPath = nodePath.join(dir, 'plugins', 'installs.json');
-	nodeFs.mkdirSync(nodePath.dirname(ledgerPath), { recursive: true });
-	nodeFs.writeFileSync(ledgerPath, '{not valid json', 'utf8');
-	setRuntime(makeRuntime({ source: 'npm', installPath: '/should/not/be/used' }));
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.ledger-parse-failed')));
-});
-
-test('新账本 - installRecords 字段不是对象时 shouldSkip=true', () => {
-	resetEnv();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	const ledgerPath = nodePath.join(dir, 'plugins', 'installs.json');
-	nodeFs.mkdirSync(nodePath.dirname(ledgerPath), { recursive: true });
-	nodeFs.writeFileSync(ledgerPath, JSON.stringify({ version: 1, installRecords: null }), 'utf8');
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('新账本 - 读取失败（非 ENOENT）时 shouldSkip=true、不回落，并 remoteLog 诊断信号', () => {
-	resetEnv();
-	resetRemoteLog();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	const ledgerDir = nodePath.join(dir, 'plugins');
-	const ledgerPath = nodePath.join(ledgerDir, 'installs.json');
-	nodeFs.mkdirSync(ledgerDir, { recursive: true });
-	// 用目录占位 ledgerPath：readFileSync 会抛 EISDIR（不是 ENOENT）
-	nodeFs.mkdirSync(ledgerPath, { recursive: true });
-	setRuntime(makeRuntime({ source: 'npm', installPath: '/should/not/be/used' }));
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.ledger-read-failed code=EISDIR')));
-});
-
-test('新账本 - 账本里有插件但 installPath 缺失时 getPluginInstallPath=null', () => {
-	resetEnv();
-	const dir = process.env.OPENCLAW_STATE_DIR;
-	writeInstallsLedger(dir, {
-		[TEST_PLUGIN_ID]: { source: 'npm', version: '1.0.0' }, // 故意不写 installPath
-	});
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), false);
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
-});
-
-test('shouldSkipAutoUpgrade - resolveStateDir 抛异常时返回 true、不传播，并 remoteLog 诊断信号', () => {
-	resetEnv();
-	resetRemoteLog();
-	setRuntime({
-		state: { resolveStateDir: () => { throw new Error('boom'); } },
-	});
-	assert.doesNotThrow(() => shouldSkipAutoUpgrade(TEST_PLUGIN_ID));
-	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
-	assert.equal(getPluginInstallPath(TEST_PLUGIN_ID), null);
 	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.state-dir-failed')));
+	resetRemoteLog();
+});
+
+test('shouldSkipAutoUpgrade - runtime 无 resolveStateDir 时同样放行', () => {
+	resetEnv();
+	resetRemoteLog();
+	setRuntime({ state: {} });
+	assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), false);
+	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.state-dir-failed')));
+	resetRemoteLog();
+});
+
+test('shouldSkipAutoUpgrade - realpath 抛错时放行并 remoteLog state-dir-failed', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const stateDir = await makeTmpDir('coclaw-l0-state-');
+	try {
+		setRuntime(makeStateRuntime(stateDir));
+		const ghost = nodePath.join(stateDir, 'no-such-dir');
+		assert.doesNotThrow(() => shouldSkipAutoUpgrade(TEST_PLUGIN_ID, { pluginRoot: ghost }));
+		assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID, { pluginRoot: ghost }), false);
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.state-dir-failed')));
+	} finally {
+		await fs.rm(stateDir, { recursive: true, force: true });
+		resetRemoteLog();
+	}
+});
+
+test('shouldSkipAutoUpgrade - Nix mode 短路（先于位置判定，不发位置信号）', () => {
+	resetEnv();
+	resetRemoteLog();
+	const prev = process.env.OPENCLAW_NIX_MODE;
+	process.env.OPENCLAW_NIX_MODE = '1';
+	try {
+		// runtime 缺失本应发 state-dir-failed；Nix 短路在前 → 不发任何信号
+		assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID), true);
+		assert.equal(remoteLogBuffer.length, 0);
+	}
+	finally {
+		if (prev === undefined) delete process.env.OPENCLAW_NIX_MODE;
+		else process.env.OPENCLAW_NIX_MODE = prev;
+		resetRemoteLog();
+	}
+});
+
+test('shouldSkipAutoUpgrade - 默认自推包根（真实检出）在临时 state-dir 外时跳过', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const stateDir = await makeTmpDir('coclaw-l0-state-');
+	try {
+		// 不注入 pluginRoot：覆盖默认自推包根分支；真实检出必不在临时 state-dir 内。
+		// stateDir 经 opts 注入（绕过 runtime），同时覆盖 opts.stateDir 分支
+		assert.equal(shouldSkipAutoUpgrade(TEST_PLUGIN_ID, { stateDir }), true);
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.position-skip')));
+	} finally {
+		await fs.rm(stateDir, { recursive: true, force: true });
+		resetRemoteLog();
+	}
 });
 
 // --- AutoUpgradeScheduler: constructor ---
@@ -375,7 +274,7 @@ test('start - pluginId 未提供时跳过调度并记录警告', () => {
 	assert.equal(s.__initialTimer, null);
 });
 
-test('start - 非 npm 安装时跳过调度', () => {
+test('start - shouldSkip 判定跳过（位置在外）时不启动调度', () => {
 	resetEnv();
 	const logger = silentLogger();
 	const s = new AutoUpgradeScheduler({
@@ -390,8 +289,32 @@ test('start - 非 npm 安装时跳过调度', () => {
 	s.start();
 
 	assert.equal(s.__running, false);
-	assert.ok(logger.infos.some(m => m.includes('not an npm-installed plugin')));
+	assert.ok(logger.infos.some(m => m.includes('outside state-dir')));
 	assert.equal(s.__initialTimer, null);
+});
+
+test('start - 默认实现判定包根在 state-dir 外时跳过调度', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const stateDir = await makeTmpDir('coclaw-l0-state-');
+	try {
+		const logger = silentLogger();
+		// 不注入 shouldSkipFn：走默认 shouldSkipAutoUpgrade，stateDir 经 __opts 透传
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: { stateDir, initialDelayMs: 100000 },
+		});
+
+		s.start();
+
+		assert.equal(s.__running, false);
+		assert.ok(logger.infos.some(m => m.includes('outside state-dir')));
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.position-skip')));
+	} finally {
+		await fs.rm(stateDir, { recursive: true, force: true });
+		resetRemoteLog();
+	}
 });
 
 test('start - host 在 Nix mode 时跳过调度并 remoteLog', () => {
@@ -650,7 +573,7 @@ test('__check - 有更新时调用 spawnUpgradeWorker 并写入锁', async () =>
 			logger,
 			opts: {
 				execFileFn: mockExecFile(null, '99.0.0\n'),
-				getPluginInstallPathFn: () => '/opt/test-plugin',
+				inspectInstallFn: npmInspectFn(),
 				spawnFn: mockSpawnFn,
 				isUpgradeLockedFn: async () => false,
 				writeUpgradeLockFn: async (pid) => { lockPids.push(pid); },
@@ -661,8 +584,11 @@ test('__check - 有更新时调用 spawnUpgradeWorker 并写入锁', async () =>
 
 		assert.ok(msgs.some(m => m.includes('Update available')));
 		assert.equal(spawnCalls.length, 1);
-		// 命名参数格式：--pluginDir /opt/test-plugin
+		// 命名参数格式：--pluginDir /opt/test-plugin（取自权威记录 installPath）
 		assert.ok(spawnCalls[0].args.includes('/opt/test-plugin'));
+		// 基线版本接线：--baselineVersion 1.0.0（取自权威记录 version）
+		const args = spawnCalls[0].args;
+		assert.equal(args[args.indexOf('--baselineVersion') + 1], '1.0.0');
 		// writeUpgradeLockFn 应被调用，且传入 child.pid
 		assert.deepEqual(lockPids, [9999]);
 		// remoteLog 应推送 upgrade.available
@@ -709,9 +635,49 @@ test('__check - isUpgradeLockedFn 返回 true 时跳过检查', async () => {
 	}
 });
 
-// --- __check: 有更新但无 pluginDir 时警告 ---
+// --- __check: L1 来源门禁 ---
 
-test('__check - 有更新但 pluginDir 为 null 时记录警告', async () => {
+test('L1 - source 非 npm 时本周期跳过：不 spawn、无 available、source-skip 去重', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		let inspectCalls = 0;
+		let spawnCalls = 0;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: async () => {
+					inspectCalls += 1;
+					return { ok: true, install: { source: 'path', installPath: '/x' } };
+				},
+				spawnFn: () => { spawnCalls += 1; return { pid: 1, unref: () => {}, on: () => {} }; },
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		assert.equal(spawnCalls, 0);
+		// 逐周期重验：两轮都应调用 inspect（瞬时误判下周期自愈的结构保证）
+		assert.equal(inspectCalls, 2);
+		// available 后移：source 未验明 npm 不得上报
+		assert.ok(!remoteLogBuffer.some(e => e.text.startsWith('upgrade.available')));
+		// 稳定态信号按 (原因, toVersion) 去重：两轮只发一条
+		const skips = remoteLogBuffer.filter(e => e.text === 'upgrade.source-skip source=path to=99.0.0');
+		assert.equal(skips.length, 1);
+		assert.ok(logger.infos.some(m => m.includes('install source is path')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('L1 - 无 install 记录时按 source=none 跳过', async () => {
 	resetEnv();
 	resetRemoteLog();
 	const tmpDir = await makeTmpDir();
@@ -723,15 +689,351 @@ test('__check - 有更新但 pluginDir 为 null 时记录警告', async () => {
 			logger,
 			opts: {
 				execFileFn: mockExecFile(null, '99.0.0\n'),
-				getPluginInstallPathFn: () => null,
+				inspectInstallFn: async () => ({ ok: true, install: null }),
 			},
 		});
 
 		await s.__check();
 
-		assert.ok(logger.warns.some(m => m.includes('Cannot determine plugin install path')));
-		// remoteLog 应推送 upgrade.no-install-path
-		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.no-install-path'));
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.source-skip source=none to=99.0.0'));
+		assert.ok(!remoteLogBuffer.some(e => e.text.startsWith('upgrade.available')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('L1 - inspect 真失败时跳过本周期、去重上报，并在下周期自愈后放行', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		let inspectCalls = 0;
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: async () => {
+					inspectCalls += 1;
+					if (inspectCalls <= 2) return { ok: false, reason: 'exit 1' };
+					return { ok: true, install: { source: 'npm', installPath: '/opt/test-plugin', version: '1.0.0' } };
+				},
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+		// 前两轮失败：不 spawn，信号去重只发一条
+		assert.equal(spawnCalls.length, 0);
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.gate-inspect-failed to=99.0.0 msg=exit 1').length,
+			1,
+		);
+
+		// 第三轮 inspect 恢复：放行 spawn（瞬时失败自愈，无永久停摆）
+		await s.__check();
+		assert.equal(spawnCalls.length, 1);
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.available')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('L1 - inspectInstallFn 抛异常按真失败处理（局部 catch，不落外层 check-failed）', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: async () => { throw new Error('inspect boom'); },
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.gate-inspect-failed to=99.0.0 msg=inspect boom'));
+		// 信号不得被外层 catch-all 吞成泛化 check-failed
+		assert.ok(!remoteLogBuffer.some(e => e.text.startsWith('upgrade.check-failed')));
+		assert.ok(logger.warns.some(m => m.includes('inspect threw')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('L1 - installPath 缺失：回退包根 + 降级日志，包名核验通过后 spawn', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	const fakeRoot = await makeTmpDir('coclaw-l1-root-');
+	try {
+		// 回退目录的包名须与 checkForUpdate 读到的真实包名一致才放行
+		const realPkg = JSON.parse(
+			nodeFs.readFileSync(nodePath.resolve(import.meta.dirname, '../../package.json'), 'utf8'),
+		);
+		await fs.writeFile(
+			nodePath.join(fakeRoot, 'package.json'),
+			JSON.stringify({ name: realPkg.name, version: '0.0.1' }),
+		);
+
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn({ source: 'npm', version: '1.0.0' }), // 无 installPath
+				pluginRoot: fakeRoot,
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(remoteLogBuffer.some(e => e.text === `upgrade.install-path-fallback to=99.0.0 dir=${fakeRoot}`));
+		assert.equal(spawnCalls.length, 1);
+		const args = spawnCalls[0];
+		assert.equal(args[args.indexOf('--pluginDir') + 1], fakeRoot);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+		await fs.rm(fakeRoot, { recursive: true, force: true });
+	}
+});
+
+test('L1 - installPath 缺失且回退目录包名不符时拒绝 spawn', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	const fakeRoot = await makeTmpDir('coclaw-l1-root-');
+	try {
+		await fs.writeFile(
+			nodePath.join(fakeRoot, 'package.json'),
+			JSON.stringify({ name: '@evil/other-pkg', version: '0.0.1' }),
+		);
+
+		let spawnCalls = 0;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn({ source: 'npm', version: '1.0.0' }),
+				pluginRoot: fakeRoot,
+				spawnFn: () => { spawnCalls += 1; return { pid: 1, unref: () => {}, on: () => {} }; },
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(spawnCalls, 0);
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.no-install-path reason=pkg-name-mismatch got=@evil/other-pkg'));
+		assert.ok(logger.warns.some(m => m.includes('package name check')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+		await fs.rm(fakeRoot, { recursive: true, force: true });
+	}
+});
+
+test('L1 - installPath 回退两条信号按 (原因, toVersion) 去重：两轮各只发一条', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	const fakeRoot = await makeTmpDir('coclaw-l1-root-');
+	try {
+		// 包名不符是稳定异常态：每周期都走 fallback + mismatch，两轮信号须各去重为一条
+		await fs.writeFile(
+			nodePath.join(fakeRoot, 'package.json'),
+			JSON.stringify({ name: '@evil/other-pkg', version: '0.0.1' }),
+		);
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn({ source: 'npm', version: '1.0.0' }), // 无 installPath
+				pluginRoot: fakeRoot,
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === `upgrade.install-path-fallback to=99.0.0 dir=${fakeRoot}`).length,
+			1,
+		);
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.no-install-path reason=pkg-name-mismatch got=@evil/other-pkg').length,
+			1,
+		);
+		// 非去重的 warn 每周期都发：证明第二轮确实穿透到回退路径，去重断言才有意义
+		assert.equal(logger.warns.filter(m => m.includes('package name check')).length, 2);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+		await fs.rm(fakeRoot, { recursive: true, force: true });
+	}
+});
+
+test('L1 - installPath 缺失且回退目录无 package.json 时拒绝 spawn', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	const fakeRoot = await makeTmpDir('coclaw-l1-root-');
+	try {
+		let spawnCalls = 0;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn({ source: 'npm', version: '1.0.0' }),
+				pluginRoot: fakeRoot,
+				spawnFn: () => { spawnCalls += 1; return { pid: 1, unref: () => {}, on: () => {} }; },
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(spawnCalls, 0);
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.no-install-path reason=pkg-name-mismatch got=null'));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+		await fs.rm(fakeRoot, { recursive: true, force: true });
+	}
+});
+
+test('L1 - installPath 缺失且未注入 pluginRoot 时回退默认自推包根（真实检出，核验通过）', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn({ source: 'npm', version: '1.0.0' }), // 无 installPath
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+
+		// 默认自推包根 = 真实插件检出根，包名与 checkForUpdate 读到的一致 → 放行
+		assert.equal(spawnCalls.length, 1);
+		const args = spawnCalls[0];
+		assert.equal(args[args.indexOf('--pluginDir') + 1], nodePath.resolve(import.meta.dirname, '../..'));
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.install-path-fallback')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('L1 - 记录无 version 时不传 --baselineVersion（基线不可得退化交给 worker）', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn({ source: 'npm', installPath: '/opt/test-plugin' }), // 无 version
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(spawnCalls.length, 1);
+		assert.ok(!spawnCalls[0].includes('--baselineVersion'));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('L1 - 不提供 inspectInstallFn 时默认走 inspectPluginInstall（经 execFileFn 全链路）', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const inspectExecCalls = [];
+		// 同一 execFileFn 分流 npm view 与 openclaw plugins inspect
+		const execFileFn = (cmd, args, opts, cb) => {
+			if (cmd === 'npm') return cb(null, '99.0.0\n');
+			if (cmd === 'openclaw' && args[1] === 'inspect') {
+				inspectExecCalls.push({ args: [...args], opts });
+				return cb(null, JSON.stringify({
+					install: { source: 'npm', installPath: '/opt/test-plugin', version: '1.0.0' },
+				}));
+			}
+			return cb(null, '');
+		};
+
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn,
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(spawnCalls.length, 1);
+		assert.equal(inspectExecCalls.length, 1);
+		// execFile 选项对齐先例：30s timeout + win32 shell
+		assert.deepEqual(inspectExecCalls[0].args, ['plugins', 'inspect', TEST_PLUGIN_ID, '--json']);
+		assert.equal(inspectExecCalls[0].opts.timeout, 30_000);
+		assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.available')));
 	} finally {
 		resetEnv();
 		resetRemoteLog();
@@ -793,9 +1095,10 @@ test('__check - checkForUpdate 异常时记录警告（execFileFn 同步抛异�
 
 // --- 使用默认 shouldSkipFn（覆盖 ?? 回退分支） ---
 
-test('start - 不提供 shouldSkipFn 时使用默认 shouldSkipAutoUpgrade', () => {
+test('start - 不提供 shouldSkipFn 时使用默认实现：runtime 缺失放行（fail-open 到 L1）', () => {
 	resetEnv();
-	// runtime 为 null，shouldSkipAutoUpgrade(pluginId) 返回 true，跳过
+	resetRemoteLog();
+	// runtime 为 null：L0 不下"在外"结论，放行启动（一次误判不再永久停摆）
 	const logger = silentLogger();
 	const s = new AutoUpgradeScheduler({
 		pluginId: TEST_PLUGIN_ID,
@@ -807,37 +1110,12 @@ test('start - 不提供 shouldSkipFn 时使用默认 shouldSkipAutoUpgrade', () 
 	});
 
 	s.start();
-	assert.equal(s.__running, false);
-	assert.ok(logger.infos.some(m => m.includes('not an npm-installed plugin')));
+	assert.equal(s.__running, true);
+	assert.ok(s.__initialTimer !== null);
+	assert.ok(remoteLogBuffer.some(e => e.text.startsWith('upgrade.state-dir-failed')));
 
 	s.stop();
-});
-
-// --- 使用默认 getPluginInstallPathFn（覆盖 ?? 回退分支） ---
-
-test('__check - 不提供 getPluginInstallPathFn 时使用默认 getPluginInstallPath', async () => {
-	resetEnv();
-	const tmpDir = await makeTmpDir();
-	process.env.OPENCLAW_STATE_DIR = tmpDir;
-	try {
-		// runtime 为 null，getPluginInstallPath(pluginId) 返回 null -> 走 pluginDir 为空的分支
-		const logger = silentLogger();
-		const s = new AutoUpgradeScheduler({
-			pluginId: TEST_PLUGIN_ID,
-			logger,
-			opts: {
-				execFileFn: mockExecFile(null, '99.0.0\n'),
-				// 不提供 getPluginInstallPathFn，使用默认
-			},
-		});
-
-		await s.__check();
-
-		// 因为 runtime 为 null，getPluginInstallPath 返回 null
-		assert.ok(logger.warns.some(m => m.includes('Cannot determine plugin install path')));
-	} finally {
-		resetEnv();
-	}
+	resetRemoteLog();
 });
 
 // --- start 触发 __check 并设置 interval ---
@@ -905,7 +1183,7 @@ test('__check - 使用 pino 风格 logger（无 .log）完整走通 check + spaw
 				initialDelayMs: 10,
 				checkIntervalMs: 100000,
 				execFileFn: mockExecFile(null, '99.0.0\n'),
-				getPluginInstallPathFn: () => '/opt/test-plugin',
+				inspectInstallFn: npmInspectFn(),
 				spawnFn: (cmd, args, opts) => {
 					spawnCalls.push({ cmd, args, opts });
 					return { pid: 8888, unref: () => {}, on: () => {} };
@@ -1219,6 +1497,37 @@ test('__reportLastUpgradeResult - lastReport 等于 lastUpgrade.ts 时不重复�
 		await s.__check();
 
 		assert.ok(!remoteLogBuffer.some(e => e.text.startsWith('upgrade.result')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reportLastUpgradeResult - worker 的 noop-skip 结局经下轮 upgrade.result 上报', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		// 模拟 worker no-op 分支写入的 lastUpgrade（result=noop-skip token）
+		await writeState({
+			lastUpgrade: { from: '1.0.0', to: '1.1.0', result: 'noop-skip', ts: '2026-06-11T00:00:00.000Z' },
+		});
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+			},
+		});
+
+		await s.__check();
+
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.result result=noop-skip from=1.0.0 to=1.1.0'));
+		const state = await readState();
+		assert.equal(state.lastReport, '2026-06-11T00:00:00.000Z');
 	} finally {
 		resetEnv();
 		resetRemoteLog();

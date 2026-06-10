@@ -4,7 +4,9 @@
 PLUGIN_ID="openclaw-coclaw"
 PKG_NAME="@coclaw/openclaw-coclaw"
 CHANNEL_ID="coclaw"
-BINDINGS_FILE="$HOME/.openclaw/coclaw/bindings.json"
+# state-dir：尊重 OPENCLAW_STATE_DIR（多 profile/容器/隔离网关），默认 ~/.openclaw
+OPENCLAW_STATE_DIR_RESOLVED="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
+BINDINGS_FILE="$OPENCLAW_STATE_DIR_RESOLVED/coclaw/bindings.json"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -12,34 +14,76 @@ PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 本文件时它们自动落在该 worktree（worktree-gateway.sh 据此为每个 worktree 建独立 stage）。
 STAGE_DIR="$PLUGIN_DIR/.build/link-stage"
 WORKSPACE_ROOT="$(cd "$PLUGIN_DIR/../.." && pwd)"
-# OpenClaw 2026.5 起把安装记录从 openclaw.json 的 plugins.installs 搬到了
-# ~/.openclaw/plugins/installs.json 的 installRecords，且明确标记前者为 transient
-# 不再持久化，所以模式判断必须读这本新账。
-INSTALL_RECORDS_FILE="$HOME/.openclaw/plugins/installs.json"
+
+# ── 安装记录读取（经官方 CLI，不直读账本文件）──
+# OpenClaw ≥2026.6.1 把 install records 迁入共享 SQLite，旧 JSON 账本停更，
+# 直读必错。`openclaw plugins inspect <id> --json` 是三代稳定契约，顶层
+# `install` 字段透传原始 record。
+# memo：单脚本内缓存一次 inspect 输出（CLI 一次 ~3s）。注意 bash 命令替换跑在
+# 子 shell，缓存只在主 shell 调用链内生效——调用方脚本应在首次使用 getter 前于
+# 主 shell 显式 load_install_record 预载；ensure_uninstalled 卸载后会主动作废。
+_LIB_INSPECT_JSON=""
+_LIB_INSPECT_LOADED=0
+
+load_install_record() {
+	if [[ "$_LIB_INSPECT_LOADED" == "1" ]]; then
+		return 0
+	fi
+	if ! command -v openclaw >/dev/null 2>&1; then
+		echo "[ERROR] 未找到 openclaw CLI，无法读取插件安装记录" >&2
+		echo "[HINT] 确认 openclaw 已安装且在 PATH 上" >&2
+		return 1
+	fi
+	local out
+	# 未安装判定：exit≠0 或 stdout 空（不读 stderr 文案，无契约承诺）
+	if ! out="$(openclaw plugins inspect "$PLUGIN_ID" --json 2>/dev/null)" || [[ -z "$out" ]]; then
+		_LIB_INSPECT_JSON=""
+		_LIB_INSPECT_LOADED=1
+		return 0
+	fi
+	_LIB_INSPECT_JSON="$out"
+	_LIB_INSPECT_LOADED=1
+}
+
+# 安装状态已变（卸载/重装）时作废缓存
+invalidate_install_record() {
+	_LIB_INSPECT_JSON=""
+	_LIB_INSPECT_LOADED=0
+}
 
 # 检测当前安装模式
 # 返回: link | npm | archive | none
 # 注意: OpenClaw --link 安装实际记录 source="path"，此函数通过
 #       比较 sourcePath 与 installPath 是否相同来判断是否为 link 模式。
 get_install_mode() {
-	if [[ ! -f "$INSTALL_RECORDS_FILE" ]]; then
+	load_install_record || return 1
+	if [[ -z "$_LIB_INSPECT_JSON" ]]; then
 		echo "none"
 		return
 	fi
 	local result
-	result=$(node -e "
-		try {
-			const c = JSON.parse(require('fs').readFileSync('$INSTALL_RECORDS_FILE', 'utf8'));
-			const r = c?.installRecords?.['$PLUGIN_ID'];
-			if (!r) { console.log('none'); process.exit(); }
+	# 有输出但非 JSON：响亮报错、不回落旧账本（dev 机均新 host，旧账本只会给分歧数据）
+	result=$(printf '%s' "$_LIB_INSPECT_JSON" | node -e "
+		let raw = '';
+		process.stdin.on('data', (d) => { raw += d; });
+		process.stdin.on('end', () => {
+			let payload;
+			try { payload = JSON.parse(raw); }
+			catch (e) { process.exit(2); }
+			const r = payload?.install;
+			if (!r) { console.log('none'); return; }
 			if (r.source === 'path') {
 				const same = r.sourcePath && r.installPath && r.sourcePath === r.installPath;
 				console.log(same ? 'link' : 'link:mismatch');
 			} else {
 				console.log(r.source ?? 'none');
 			}
-		} catch (e) { console.log('none'); }
-	" 2>/dev/null) || true
+		});
+	") || {
+		echo "[ERROR] plugins inspect 输出无法解析（非 JSON），拒绝猜测安装模式" >&2
+		echo "[HINT] 手动检查: openclaw plugins inspect $PLUGIN_ID --json" >&2
+		return 1
+	}
 	if [[ "$result" == "link:mismatch" ]]; then
 		echo "[ERROR] source=path 但 sourcePath !== installPath，安装状态异常" >&2
 		echo "[HINT] 建议执行 openclaw plugins doctor 检查" >&2
@@ -49,23 +93,32 @@ get_install_mode() {
 	echo "${result:-none}"
 }
 
-# 获取已安装的版本号
+# 获取已安装的版本号（未安装输出空串）
 get_installed_version() {
-	if [[ ! -f "$INSTALL_RECORDS_FILE" ]]; then
+	load_install_record || return 1
+	if [[ -z "$_LIB_INSPECT_JSON" ]]; then
 		echo ""
 		return
 	fi
-	node -e "
-		try {
-			const c = JSON.parse(require('fs').readFileSync('$INSTALL_RECORDS_FILE', 'utf8'));
-			const r = c?.installRecords?.['$PLUGIN_ID'];
-			console.log(r?.version ?? '');
-		} catch (e) { console.log(''); }
-	" 2>/dev/null || true
+	printf '%s' "$_LIB_INSPECT_JSON" | node -e "
+		let raw = '';
+		process.stdin.on('data', (d) => { raw += d; });
+		process.stdin.on('end', () => {
+			let payload;
+			try { payload = JSON.parse(raw); }
+			catch (e) { process.exit(2); }
+			console.log(payload?.install?.version ?? '');
+		});
+	" || {
+		echo "[ERROR] plugins inspect 输出无法解析（非 JSON），拒绝猜测版本" >&2
+		return 1
+	}
 }
 
 # 卸载当前安装的插件（不清理 bindings）
 ensure_uninstalled() {
+	# 主 shell 预载缓存，让下面子 shell 的 get_install_mode 复用，不再起 CLI
+	load_install_record || return 1
 	local mode
 	mode=$(get_install_mode)
 	if [[ "$mode" == "none" ]]; then
@@ -75,8 +128,10 @@ ensure_uninstalled() {
 	echo "[INFO] 当前安装模式: ${mode}，执行卸载..."
 	# --force 跳过交互确认；脚本环境没有 stdin tty。
 	openclaw plugins uninstall --force "$PLUGIN_ID" || true
+	# 状态已变，作废缓存（后续读取重新走 CLI）
+	invalidate_install_record
 	# 清理可能残留的 extensions 目录
-	local ext_dir="$HOME/.openclaw/extensions/$PLUGIN_ID"
+	local ext_dir="$OPENCLAW_STATE_DIR_RESOLVED/extensions/$PLUGIN_ID"
 	if [[ -d "$ext_dir" ]]; then
 		echo "[INFO] 清理残留目录: $ext_dir"
 		rm -rf "$ext_dir"

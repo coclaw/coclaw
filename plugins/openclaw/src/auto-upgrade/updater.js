@@ -2,16 +2,12 @@ import fs from 'node:fs/promises';
 import nodeFs from 'node:fs';
 import nodePath from 'node:path';
 
-import { checkForUpdate } from './updater-check.js';
+import { checkForUpdate, getPackageInfo, inspectPluginInstall } from './updater-check.js';
 import { spawnUpgradeWorker } from './updater-spawn.js';
 import { readState, resolveStateDir, writeState } from './state.js';
-import { getClawConfig } from '../claw-config.js';
+import { getRuntime } from '../runtime.js';
 import { remoteLog } from '../remote-log.js';
 import { atomicWriteFile } from '../utils/atomic-write.js';
-
-// OpenClaw ≥ 2026.4.25 起把插件安装记录从 openclaw.json 的 plugins.installs
-// 迁移到独立账本文件，并在 loadConfig() 返回前剥掉 plugins.installs。
-const INSTALLS_LEDGER_RELATIVE_PATH = nodePath.join('plugins', 'installs.json');
 
 // 首次检查延迟较长：失败时由 worker 触发 gateway restart，scheduler 重启后会重新计时；
 // 60 分钟基线（实际随机 60-120 分钟）能把"失败→重启→再次检查"的循环周期拉长，
@@ -115,105 +111,75 @@ export async function writeUpgradeLock(pid) {
 }
 
 /**
- * 读取本插件的安装记录（兼容新旧 OpenClaw 契约）
+ * 包含谓词：判断 child 是否位于 parent 内（两者均须已 realpath 归一）。
  *
- * - 新版（OpenClaw ≥ 2026.4.25）：账本文件 `<state-dir>/plugins/installs.json`
- *   下的 `installRecords[pluginId]` 是来源真相；`loadConfig()` 返回的对象里
- *   `plugins.installs` 已被剥离。
- * - 旧版（OpenClaw ≤ 2026.4.24）：账本文件不存在，
- *   `loadConfig().plugins.installs[pluginId]` 是来源真相。
+ * 禁用裸 `startsWith('..')`——`..foo` 这类目录名会被误判为"在外"。
+ * Windows 大小写差异由 path.win32.relative 天然处理；跨盘符（relative 返回
+ * 绝对路径）落 isAbsolute 兜住。
  *
- * 兼容策略：先尝试账本文件；ENOENT（文件不存在）→ 回落到旧字段；
- * 其它失败（权限/JSON 损坏/缺记录）→ 视为账本不可用，按"无来源信息"处理，不回落。
- * 这两条互斥（新 gateway 必有账本、旧 gateway 必无）能让两个分支天然分流。
- *
- * 失败路径会通过 `remoteLog` 外推诊断信号（`upgrade.state-dir-failed` /
- * `upgrade.ledger-read-failed` / `upgrade.ledger-parse-failed`），避免运维只
- * 看到 start() 那条 "Skipping: not an npm-installed plugin" 时误判方向。
- *
- * 注：内部 `readFileSync` 为同步 IO，**有意保留**——只在升级周期决策时读一次
- * 账本（整个进程生命周期通常一锤子）。改 async 必须沿 `shouldSkipAutoUpgrade`
- * 等调用链向上传播，收益不抵成本。
- *
- * 另：OpenClaw plugin SDK 当前未暴露查询 installRecords 的 API，只能直接读
- * `<state-dir>/plugins/installs.json`（与上游 `manifest-metadata-scan` 等
- * 内部模块同源做法）。如果上游后续开放官方接口，可切换并删除直读分支。
- *
- * @param {string} pluginId
- * @returns {object|null}
+ * @param {string} parent
+ * @param {string} child
+ * @param {object} [pathImpl] - 测试注入（win32 盘符/大小写边角）；默认 nodePath
+ * @returns {boolean}
  */
-function loadInstallRecord(pluginId) {
-	let ledgerPath;
-	try {
-		ledgerPath = nodePath.join(resolveStateDir(), INSTALLS_LEDGER_RELATIVE_PATH);
-	}
-	catch (err) {
-		// 极少触发：host runtime 的 state resolver 自身异常
-		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
-		remoteLog(`upgrade.state-dir-failed msg=${err?.message ?? String(err)}`);
-		return null;
-	}
-	let raw;
-	try {
-		raw = nodeFs.readFileSync(ledgerPath, 'utf8');
-	}
-	catch (err) {
-		if (err?.code === 'ENOENT') {
-			return loadInstallRecordFromLegacyConfig(pluginId);
-		}
-		// 账本应该可读但读不到（权限/EISDIR/IO 错误）：不回落到旧字段，避免误判老路径
-		// 静默返回 null 会让 start() 打 "Skipping: not an npm-installed plugin"，对运维毫无指向；
-		// 把诊断信号外推到 server，便于定位
-		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
-		remoteLog(`upgrade.ledger-read-failed code=${err?.code ?? 'unknown'} msg=${err?.message ?? String(err)}`);
-		return null;
-	}
-	let parsed;
-	try {
-		parsed = JSON.parse(raw);
-	}
-	catch (err) {
-		// 账本损坏：同样不回落，并外推诊断信号
-		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
-		remoteLog(`upgrade.ledger-parse-failed msg=${err?.message ?? String(err)}`);
-		return null;
-	}
-	return parsed?.installRecords?.[pluginId] ?? null;
+export function isPathInside(parent, child, pathImpl) {
+	/* c8 ignore next -- ?? fallback */
+	const p = pathImpl ?? nodePath;
+	const rel = p.relative(parent, child);
+	return rel === '' || (!rel.startsWith(`..${p.sep}`) && rel !== '..' && !p.isAbsolute(rel));
 }
 
 /**
- * 旧版 OpenClaw（≤ 2026.4.24）账本路径：openclaw.json 的 plugins.installs。
- * @param {string} pluginId
- * @returns {object|null}
- */
-function loadInstallRecordFromLegacyConfig(pluginId) {
-	try {
-		const config = getClawConfig();
-		return config?.plugins?.installs?.[pluginId] ?? null;
-	}
-	catch (err) {
-		// 与同函数其他 catch 风格对齐：旧版账本读取异常也外推诊断信号，
-		// 否则下游只能看到笼统的 "Skipping: not an npm-installed plugin"，无定位线索
-		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
-		remoteLog(`upgrade.legacy-config-read-failed msg=${err?.message ?? String(err)}`);
-		return null;
-	}
-}
-
-/**
- * 判断是否应跳过自动升级
+ * 判断是否应跳过自动升级（L0：Nix 短路 + 位置自检）
  *
- * `openclaw plugins update` 仅对 source === "npm" 的安装生效。
- * source 的可能值：
- * - "npm"：从 npm registry 安装（生产环境，允许自动升级）
- * - "path"：link 模式（本地开发，跳过）
- * - "archive"：从 tarball 安装（跳过）
+ * 账本直读已移除；来源判定（npm/path/archive/...）后移到 L1（`__check` 内
+ * 逐周期 inspect，瞬时失败下周期自愈）。这里只做启动时刻的同步短路：
+ * - Nix mode：config 不可变，自动升级无意义；
+ * - 位置自检：正式安装三代均落在 state-dir 内，自身包根在外 ⇒ dev/link 装置，
+ *   跳过整个 scheduler——避免 dev 长命网关在"已发版未 pull"常态窗口每小时
+ *   spawn 一次 inspect，且不依赖 CLI 可用性。
  *
- * @param {string} pluginId
+ * 只信 runtime 注入的 resolveStateDir：state.js 的 env/home 兜底可能与上游
+ * 真实 state-dir 分叉，不得用于"在外"判定。runtime 不可用或 realpath/谓词
+ * 任一步抛错 → 不下"在外"结论，放行到 L1 兜底 + remoteLog 信号。
+ *
+ * @param {string} pluginId - 兼容旧签名保留；位置判定不依赖它
+ * @param {object} [opts] - 测试注入
+ * @param {string} [opts.pluginRoot] - 覆盖自身包根
+ * @param {string} [opts.stateDir] - 覆盖 state-dir（绕过 runtime）
  * @returns {boolean} true 表示应跳过自动升级
  */
-export function shouldSkipAutoUpgrade(pluginId) {
-	return loadInstallRecord(pluginId)?.source !== 'npm';
+export function shouldSkipAutoUpgrade(pluginId, opts) {
+	if (isNixMode()) return true;
+	try {
+		let stateDir = opts?.stateDir;
+		if (stateDir == null) {
+			const rt = getRuntime();
+			if (typeof rt?.state?.resolveStateDir !== 'function') {
+				// runtime 不可用：不能用 env/home 兜底下"在外"结论，放行到 L1
+				remoteLog('upgrade.state-dir-failed msg=runtime resolveStateDir unavailable');
+				return false;
+			}
+			stateDir = rt.state.resolveStateDir();
+		}
+		// 先 resolve 得根、再 realpath：link 模式下结果确定为 stage 根（与 updater-check.js 同锚点）
+		const pkgRoot = nodeFs.realpathSync(
+			opts?.pluginRoot ?? nodePath.resolve(import.meta.dirname, '../..'),
+		);
+		const realStateDir = nodeFs.realpathSync(stateDir);
+		if (!isPathInside(realStateDir, pkgRoot)) {
+			// start() 每次 gateway 启动只走一次，至多一条，与 nix-skip 同级
+			remoteLog(`upgrade.position-skip pkgRoot=${pkgRoot} stateDir=${realStateDir}`);
+			return true;
+		}
+		return false;
+	}
+	catch (err) {
+		// realpath/谓词任一步异常：不下"在外"结论，放行 + 信号
+		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
+		remoteLog(`upgrade.state-dir-failed msg=${err?.message ?? String(err)}`);
+		return false;
+	}
 }
 
 /**
@@ -232,15 +198,6 @@ export function isNixMode() {
 }
 
 /**
- * 获取插件安装路径
- * @param {string} pluginId
- * @returns {string|null}
- */
-export function getPluginInstallPath(pluginId) {
-	return loadInstallRecord(pluginId)?.installPath ?? null;
-}
-
-/**
  * 自动升级调度器
  */
 export class AutoUpgradeScheduler {
@@ -255,6 +212,8 @@ export class AutoUpgradeScheduler {
 	__opts = {};
 	/** 已报告过的 lastUpgrade.ts，用于去重 */
 	__lastReportedUpgradeTs = null;
+	/** L1 门禁信号去重：key=`<原因>|<toVersion>`，重启重置（稳定态装置至多重发一条） */
+	__reportedGateSignals = new Set();
 
 	/**
 	 * @param {object} [params]
@@ -267,7 +226,9 @@ export class AutoUpgradeScheduler {
 	 * @param {Function} [params.opts.spawnFn]
 	 * @param {Function} [params.opts.shouldSkipFn]
 	 * @param {Function} [params.opts.isNixModeFn]
-	 * @param {Function} [params.opts.getPluginInstallPathFn]
+	 * @param {Function} [params.opts.inspectInstallFn] - L1 来源门禁的 inspect 注入
+	 * @param {string} [params.opts.pluginRoot] - L0 位置自检/L1 回退的包根注入
+	 * @param {string} [params.opts.stateDir] - L0 位置自检的 state-dir 注入
 	 */
 	constructor(params) {
 		if (params?.pluginId) this.__pluginId = params.pluginId;
@@ -300,13 +261,13 @@ export class AutoUpgradeScheduler {
 		}
 
 		const shouldSkip = this.__opts.shouldSkipFn ?? shouldSkipAutoUpgrade;
-		if (shouldSkip(this.__pluginId)) {
-			this.__logger.info?.('[auto-upgrade] Skipping: not an npm-installed plugin');
+		if (shouldSkip(this.__pluginId, this.__opts)) {
+			this.__logger.info?.('[auto-upgrade] Skipping: plugin package root is outside state-dir (dev/link install)');
 			this.__running = false;
 			return;
 		}
 
-		// 默认 5~10 分钟随机延迟，避免多实例同时发起检查
+		// 默认 60~120 分钟随机延迟，避免多实例同时发起检查
 		/* c8 ignore next 2 -- ?? fallback：测试始终注入 initialDelayMs */
 		const initialDelay = this.__opts.initialDelayMs
 			?? (INITIAL_DELAY_MS + Math.floor(Math.random() * INITIAL_DELAY_MS));
@@ -337,6 +298,20 @@ export class AutoUpgradeScheduler {
 			this.__intervalTimer = null;
 		}
 		this.__logger.info?.('[auto-upgrade] Scheduler stopped');
+	}
+
+	/**
+	 * L1 门禁信号去重上报：同一 (原因, toVersion) 每个 gateway 进程周期只发一条。
+	 * source-skip / 无记录是稳定态，逐周期重验若不去重会每小时刷 server；
+	 * gate-inspect-failed 持续存在时也只需一条（重启重置，至多重发一条）。
+	 * installPath 回退两条信号（fallback / pkg-name-mismatch）同模式去重。
+	 * @param {string} key - 去重键，`<原因>|<toVersion>`
+	 * @param {string} text - remoteLog 文本
+	 */
+	__gateSignalOnce(key, text) {
+		if (this.__reportedGateSignals.has(key)) return;
+		this.__reportedGateSignals.add(key);
+		remoteLog(text);
 	}
 
 	/**
@@ -395,21 +370,90 @@ export class AutoUpgradeScheduler {
 				return;
 			}
 
+			// L1 来源门禁：有新版才核对权威安装记录（独立 CLI 子进程，不冻结网关，
+			// 逐周期重验——结构上消灭"一次误判 → 永久静默停摆"）。
+			// 必须局部 try/catch：外层 catch-all 会把这里的异常吞成泛化 upgrade.check-failed，混淆信号。
+			let install;
+			try {
+				/* c8 ignore next -- ?? fallback */
+				const inspectInstall = this.__opts.inspectInstallFn ?? inspectPluginInstall;
+				const inspected = await inspectInstall(this.__pluginId, { execFileFn: this.__opts.execFileFn });
+				if (!inspected.ok) {
+					// inspect 真失败（exit≠0 / 解析失败）：本周期跳过，下周期自动重试（瞬时自愈、持续可见）
+					this.__gateSignalOnce(
+						`gate-inspect-failed|${result.latestVersion}`,
+						`upgrade.gate-inspect-failed to=${result.latestVersion} msg=${inspected.reason}`,
+					);
+					this.__logger.warn?.(`[auto-upgrade] Install record inspect failed, skipping this cycle: ${inspected.reason}`);
+					return;
+				}
+				install = inspected.install;
+			}
+			catch (err) {
+				// 注入实现异常也按真失败处理：跳过本周期，下周期重试
+				/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
+				const msg = err?.message ?? String(err);
+				this.__gateSignalOnce(
+					`gate-inspect-failed|${result.latestVersion}`,
+					`upgrade.gate-inspect-failed to=${result.latestVersion} msg=${msg}`,
+				);
+				this.__logger.warn?.(`[auto-upgrade] Install record inspect threw, skipping this cycle: ${msg}`);
+				return;
+			}
+
+			const source = install?.source ?? 'none';
+			if (source !== 'npm') {
+				// 非 npm 装置（path/archive/git/...）或无安装记录（source=none）：
+				// 与现状语义等价（这些装置今天也不升级），但多了远程可见性
+				this.__gateSignalOnce(
+					`source-skip:${source}|${result.latestVersion}`,
+					`upgrade.source-skip source=${source} to=${result.latestVersion}`,
+				);
+				this.__logger.info?.(`[auto-upgrade] Skipping: install source is ${source} (not npm)`);
+				return;
+			}
+
+			// 来源验明 npm 后才上报 available——否则永不升级的装置每小时刷一条
 			remoteLog(`upgrade.available from=${result.currentVersion} to=${result.latestVersion}`);
 			this.__logger.info?.(`[auto-upgrade] Update available: ${result.currentVersion} → ${result.latestVersion}`);
 
-			const getInstallPath = this.__opts.getPluginInstallPathFn ?? getPluginInstallPath;
-			const pluginDir = getInstallPath(this.__pluginId);
+			// installPath 取自权威记录（新鲜）；缺失时回退自推包根，
+			// 并核验该目录 package.json 的包名，防错传目录给备份/回滚
+			let pluginDir = install.installPath;
 			if (!pluginDir) {
-				remoteLog('upgrade.no-install-path');
-				this.__logger.warn?.('[auto-upgrade] Cannot determine plugin install path');
-				return;
+				pluginDir = this.__opts.pluginRoot ?? nodePath.resolve(import.meta.dirname, '../..');
+				// 记录缺 installPath 是稳定异常态，与门禁信号同模式按 (原因, toVersion) 去重
+				this.__gateSignalOnce(
+					`install-path-fallback|${result.latestVersion}`,
+					`upgrade.install-path-fallback to=${result.latestVersion} dir=${pluginDir}`,
+				);
+				this.__logger.warn?.(`[auto-upgrade] Install record has no installPath, falling back to plugin root: ${pluginDir}`);
+				let pkgName = null;
+				try {
+					({ name: pkgName } = await getPackageInfo(pluginDir));
+				}
+				catch {
+					// package.json 读不到/损坏：按核验失败处理
+				}
+				if (pkgName !== result.pkgName) {
+					this.__gateSignalOnce(
+						`no-install-path:pkg-name-mismatch|${result.latestVersion}`,
+						`upgrade.no-install-path reason=pkg-name-mismatch got=${pkgName}`,
+					);
+					this.__logger.warn?.(`[auto-upgrade] Fallback plugin dir failed package name check (got ${pkgName}), skipping`);
+					return;
+				}
 			}
+
+			// 基线版本来自权威记录：worker 据此区分"record 推进/未推进"（L2 结局核对）
+			const baselineVersion = typeof install.version === 'string' ? install.version : '';
+			this.__logger.info?.(`[auto-upgrade] Pre-upgrade baseline: version=${baselineVersion || '(unknown)'} path=${pluginDir}`);
 
 			const { child } = spawnUpgradeWorker({
 				pluginDir,
 				fromVersion: result.currentVersion,
 				toVersion: result.latestVersion,
+				baselineVersion,
 				pluginId: this.__pluginId,
 				pkgName: result.pkgName,
 				opts: { spawnFn: this.__opts.spawnFn },

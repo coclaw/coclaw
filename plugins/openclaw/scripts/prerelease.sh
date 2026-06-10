@@ -30,6 +30,7 @@ cd "$PLUGIN_DIR"
 pnpm verify
 
 # Step 2: 记录当前安装模式（用于结束后恢复）
+load_install_record # 主 shell 预载，子 shell 继承缓存
 ORIGINAL_MODE=$(get_install_mode)
 echo ""
 echo "[INFO] 当前安装模式: $ORIGINAL_MODE（验证完成后将恢复）"

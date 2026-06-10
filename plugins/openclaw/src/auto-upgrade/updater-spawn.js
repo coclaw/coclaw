@@ -23,6 +23,7 @@ export function getWorkerPath() {
  * @param {string} params.pluginDir - 插件安装目录
  * @param {string} params.fromVersion - 当前版本
  * @param {string} params.toVersion - 目标版本
+ * @param {string} [params.baselineVersion] - 升级前权威安装记录的版本（L2 结局核对基线；可缺）
  * @param {string} params.pluginId - 插件 ID
  * @param {string} params.pkgName - npm 包名
  * @param {object} [params.opts]
@@ -30,7 +31,7 @@ export function getWorkerPath() {
  * @param {object} [params.logger] - 需提供 .info() 方法（如 pino/gateway logger）
  * @returns {{ child: object }}
  */
-export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, pluginId, pkgName, opts, logger }) {
+export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, baselineVersion, pluginId, pkgName, opts, logger }) {
 	/* c8 ignore next -- ?./?? fallback */
 	const doSpawn = opts?.spawnFn ?? nodeSpawn;
 	const workerPath = getWorkerPath();
@@ -42,14 +43,20 @@ export function spawnUpgradeWorker({ pluginDir, fromVersion, toVersion, pluginId
 	const env = { ...process.env };
 	if (stateDir) env.OPENCLAW_STATE_DIR = stateDir;
 
-	const child = doSpawn(process.execPath, [
+	const args = [
 		workerPath,
 		'--pluginDir', pluginDir,
 		'--fromVersion', fromVersion,
 		'--toVersion', toVersion,
 		'--pluginId', pluginId,
 		'--pkgName', pkgName,
-	], {
+	];
+	// 基线缺失时不传 flag，worker 按"基线不可得"退化处理
+	if (baselineVersion) {
+		args.push('--baselineVersion', baselineVersion);
+	}
+
+	const child = doSpawn(process.execPath, args, {
 		detached: true,
 		stdio: 'ignore',
 		env,

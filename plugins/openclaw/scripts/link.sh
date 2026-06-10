@@ -20,6 +20,7 @@ source "$(dirname "$0")/_lib.sh"
 
 echo "=== 切换到 link 开发模式 ==="
 
+load_install_record # 主 shell 预载，子 shell 继承缓存
 mode=$(get_install_mode)
 
 # 不论当前是 link/npm/archive 哪种模式都先卸载，再重建 stage 重装。

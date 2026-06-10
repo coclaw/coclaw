@@ -9,9 +9,10 @@
  * 执行 `plugins update` 之间 npm dist-tag 可能已指向 x+1；严格等 x 会把
  * 这种"升级到了更新版本"误判为失败并回滚。
  *
- * 磁盘 package.json 的版本仅作为诊断写入本地日志，不参与判定——openclaw 侧
- * `plugins.installs[id].installPath` 可能在 id-migration 等极端场景发生漂移，
- * 而 upgradeHealth 是 gateway 进程内"新代码真的被加载"的权威信号。
+ * 磁盘 package.json 的版本仅作为诊断写入本地日志，不参与判定——安装目录路径
+ * 取自权威记录（经 openclaw plugins inspect 读取），仍可能在 id-migration 等
+ * 极端场景发生漂移，而 upgradeHealth 是 gateway 进程内"新代码真的被加载"的
+ * 权威信号。
  *
  * worker 运行在独立子进程中，禁止使用 remoteLog；诊断信息全部通过 logger
  * （本地日志）输出，由 updater 记录到 upgrade-log.jsonl。
@@ -20,21 +21,17 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
 
-// 与 updater-check.js 同逻辑，worker 运行在独立子进程，不跨进程复用 gateway 模块
-function isNewerVersion(a, b) {
-	const parse = (v) => v.replace(/-.*$/, '').split('.').map(Number);
-	const pa = parse(a);
-	const pb = parse(b);
-	for (let i = 0; i < 3; i++) {
-		/* c8 ignore next 2 -- ?? fallback：正常 semver 不会有缺失段 */
-		if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
-		if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
-	}
-	// x.y.z 相同时：release > pre-release（semver 规则）
-	const aHasPre = a.includes('-');
-	const bHasPre = b.includes('-');
-	if (bHasPre && !aHasPre) return true;
-	return false;
+import { isNewerVersion } from './updater-check.js';
+
+/**
+ * 升级达标判据：实际版本等于或新于目标即达标（isNewerVersion 是严格大于，须显式加等号）。
+ * 健康轮询与 worker 的 L2 结局核对共用本函数，保证两处判据同构。
+ * @param {string} version - 实际观测到的版本
+ * @param {string} target - 目标版本
+ * @returns {boolean}
+ */
+export function isVersionReached(version, target) {
+	return version === target || isNewerVersion(version, target);
 }
 
 const CMD_TIMEOUT_MS = 30_000;
@@ -166,7 +163,7 @@ export async function pollUpgradeHealth(toVersion, opts) {
 		const result = await callUpgradeHealthOnce(opts);
 		if (result.ok) {
 			// 等于或更新均视为成功，覆盖"升级窗口期 dist-tag 前移"的情形
-			if (result.version === toVersion || isNewerVersion(result.version, toVersion)) {
+			if (isVersionReached(result.version, toVersion)) {
 				return {
 					ok: true,
 					version: result.version,

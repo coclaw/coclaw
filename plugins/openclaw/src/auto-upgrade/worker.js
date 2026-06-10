@@ -2,9 +2,10 @@
  * worker.js — 由 updater-spawn 以 detached 进程启动
  *
  * 用法：node worker.js --pluginDir <dir> --fromVersion <ver> --toVersion <ver>
- *                       --pluginId <id> --pkgName <name>
+ *                       --pluginId <id> --pkgName <name> [--baselineVersion <ver>]
  *
- * 流程：备份 → openclaw plugins update → 等待 gateway 重启 → 验证 → 成功清理/失败回滚
+ * 流程：备份 → openclaw plugins update → L2 结局核对（inspect 安装记录）
+ *       → 等待 gateway 重启 → 验证 → 成功清理/失败回滚/未推进 no-op 跳过
  *
  * 注意：
  * - 本模块作为独立 node 进程运行，与 gateway 进程隔离
@@ -15,7 +16,8 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { createBackup, restoreFromBackup, removeBackup } from './worker-backup.js';
-import { verifyUpgrade, triggerGatewayRestart } from './worker-verify.js';
+import { verifyUpgrade, triggerGatewayRestart, isVersionReached } from './worker-verify.js';
+import { inspectPluginInstall } from './updater-check.js';
 import { addSkippedVersion, updateLastUpgrade, appendLog } from './state.js';
 import { getCurrentNpmRegistry, pickFallbackRegistry } from './registry-fallback.js';
 
@@ -104,6 +106,7 @@ async function fallbackInstallOldVersion(pkgName, version, pluginId, opts) {
  * @param {string} params.pluginDir - 插件安装目录
  * @param {string} params.fromVersion - 当前版本
  * @param {string} params.toVersion - 目标版本
+ * @param {string} [params.baselineVersion] - 升级前权威安装记录的版本（L2 基线；可缺）
  * @param {string} params.pluginId - 插件 ID
  * @param {string} params.pkgName - npm 包名
  * @param {object} [params.opts] - 测试注入选项
@@ -112,7 +115,7 @@ async function fallbackInstallOldVersion(pkgName, version, pluginId, opts) {
  * @param {number} [params.opts.pollIntervalMs]
  * @param {Function} [params.logger] - 日志函数
  */
-export async function runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, pkgName, opts, logger }) {
+export async function runUpgrade({ pluginDir, fromVersion, toVersion, baselineVersion, pluginId, pkgName, opts, logger }) {
 	const log = logger ?? console.log;
 
 	log(`[upgrade-worker] Starting upgrade: ${fromVersion} → ${toVersion}`);
@@ -162,9 +165,74 @@ export async function runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, 
 		return;
 	}
 
-	// 3. 等待 gateway 重启并验证
+	// 3. L2 结局核对：update exit 0 不代表真升级（老 host 出错也 exit 0、path/缺记录干净
+	// skip 也 exit 0、registry 假成功、latest-compatible 封顶）。经权威 inspect 读升级后
+	// 安装记录分流结局；stdout 文本无契约承诺，仅记日志不作判据。
+	// worker 是独立子进程、无 bridge 连接，禁 remoteLog——诊断只写本地日志，
+	// 结局经 lastUpgrade 接 scheduler 下轮上报链。
+	log('[upgrade-worker] Inspecting install record (post-update)...');
+	// inspectPluginInstall 契约是永不抛，但注入实现可能同步抛错；裸抛会 fatal exit 1
+	// （留 .bak、无状态记录），故归一化为 inspect 自身失败，走下方保守分支
+	let inspected;
+	try {
+		inspected = await inspectPluginInstall(pluginId, opts);
+	}
+	catch (err) {
+		/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
+		const msg = err?.message ?? String(err);
+		inspected = { ok: false, reason: `inspect threw: ${msg}` };
+	}
+
+	let verifyTarget = toVersion;
+	// record 推进但未达标：按实装版本验证健康，成功后对 toVersion 记跳过（已知到不了）
+	let advancedShortfall = false;
+	if (inspected.ok && typeof inspected.install?.version === 'string') {
+		const recordVersion = inspected.install.version;
+		if (isVersionReached(recordVersion, toVersion)) {
+			// 达标（等于或更新，覆盖 dist-tag 前移）：真升级，走现行 restart + 健康轮询流
+			log(`[upgrade-worker] Install record reached target: ${recordVersion}`);
+		}
+		else if (!baselineVersion) {
+			// 基线不可得：无从判断 record 是否推进，退化为现行流（restart + verify(toVersion)）
+			log(`[upgrade-worker] Record version ${recordVersion} below target but baseline unknown; proceeding with standard verify`);
+		}
+		else if (recordVersion === baselineVersion) {
+			// record 未推进：update 干净 skip / registry 假成功——磁盘什么都没变。
+			// no-op：不重启、不回滚，删备份，立即记 skipVersion 停止每小时空转重试
+			// （瞬时故障在新 host 上走 exit≠0 原路径，不会落到这里被永久跳过）
+			log(`[upgrade-worker] Install record did not advance (still ${recordVersion}); no-op skip for ${toVersion}`);
+			try { await removeBackup(pluginDir); }
+			catch (e) { log(`[upgrade-worker] Backup cleanup failed (non-fatal): ${e.message}`); }
+			try { await addSkippedVersion(toVersion); }
+			/* c8 ignore next -- 状态写入 catch：测试中 stub 不会失败 */
+			catch (e) { log(`[upgrade-worker] Failed to record skipped version (non-fatal): ${e.message}`); }
+			try { await updateLastUpgrade({ from: fromVersion, to: toVersion, result: 'noop-skip' }); }
+			/* c8 ignore next -- 状态写入 catch */
+			catch (e) { log(`[upgrade-worker] Failed to update lastUpgrade (non-fatal): ${e.message}`); }
+			try { await appendLog({ from: fromVersion, to: toVersion, result: 'noop-skip' }); }
+			/* c8 ignore next -- 状态写入 catch */
+			catch (e) { log(`[upgrade-worker] Failed to append log (non-fatal): ${e.message}`); }
+			log(`[upgrade-worker] No-op skip complete. Version ${toVersion} added to skipped list`);
+			return;
+		}
+		else {
+			// record 推进但未达标（latest-compatible 封顶等）：磁盘确已换代，
+			// 必须健康验证实装版本，避免未经验证的新副本在下次自然重启时静默激活
+			log(`[upgrade-worker] Install record advanced to ${recordVersion} (target ${toVersion} not reached); verifying actual version`);
+			verifyTarget = recordVersion;
+			advancedShortfall = true;
+		}
+	}
+	else {
+		// inspect 自身失败 / 记录缺版本：保守按"真升级"处理，进现行 restart + verify
+		//（健康检查 + 回滚兜底），避免工具故障静默压制激活
+		const reason = inspected.ok ? 'install record missing version' : inspected.reason;
+		log(`[upgrade-worker] Post-update inspect unavailable (${reason}); proceeding with standard verify`);
+	}
+
+	// 4. 等待 gateway 重启并验证
 	log('[upgrade-worker] Verifying upgrade...');
-	const result = await verifyUpgrade(pluginDir, toVersion, opts, log);
+	const result = await verifyUpgrade(pluginDir, verifyTarget, opts, log);
 
 	if (result.ok) {
 		// 4a. 成功
@@ -174,6 +242,13 @@ export async function runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, 
 		}
 		catch (e) {
 			log(`[upgrade-worker] Backup cleanup failed (non-fatal): ${e.message}`);
+		}
+		if (advancedShortfall) {
+			// 实装版本健康但 toVersion 在本 host 装不上：记跳过，停止注定不达标的重试
+			try { await addSkippedVersion(toVersion); }
+			/* c8 ignore next -- 状态写入 catch */
+			catch (e) { log(`[upgrade-worker] Failed to record skipped version (non-fatal): ${e.message}`); }
+			log(`[upgrade-worker] Version ${toVersion} added to skipped list (host capped below target)`);
 		}
 		// 记录真实装上的版本而非目标版本——dist-tag 前移窗口下两者可能不同。
 		// 不加 fallback：若 result.ok 时 version 缺失，说明上游契约被破坏，
@@ -252,20 +327,21 @@ async function main() {
 			pluginDir: { type: 'string' },
 			fromVersion: { type: 'string' },
 			toVersion: { type: 'string' },
+			baselineVersion: { type: 'string' }, // 可缺：缺时按"基线不可得"退化处理
 			pluginId: { type: 'string' },
 			pkgName: { type: 'string' },
 		},
 		strict: true,
 	});
 
-	const { pluginDir, fromVersion, toVersion, pluginId, pkgName } = values;
+	const { pluginDir, fromVersion, toVersion, baselineVersion, pluginId, pkgName } = values;
 	if (!pluginDir || !fromVersion || !toVersion || !pluginId || !pkgName) {
-		console.error('Usage: node worker.js --pluginDir <dir> --fromVersion <ver> --toVersion <ver> --pluginId <id> --pkgName <name>');
+		console.error('Usage: node worker.js --pluginDir <dir> --fromVersion <ver> --toVersion <ver> --pluginId <id> --pkgName <name> [--baselineVersion <ver>]');
 		process.exit(1);
 	}
 
 	try {
-		await runUpgrade({ pluginDir, fromVersion, toVersion, pluginId, pkgName });
+		await runUpgrade({ pluginDir, fromVersion, toVersion, baselineVersion, pluginId, pkgName });
 		process.exit(0);
 	}
 	catch (err) {

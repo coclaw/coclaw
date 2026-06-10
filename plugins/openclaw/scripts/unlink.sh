@@ -6,6 +6,7 @@ source "$(dirname "$0")/_lib.sh"
 
 echo "=== 卸载 link 开发模式 ==="
 
+load_install_record # 主 shell 预载，子 shell 继承缓存
 mode=$(get_install_mode)
 
 if [[ "$mode" == "none" ]]; then

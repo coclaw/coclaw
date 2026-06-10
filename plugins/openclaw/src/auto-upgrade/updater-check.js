@@ -54,6 +54,51 @@ export async function getLatestVersion(pkgName, opts) {
 	});
 }
 
+// inspect 走独立 CLI 子进程，对齐 npm view / worker runCmd 先例的 execFile 选项
+const INSPECT_TIMEOUT_MS = 30_000;
+
+/**
+ * 经官方 CLI 读取本插件的权威安装记录（`openclaw plugins inspect <id> --json`）。
+ *
+ * 账本文件直读已废弃（上游 ≥2026.6.1 迁 SQLite，旧 JSON 停更）；inspect 是
+ * 三代稳定的官方契约，输出 JSON 顶层 `install` 字段即原始 install record。
+ * gateway 的 L1 来源门禁与 worker 的 L2 结局核对共用本函数。
+ *
+ * 归一化返回、永不抛：
+ * - `{ ok: true, install }`：inspect 成功；无 install 记录（如 load.paths 装置）时 install 为 null
+ * - `{ ok: false, reason }`：CLI 退出非 0 / 输出非 JSON
+ *
+ * @param {string} pluginId
+ * @param {object} [opts]
+ * @param {Function} [opts.execFileFn] - 可注入的 execFile（测试用）
+ * @returns {Promise<{ ok: true, install: object|null } | { ok: false, reason: string }>}
+ */
+export async function inspectPluginInstall(pluginId, opts) {
+	/* c8 ignore next -- ?./?? fallback */
+	const doExecFile = opts?.execFileFn ?? nodeExecFile;
+	return new Promise((resolve) => {
+		doExecFile('openclaw', ['plugins', 'inspect', pluginId, '--json'], {
+			timeout: INSPECT_TIMEOUT_MS,
+			shell: process.platform === 'win32',
+		}, (err, stdout) => {
+			if (err) {
+				resolve({ ok: false, reason: `inspect failed: ${err.message}` });
+				return;
+			}
+			let payload;
+			try {
+				payload = JSON.parse(String(stdout));
+			}
+			catch {
+				resolve({ ok: false, reason: 'inspect output is not valid JSON' });
+				return;
+			}
+			const install = payload?.install && typeof payload.install === 'object' ? payload.install : null;
+			resolve({ ok: true, install });
+		});
+	});
+}
+
 /**
  * 简易 semver 比较：a > b 返回 true
  * @param {string} a

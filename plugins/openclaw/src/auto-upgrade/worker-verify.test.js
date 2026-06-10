@@ -5,11 +5,31 @@ import nodePath from 'node:path';
 import os from 'node:os';
 
 import {
+	isVersionReached,
 	triggerGatewayRestart,
 	readDiskPackageVersion,
 	pollUpgradeHealth,
 	verifyUpgrade,
 } from './worker-verify.js';
+
+// --- isVersionReached（轮询成功判据与 L2 结局判据同构共用）---
+
+test('isVersionReached - 版本相等达标（等号防"严格大于"回归）', () => {
+	assert.equal(isVersionReached('1.1.0', '1.1.0'), true);
+});
+
+test('isVersionReached - 版本更新达标（dist-tag 前移）', () => {
+	assert.equal(isVersionReached('1.1.1', '1.1.0'), true);
+});
+
+test('isVersionReached - 版本更老不达标', () => {
+	assert.equal(isVersionReached('1.0.9', '1.1.0'), false);
+});
+
+test('isVersionReached - 同 x.y.z 的 pre-release 不达标，release 达标', () => {
+	assert.equal(isVersionReached('1.1.0-beta.1', '1.1.0'), false);
+	assert.equal(isVersionReached('1.1.0', '1.1.0-beta.1'), true);
+});
 
 // --- 辅助工具 ---
 

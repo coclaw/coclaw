@@ -45,6 +45,9 @@ async function cleanTmpEnv(base) {
  * @param {boolean} [behavior.healthFails] - upgradeHealth 是否失败
  * @param {boolean} [behavior.fallbackInstallFails] - fallback install 是否失败
  * @param {boolean} [behavior.uninstallFails] - plugins uninstall 是否失败
+ * @param {string} [behavior.inspectVersion] - plugins inspect 返回的记录版本
+ * @param {boolean} [behavior.inspectFails] - plugins inspect 是否失败
+ * @param {boolean} [behavior.inspectNoRecord] - plugins inspect 是否无 install 记录
  */
 function createMockExec(behavior = {}) {
 	const {
@@ -55,6 +58,9 @@ function createMockExec(behavior = {}) {
 		healthFails = false,
 		fallbackInstallFails = false,
 		uninstallFails = false,
+		inspectVersion = '1.1.0',
+		inspectFails = false,
+		inspectNoRecord = false,
 	} = behavior;
 
 	const calls = [];
@@ -69,6 +75,15 @@ function createMockExec(behavior = {}) {
 			if (argsStr.includes('plugins update')) {
 				if (updateFails) return cb(new Error('update boom'));
 				return cb(null, 'ok', '');
+			}
+
+			// plugins inspect（L2 结局核对）
+			if (argsStr.includes('plugins inspect')) {
+				if (inspectFails) return cb(new Error('inspect boom'));
+				if (inspectNoRecord) return cb(null, JSON.stringify({ plugin: { id: 'test-plugin' } }), '');
+				return cb(null, JSON.stringify({
+					install: { source: 'npm', installPath: '/opt/p', version: inspectVersion },
+				}), '');
 			}
 
 			// gateway status
@@ -187,25 +202,34 @@ test('runUpgrade — 装上的版本比 toVersion 更新时，state/log 记录�
 	process.env.OPENCLAW_STATE_DIR = stateDir;
 
 	try {
-		// scheduler 观察到 latest=1.1.0 并发起升级，worker 执行 plugins update 时
-		// npm dist-tag 已前移到 1.1.1，upgradeHealth 返回 1.1.1；应视为成功并记录 1.1.1
-		const { execFileFn } = createMockExec({ healthVersion: '1.1.1' });
-		const { logger } = createLogger();
+		// scheduler 观察到 latest=1.1.0 并发起升级（基线 1.0.0），worker 执行
+		// plugins update 时 npm dist-tag 已前移到 1.1.1：inspect 记录 1.1.1
+		//（达标判据走 isNewerVersion 严格大于分支）、upgradeHealth 返回 1.1.1；
+		// 应视为成功并记录 1.1.1。必须传 baselineVersion，否则流程退化到
+		// baseline-unknown 分支，测不到达标判据本身
+		const { execFileFn } = createMockExec({ healthVersion: '1.1.1', inspectVersion: '1.1.1' });
+		const { logs, logger } = createLogger();
 
 		await runUpgrade({
 			pluginDir,
 			fromVersion: '1.0.0',
 			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
 			pluginId: 'test-plugin',
 			pkgName: '@test/pkg',
 			opts: fastOpts(execFileFn),
 			logger,
 		});
 
+		// 决定性锚点：真走了达标分支（判据若变异为严格相等，会改走 advancedShortfall）
+		assert.ok(logs.some(l => l.includes('Install record reached target: 1.1.1')));
+
 		// state 的 to 必须是真实装上的版本 1.1.1，不是参数 toVersion=1.1.0
 		const state = await readState();
 		assert.equal(state.lastUpgrade.to, '1.1.1');
 		assert.equal(state.lastUpgrade.result, 'ok');
+		// 达标分支不记 skip；判据变异成严格相等会经 advancedShortfall 误写 skip
+		assert.equal(state.skippedVersions, undefined);
 
 		// log 也要记录真实版本
 		const logPath = nodePath.join(stateDir, 'coclaw', 'upgrade-log.jsonl');
@@ -344,6 +368,10 @@ test('runUpgrade — 更新命令失败：回滚但不记录 skippedVersions（�
 		// 防止未来重构把 mirror 兜底逻辑去掉而测试静默通过
 		const updateCount = calls.filter(c => c.args.join(' ').includes('plugins update')).length;
 		assert.equal(updateCount, 2, '失败后应触发一次 fallback retry，共调用两次 plugins update');
+
+		// exit≠0 走现行回滚路径，一字不动：不进 L2 结局核对（不调 inspect）
+		const inspectCount = calls.filter(c => c.args.join(' ').includes('plugins inspect')).length;
+		assert.equal(inspectCount, 0, 'update 失败路径不应调用 plugins inspect');
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
@@ -1279,6 +1307,359 @@ test('runUpgrade — retry 时清除用户 NPM_CONFIG_REGISTRY 大写 env，确�
 		);
 	} finally {
 		delete process.env.NPM_CONFIG_REGISTRY;
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 16. L2 结局矩阵（exit 0 后按 inspect 记录分流）
+// ============================================================
+
+test('L2 — exit 0 + record 达标（版本相等，等号防"严格大于"回归）→ 真升级现行流', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		const { execFileFn, calls } = createMockExec({ inspectVersion: '1.1.0', healthVersion: '1.1.0' });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// 达标走现行流：restart + 健康轮询 + 成功收尾
+		assert.ok(calls.some(c => c.args.join(' ').includes('plugins inspect')));
+		assert.ok(calls.some(c => c.args.join(' ').includes('gateway restart')));
+		assert.ok(logs.some(l => l.includes('Install record reached target: 1.1.0')));
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.equal(state.lastUpgrade.to, '1.1.0');
+		// 真升级不记 skippedVersions
+		assert.equal(state.skippedVersions, undefined);
+		await assert.rejects(fs.access(`${pluginDir}.bak`), '备份应已清理');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — exit 0 + record 未推进 → no-op：不重启不回滚、删 .bak、立即 skipVersion、noop-skip', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// update exit 0 但权威记录仍是基线版本（干净 skip / registry 假成功）
+		const { execFileFn, calls } = createMockExec({ inspectVersion: '1.0.0' });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// 不重启、不进健康轮询；不回滚由下方 lastUpgrade.result=noop-skip（非 rollback）锚定
+		//（plugins uninstall 只出现在 update 失败的 registry 兜底，对 exit-0 路径负断言恒真，无保护力）
+		assert.ok(!calls.some(c => c.args.join(' ').includes('gateway restart')), 'no-op 不得触发 restart');
+		assert.ok(!calls.some(c => c.args.join(' ').includes('coclaw.upgradeHealth')), 'no-op 不得进健康轮询');
+
+		// 删 .bak；插件目录原封不动
+		await assert.rejects(fs.access(`${pluginDir}.bak`), '备份应已删除');
+		const pkg = JSON.parse(await fs.readFile(nodePath.join(pluginDir, 'package.json'), 'utf8'));
+		assert.equal(pkg.version, '1.0.0');
+
+		// 立即 skipVersion + lastUpgrade noop-skip token（接 scheduler 上报链）
+		const state = await readState();
+		assert.ok(state.skippedVersions.includes('1.1.0'));
+		assert.equal(state.lastUpgrade.result, 'noop-skip');
+		assert.equal(state.lastUpgrade.from, '1.0.0');
+		assert.equal(state.lastUpgrade.to, '1.1.0');
+
+		// 本地 jsonl 也落一条
+		const logPath = nodePath.join(stateDir, 'coclaw', 'upgrade-log.jsonl');
+		const entry = JSON.parse((await fs.readFile(logPath, 'utf8')).trim());
+		assert.equal(entry.result, 'noop-skip');
+
+		assert.ok(logs.some(l => l.includes('did not advance')));
+		assert.ok(logs.some(l => l.includes('No-op skip complete')));
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — no-op 分支删 .bak 失败时不阻断 skipVersion 与状态记录', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+	const bakDir = `${pluginDir}.bak`;
+
+	try {
+		const { execFileFn } = createMockExec({ inspectVersion: '1.0.0' });
+		// 在 no-op 删 .bak 之前（inspect 时点）把备份目录改为只读，使 removeBackup 抛错
+		const wrappedExecFn = (cmd, args, opts, cb) => {
+			const argsStr = args.join(' ');
+			if (argsStr.includes('plugins inspect')) {
+				const protectedDir = nodePath.join(bakDir, 'protected');
+				fs.mkdir(protectedDir, { recursive: true })
+					.then(() => fs.chmod(bakDir, 0o444))
+					.then(() => execFileFn(cmd, args, opts, cb))
+					.catch(() => execFileFn(cmd, args, opts, cb));
+				return;
+			}
+			execFileFn(cmd, args, opts, cb);
+		};
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(wrappedExecFn),
+			logger,
+		});
+
+		// 恢复权限以便清理
+		try { await fs.chmod(bakDir, 0o755); } catch {}
+
+		assert.ok(logs.some(l => l.includes('Backup cleanup failed')));
+		// 清理失败不阻断：skipVersion 与 noop-skip 记录仍须落盘
+		const state = await readState();
+		assert.ok(state.skippedVersions.includes('1.1.0'));
+		assert.equal(state.lastUpgrade.result, 'noop-skip');
+		assert.ok(logs.some(l => l.includes('No-op skip complete')));
+	} finally {
+		try { await fs.chmod(bakDir, 0o755); } catch {}
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — exit 0 + record 推进未达标 + 实装版本健康 → ok 并 skip toVersion', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// latest-compatible 封顶：目标 1.1.0，实际只装上 1.0.5；健康轮询按实装版本验证
+		const { execFileFn, calls } = createMockExec({ inspectVersion: '1.0.5', healthVersion: '1.0.5' });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// 磁盘已换代：必须 restart + 按实装版本健康验证（不能放任未经验证的副本下次静默激活）
+		assert.ok(calls.some(c => c.args.join(' ').includes('gateway restart')));
+		assert.ok(logs.some(l => l.includes('advanced to 1.0.5')));
+
+		const state = await readState();
+		// 实装版本健康 → ok（记录真实装上的版本）；toVersion 已知到不了 → 记跳过停止空转
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.equal(state.lastUpgrade.to, '1.0.5');
+		assert.ok(state.skippedVersions.includes('1.1.0'));
+		await assert.rejects(fs.access(`${pluginDir}.bak`), '备份应已清理');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — exit 0 + record 推进未达标 + 实装版本验证失败 → 现行回滚', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// 记录推进到 1.0.5 但健康轮询一直报老版本 → 验证超时 → 现行回滚（skipVersion=true）
+		const { execFileFn } = createMockExec({ inspectVersion: '1.0.5', healthVersion: '1.0.0' });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.ok(logs.some(l => l.includes('Verification failed')));
+		assert.ok(logs.some(l => l.includes('Rollback complete')));
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'rollback');
+		assert.ok(state.skippedVersions.includes('1.1.0'));
+		// 插件目录被恢复
+		const pkg = JSON.parse(await fs.readFile(nodePath.join(pluginDir, 'package.json'), 'utf8'));
+		assert.equal(pkg.version, '1.0.0');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — exit 0 + 基线不可得 + record 未达标 → 退化现行流（restart + verify(toVersion)）', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// 不传 baselineVersion：无从判断 record 是否推进，按现行流验证 toVersion
+		const { execFileFn, calls } = createMockExec({ inspectVersion: '1.0.0', healthVersion: '1.0.0' });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.ok(logs.some(l => l.includes('baseline unknown')));
+		// 退化现行流：restart + verify(toVersion) → 超时 → 回滚（而非 no-op）
+		assert.ok(calls.some(c => c.args.join(' ').includes('gateway restart')));
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'rollback');
+		assert.ok(state.skippedVersions.includes('1.1.0'));
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — exit 0 + inspect 自身失败 → 保守按真升级走现行流', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		const { execFileFn, calls } = createMockExec({ inspectFails: true, healthVersion: '1.1.0' });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// 保守现行流：工具故障不得静默压制激活
+		assert.ok(logs.some(l => l.includes('proceeding with standard verify')));
+		assert.ok(calls.some(c => c.args.join(' ').includes('gateway restart')));
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.equal(state.skippedVersions, undefined);
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — exit 0 + inspect 调用抛错 → 不 fatal，保守按真升级走现行流', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// 注入的 execFileFn 在 inspect 调用上同步抛错（违反"永不抛"契约的注入实现）：
+		// 不得 fatal exit，应归一化为 inspect 自身失败，走保守 verify(toVersion)
+		const { execFileFn, calls } = createMockExec({ healthVersion: '1.1.0' });
+		const wrappedExecFn = (cmd, args, opts, cb) => {
+			if (args.join(' ').includes('plugins inspect')) {
+				throw new Error('inspect sync boom');
+			}
+			return execFileFn(cmd, args, opts, cb);
+		};
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(wrappedExecFn),
+			logger,
+		});
+
+		// 抛错被归一化进保守现行流，且错误信息进本地日志
+		assert.ok(logs.some(l => l.includes('inspect threw: inspect sync boom')));
+		assert.ok(logs.some(l => l.includes('proceeding with standard verify')));
+		assert.ok(calls.some(c => c.args.join(' ').includes('gateway restart')));
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.equal(state.skippedVersions, undefined);
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('L2 — exit 0 + inspect 正常但无 install 记录 → 保守按真升级走现行流', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		const { execFileFn, calls } = createMockExec({ inspectNoRecord: true, healthVersion: '1.1.0' });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.ok(logs.some(l => l.includes('install record missing version')));
+		assert.ok(calls.some(c => c.args.join(' ').includes('gateway restart')));
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
 	}
