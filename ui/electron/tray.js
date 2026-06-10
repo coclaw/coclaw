@@ -118,6 +118,21 @@ export function attachMainWindow(app, win) {
 	});
 }
 
+/**
+ * 安装退出守卫——attachMainWindow 里「关窗→收进托盘」策略的另一半。
+ * 不带 isQuitting 的退出入口（Cmd+Q / 菜单 quit role / SIGTERM / 自动更新 / 注销关机）发起的
+ * app.quit() 会触发窗口 close，被上面的 close 处理器 preventDefault 收进托盘，整个退出流程
+ * 随之取消——进程健康活着但永远退不掉（2026-06 实机矩阵钉死的真根因，与 RTC/teardown 无关）。
+ * 在 before-quit 统一置位 isQuitting，让一切退出意图放行 close；窗口 X 关闭只走 close、
+ * 不触发 before-quit，「收进托盘」行为不受影响。
+ * @param {Electron.App} app
+ */
+export function installQuitGuard(app) {
+	app.on('before-quit', () => {
+		app.isQuitting = true;
+	});
+}
+
 /** 退出前清理：停闪动、destroy 托盘、移除 ipcMain 监听（对称 initTray） */
 export function disposeTray() {
 	if (flashTimer) {

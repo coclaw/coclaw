@@ -2,7 +2,7 @@ import { app, BrowserWindow, Menu, session, shell, globalShortcut } from 'electr
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import windowStateKeeper from 'electron-window-state';
-import { initTray, attachMainWindow, disposeTray } from './tray.js';
+import { initTray, attachMainWindow, disposeTray, installQuitGuard } from './tray.js';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { setupPermissions } from './permissions.js';
 import {
@@ -300,6 +300,10 @@ if (!gotLock) {
 			app.quit();
 		}
 	});
+
+	// 退出守卫：before-quit 统一置位 isQuitting，覆盖 Cmd+Q/SIGTERM/更新器等所有退出入口
+	// （否则会被 minimize-to-tray 的 close 拦截取消，见 tray.js installQuitGuard）
+	installQuitGuard(app);
 
 	app.on('will-quit', () => {
 		globalShortcut.unregisterAll();

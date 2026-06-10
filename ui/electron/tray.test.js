@@ -49,7 +49,7 @@ vi.mock('./locale.js', () => ({
 	t: (zh, en) => en,
 }));
 
-const { initTray, attachMainWindow, disposeTray } = await import('./tray.js');
+const { initTray, attachMainWindow, disposeTray, installQuitGuard } = await import('./tray.js');
 const { nativeImage } = await import('electron');
 
 describe('tray flash', () => {
@@ -162,6 +162,57 @@ describe('attachMainWindow', () => {
 		attachMainWindow(fakeApp, null);
 		attachMainWindow(fakeApp, { isDestroyed: () => true, on: vi.fn() });
 		// 无异常即通过
+	});
+});
+
+describe('installQuitGuard', () => {
+	function makeApp() {
+		const handlers = {};
+		return {
+			handlers,
+			app: { isQuitting: false, on: vi.fn((e, h) => { handlers[e] = h; }) },
+		};
+	}
+
+	test('注册 before-quit 处理器', () => {
+		const { app, handlers } = makeApp();
+		installQuitGuard(app);
+		assert.ok(handlers['before-quit'], 'should register before-quit handler');
+	});
+
+	test('before-quit 置 isQuitting=true（覆盖 Cmd+Q/SIGTERM/更新器等所有退出入口）', () => {
+		const { app, handlers } = makeApp();
+		installQuitGuard(app);
+		handlers['before-quit']();
+		assert.equal(app.isQuitting, true);
+	});
+
+	test('与 close 拦截联动：before-quit 后 close 放行（不再收进托盘，退出可达）', () => {
+		const { app, handlers } = makeApp();
+		installQuitGuard(app);
+
+		const winHandlers = {};
+		const fakeWin = {
+			isDestroyed: () => false,
+			on: vi.fn((event, handler) => { winHandlers[event] = handler; }),
+			webContents: { send: vi.fn() },
+			flashFrame: vi.fn(),
+			hide: vi.fn(),
+		};
+		attachMainWindow(app, fakeWin);
+
+		// 退出意图到达前：close 被拦截收进托盘（minimize_to_tray 行为不受影响）
+		const evBefore = { preventDefault: vi.fn() };
+		winHandlers.close(evBefore);
+		assert.equal(evBefore.preventDefault.mock.calls.length, 1);
+		assert.equal(fakeWin.hide.mock.calls.length, 1);
+
+		// 任意退出意图触发 before-quit 后：close 放行，quit 流程不再被取消
+		handlers['before-quit']();
+		const evAfter = { preventDefault: vi.fn() };
+		winHandlers.close(evAfter);
+		assert.equal(evAfter.preventDefault.mock.calls.length, 0);
+		assert.equal(fakeWin.hide.mock.calls.length, 1, 'hide should not be called again');
 	});
 });
 
