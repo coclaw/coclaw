@@ -2,14 +2,6 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
-## Windows Electron 截图顶缘/左缘约 8px 花屏条，疑似 frameless 窗口 resize 边框的截图假象
-
-**发现日期**：2026-06-11
-**来源**：Electron 滚动容器化前的存量诊断（`docs/designs/chatpage-page-scroll.md` 修订节）；预存现象，与容器化改动无关
-
-- 症状：Windows 桌面壳截图中窗口顶缘/左缘出现约 8px 花屏条。高概率为 frameless 窗口不可见 resize 边框在截图管线中的假象（非真实渲染缺陷），实机肉眼大概率不可见。
-- 处置：待 Windows 实机核实——实机肉眼可见才升级排查；仅截图可见则关闭本条。
-
 ## 文档引用失效：model-config.md 把根文件的测试原则说成 ui 工作区 CLAUDE.md
 
 **发现日期**：2026-06-10
