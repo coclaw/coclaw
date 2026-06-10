@@ -1,6 +1,6 @@
 <template>
 	<UApp :toaster="toasterConfig">
-		<ElectronTitleBar v-if="custom" :is-full-screen="isFullScreen" />
+		<ElectronTitleBar v-if="custom" :is-full-screen="isFullScreen" :platform="titlebarPlatform" />
 		<!-- cc-app-content：纯惰性 marker（作用域 CSS 唯一落点）；web/Capacitor 无规则命中、不改布局 -->
 		<div class="cc-app-content">
 			<router-view />
@@ -40,6 +40,8 @@ export default {
 			// Electron 自定义壳标题栏状态。custom 初值 false：保证收口判定前父级 v-if 不误挂 <ElectronTitleBar>
 			custom: false,
 			isFullScreen: false,
+			// electronAPI.platform 透传给标题栏条（组件自身不访问 Electron API），win32 时条内渲染品牌
+			titlebarPlatform: '',
 		};
 	},
 
@@ -89,6 +91,7 @@ export default {
 			}
 			// 立即写 data.custom，否则根类虽挂上、但父级 v-if="custom" 不会挂出 <ElectronTitleBar>
 			this.custom = true;
+			this.titlebarPlatform = api.platform || '';
 			// 同步段（任何 await 之前）即按 custom && !isFullScreen 挂作用域类：首帧就让出 38px、不压内容
 			this.__syncTitlebarClass();
 			// 订阅实时全屏事件——必须早于 getFullScreen，否则「挂类后、getter 前后」窗口里漏掉的 enter/leave 无从补回

@@ -78,7 +78,7 @@ macOS Electron 下当前是**原生标题栏**（commit `9912b077` 把之前的 
 
 ### 5.1 标题栏条组件
 
-新组件 `ElectronTitleBar.vue`（**Options API**，遵 `ui/CLAUDE.md` 不用 `<script setup>`）：满窗宽、高 `var(--cc-titlebar-h)`（作用域内常量，见 §5.3）、`bg-elevated`、可拖动（同写 `app-region:drag` 与 `-webkit-app-region:drag`，新旧 Electron 都认）、`fixed top-0 inset-x-0 z-[60]`（盖在两列之上、不占流、不随内容滚动——OS 按钮固定在窗角，条也必须固定；`z-[60]` 取值与「为何只需这一个 z」的原理见 §5.4）。**v1 内容留空**（仅色带 + 拖动把手 + 给按钮让出竖直空间，加 `aria-hidden`），不放品牌文字（避免与侧边栏品牌重复）。渲染门控：**父级（App.vue）先 `v-if="custom"`——web/Capacitor 下 `custom` 恒 false、本组件根本不被实例化/执行**（见 §5.2，杜绝其未来新增的生命周期/样式副作用经共享路径泄漏主目标）；本组件自身再 `v-if="!isFullScreen"`（`isFullScreen` 由 App.vue 作 prop 传入，子组件不自订阅 IPC）。**本组件不得在模块顶层或生命周期里访问 `window.electronAPI`/Electron API**——即便被 web 误导入，执行也须无副作用。
+新组件 `ElectronTitleBar.vue`（**Options API**，遵 `ui/CLAUDE.md` 不用 `<script setup>`）：满窗宽、高 `var(--cc-titlebar-h)`（作用域内常量，见 §5.3）、`bg-elevated`、可拖动（同写 `app-region:drag` 与 `-webkit-app-region:drag`，新旧 Electron 都认）、`fixed top-0 inset-x-0 z-[60]`（盖在两列之上、不占流、不随内容滚动——OS 按钮固定在窗角，条也必须固定；`z-[60]` 取值与「为何只需这一个 z」的原理见 §5.4）。**条内内容（v1.1 修订，推翻最初「留空」决策）**：Windows（`platform === 'win32'`）在条左侧渲染品牌 logo+产品名——v1 留空后 Windows 端标题栏左侧空荡、不符合 Windows 惯例（系统栏/微软规范/主流自定义栏应用均为 icon 居左），故改放品牌并配套隐藏侧边栏品牌（§7）。尺寸间距按微软 title bar 规范（[titlebar-design](https://learn.microsoft.com/en-us/windows/apps/design/basics/titlebar-design)）：icon 16×16 距左 16px、标题文字距 icon 16px、caption 12px regular；品牌**不可点**、随整条拖拽区（不加 no-drag）、`aria-hidden` 维持。mac/Linux 条内仍留空（mac 身份由系统菜单栏+侧边栏承载，主流 mac 应用无「交通灯旁放品牌」先例）。`platform` 由 App.vue 取 `electronAPI.platform` 经 prop 下发，本组件仍不访问 Electron API（下款约束不破）。渲染门控：**父级（App.vue）先 `v-if="custom"`——web/Capacitor 下 `custom` 恒 false、本组件根本不被实例化/执行**（见 §5.2，杜绝其未来新增的生命周期/样式副作用经共享路径泄漏主目标）；本组件自身再 `v-if="!isFullScreen"`（`isFullScreen` 由 App.vue 作 prop 传入，子组件不自订阅 IPC）。**本组件不得在模块顶层或生命周期里访问 `window.electronAPI`/Electron API**——即便被 web 误导入，执行也须无副作用。
 
 ### 5.2 App.vue：类的唯一持有者 + 挂载时序
 
@@ -155,7 +155,9 @@ html.cc-electron-custom .cc-toaster-viewport { top: calc(var(--cc-titlebar-h) + 
 
 ## 7. 品牌处理（`DesktopSidebar.vue`）
 
-`showSidebarBrand` 当前 `= !(isElectronApp && isWin)`（Windows 原生栏已显示品牌故隐侧边栏品牌）。自定义壳模式下 Windows 原生栏没了 → 该理由消失，**简化为恒显**（删平台特例）。标题栏条留空、不放品牌，故不重复。恒显对"仍显示原生栏的老 Windows 壳"理论上会双品牌，但本项目无已发布 Electron 客户端、以后发的壳都带自定义栏，老壳不存在，故安全。实施时顺手清理 `DesktopSidebar.vue` 里两处「Windows 原生栏已含品牌」的陈旧注释及 `MainList` 的 `pt-2:!showSidebarBrand` 死分支。
+> **v1.1 修订（2026-06-10，用户确认）**：v1 曾因「标题栏条留空、不重复」把 `showSidebarBrand` 简化为恒显；现标题栏 Windows 分支改放品牌（§5.1），该前提失效，**恢复平台门控**。
+
+`showSidebarBrand = !(isElectronApp && envStore.isWin)`：Windows Electron 隐藏侧边栏品牌行——品牌已在标题栏左侧（自定义栏自绘；`forceNative` 原生栏则系统自带 icon+标题，两种栏态都不重复）；macOS Electron / Linux Electron / 各浏览器保留（mac 标题栏不放品牌，侧边栏是窗口内唯一品牌锚点）。配套：品牌行隐藏时 `MainList` 补 `pt-2`（8px）顶间距，避免首个导航项贴顶（沿用 `ea4cd645` 的间距决策）。
 
 ## 8. 回滚与发布门禁（壳级决策不可 web 热修）
 
@@ -187,11 +189,11 @@ html.cc-electron-custom .cc-toaster-viewport { top: calc(var(--cc-titlebar-h) + 
 - `buildWindowChrome(platform,opts)` 纯函数单测（独立模块、脱离 main.js bootstrap）：win/mac/linux 三分支 `titleBarStyle`/`titleBarOverlay`/`custom` 正确；`forceNative:true` 三平台均回落（`custom:false`、无 `hidden`）。
 - `ipc-handlers.test.js`：`window:setTitleBarOverlay` 三类——窗口启用 WCO 时调到；`win32` 但 `forceNative`/未启用 WCO 时**不调**（防 #34137 崩）；非 Windows 不调；`window:getFullScreen` 返回 `win.isFullScreen()`。
 - `theme-mode` 单测：Electron+Windows+custom 时 dark/light 切换各触发一次 `setTitleBarOverlay` 且色值正确（light 断言 §6 钉死的设计常量、非随手取的实现常量）；非 Windows / 非 custom 不触发。（auto 实时跟随由 header-flatten-auto-theme 稿的 `initThemeModeWatcher` 测覆盖。）
-- `ElectronTitleBar.vue` 组件测：`isFullScreen` 真时不渲染、否则渲染且具 `app-region:drag`（本组件不再收 `custom` prop——父级 `custom` gate 由 App.vue 测覆盖：`custom=false` 时根本不挂出 `<ElectronTitleBar>`）。
+- `ElectronTitleBar.vue` 组件测：`isFullScreen` 真时不渲染、否则渲染且具 `app-region:drag`（本组件不再收 `custom` prop——父级 `custom` gate 由 App.vue 测覆盖：`custom=false` 时根本不挂出 `<ElectronTitleBar>`）；品牌分支：`platform='win32'` 渲染 logo+产品名且尺寸间距类符合微软规范（16×16 / 距左 16px / 距 icon 16px / 12px），`darwin`/缺省不渲染品牌。
 - **App.vue 浏览器路径回归测（主目标保护，关键）**：`electronAPI` undefined（浏览器）时 mounted **不抛、不挂 `cc-electron-custom` 类、不订阅 `onFullScreenChange`**——锁住 `if(!custom)return` 收口。
 - **App.vue 首帧同步（M-1）**：把 `getFullScreen` mock 成未决 promise，断言 custom 下 mounted 返回时 `documentElement` 已挂 `cc-electron-custom` 类（锁"同步先挂、异步只纠正全屏"）。
 - 全屏：`isFullScreen` 初值 false；maximize（非原生全屏）不摘类；当前态经 `getFullScreen()`（非缓存）；`primed` 后实时事件不被陈旧 getter 回填覆盖。
-- `showSidebarBrand` 恒显回归锁。
+- `showSidebarBrand` 平台门控回归锁（v1.1：Windows Electron 隐藏+`pt-2` 补偿；web / macOS Electron 保留、无 `pt-2`）。
 - **生命周期/降级补项**：mounted 不跳过 `initResize`、`beforeUnmount` 调 `destroyResize` 且摘掉 `cc-electron-custom` 根类；`getFullScreen()` reject 时不抛、不影响挂类；`setTitleBarOverlay` reject 被 `.catch` 吞掉、不影响 `.dark`；preload 精确解析 `--cc-titlebar-custom=1`（无此 arg → falsy）；订阅 `onFullScreenChange` 早于 `getFullScreen()`。
 - **DOM 回归（主目标，配合 §3 精确表述）**：浏览器/Capacitor 下 marker/wrapper 节点虽新增但不改布局——补一条各路由 DOM/layout（或关键容器结构）回归，锁住「惰性 marker 不影响主目标布局」。
 - E2E：浏览器里 `titleBar.custom` 恒 falsy、不挂类，故标题栏条 E2E 测不到（靠组件/单测）。

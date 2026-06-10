@@ -38,10 +38,10 @@ function mountApp() {
 			stubs: {
 				UApp: { template: '<div><slot /></div>' },
 				RouterView: { template: '<div class="rv-stub" />' },
-				// 把 ElectronTitleBar 桩成可识别元素，data-fs 回放传入的 isFullScreen prop
+				// 把 ElectronTitleBar 桩成可识别元素，data-fs/data-platform 回放传入的 prop
 				ElectronTitleBar: {
-					props: ['isFullScreen'],
-					template: '<div class="ettb-stub" :data-fs="String(isFullScreen)" />',
+					props: ['isFullScreen', 'platform'],
+					template: '<div class="ettb-stub" :data-fs="String(isFullScreen)" :data-platform="platform" />',
 				},
 			},
 		},
@@ -124,6 +124,21 @@ describe('App.vue 自定义壳挂载时序（§5.2）', () => {
 		const bar = wrapper.find('.ettb-stub');
 		expect(bar.exists()).toBe(true);
 		expect(bar.attributes('data-fs')).toBe('false');
+	});
+
+	test('platform 透传：electronAPI.platform 经 prop 下发给标题栏条（组件自身不读 Electron API）', async () => {
+		stubCustomShell({ platform: 'win32' });
+		const wrapper = mountApp();
+		await wrapper.vm.$nextTick();
+		expect(wrapper.find('.ettb-stub').attributes('data-platform')).toBe('win32');
+	});
+
+	test('platform 缺失（异常壳）：透传空串、不抛', async () => {
+		stubCustomShell({ platform: null });
+		window.electronAPI.platform = undefined;
+		const wrapper = mountApp();
+		await wrapper.vm.$nextTick();
+		expect(wrapper.find('.ettb-stub').attributes('data-platform')).toBe('');
 	});
 
 	test('全屏事件：enter 摘类（条收 isFullScreen=true），leave 复原', async () => {
