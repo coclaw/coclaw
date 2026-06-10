@@ -49,6 +49,25 @@ npx cap open ios          # 等价于 open ios/App/App.xcodeproj
 
 导出 IPA：Xcode Organizer → Distribute App，或 `xcodebuild -exportArchive`。
 
+## 本地无签名模拟器工作流
+
+无 Apple 账号即可在本机模拟器跑通完整 app（脚本 `scripts/ios-sim.sh`）：
+
+```bash
+# 1) 无签名构建模拟器包，产物 dist-ios/App.app（gitignored）
+pnpm ios:sim:build
+
+# 2) 装到模拟设备。无参数装默认清单（iPhone 17、iPad Air 11-inch (M4)，
+#    见脚本顶部 DEFAULT_DEVICES）；传设备名则只装指定的几台
+pnpm ios:sim:install
+pnpm ios:sim:install "iPhone 17"
+```
+
+装好后随时 `xcrun simctl boot <设备名>` + `open -a Simulator` 即可查看。注意：
+
+- 模拟器 app 按设备隔离存储，**重新 build 后需重跑 install**（同 bundle id 覆盖安装）
+- 新建或 erase 过的设备上没有 app，需要补跑一次 install
+
 ## 与 Android 的能力差异（已知、刻意）
 
 - **后台保活：iOS 无对应能力。** Android 用前台服务（`KeepAliveService` + wake lock）维持后台连接；

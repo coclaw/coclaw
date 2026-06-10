@@ -36,7 +36,9 @@
 		"electron:build:win": "electron-builder --win nsis",
 		"electron:build:win:portable": "electron-builder --win portable",
 		"electron:build:win:dir": "electron-builder --win dir",
-		"electron:build:mac": "electron-builder --mac"
+		"electron:build:mac": "electron-builder --mac",
+		"ios:sim:build": "bash scripts/ios-sim.sh build",
+		"ios:sim:install": "bash scripts/ios-sim.sh install"
 	},
 	"dependencies": {
 		"@capacitor/android": "^8.2.0",

@@ -1,6 +1,9 @@
 # Electron build output
 dist-electron/
 
+# iOS 模拟器无签名构建产物（scripts/ios-sim.sh）
+dist-ios/
+
 # Local agent scratch
 tmp/
 
