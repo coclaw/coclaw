@@ -40,23 +40,23 @@ describe('ElectronTitleBar', () => {
 		expect(Object.keys(ElectronTitleBar.props)).toEqual(['isFullScreen', 'platform']);
 	});
 
-	test('win32：条左侧渲染品牌（logo 16×16 距左 16px、文字距 icon 16px、caption 12px，微软规范）', () => {
+	test('win32：条左侧渲染品牌，对齐侧边栏图标列（logo 24px 左缘 16px、文字 14px 距 logo 12px）', () => {
 		const wrapper = mountBar({ platform: 'win32' });
 		const brand = wrapper.find('.cc-titlebar-brand');
 		expect(brand.exists()).toBe(true);
-		// 垂直在条内居中
+		// 垂直在条内居中；logo-文字间距 12px（gap-3，对齐列表项图标→文字间距，文本左缘 52px 与列表项文字同列）
 		expect(brand.classes()).toContain('items-center');
 		expect(brand.classes()).toContain('h-full');
-		// logo：16×16（size-4）、距左 16px（ml-4）、小圆角
+		expect(brand.classes()).toContain('gap-3');
+		// logo：24px（size-6）、左缘 16px（ml-4）——与侧边栏列表项图标列（nav px-2 + 项 pl-2 = 16px，图标 size-6）左缘和宽度双对齐
 		const logo = brand.find('img');
 		expect(logo.exists()).toBe(true);
-		expect(logo.classes()).toContain('size-4');
+		expect(logo.classes()).toContain('size-6');
 		expect(logo.classes()).toContain('ml-4');
-		// 文字：距 icon 16px（ml-4）、caption 12px（text-xs）、主题色 token
+		// 文字：14px（text-sm）、主题色 token 默认亮度
 		const name = brand.find('span');
 		expect(name.text()).toBe('CoClaw');
-		expect(name.classes()).toContain('ml-4');
-		expect(name.classes()).toContain('text-xs');
+		expect(name.classes()).toContain('text-sm');
 		expect(name.classes()).toContain('text-default');
 	});
 
