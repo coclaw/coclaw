@@ -15,6 +15,18 @@ describe('buildWindowChrome — 平台分支', () => {
 		expect(chrome.backgroundColor).toBe('#202122');
 	});
 
+	test('macOS：红绿灯自定义位垂直居中（12px 按钮在条内上下留白相等）', () => {
+		const chrome = buildWindowChrome('darwin');
+		expect(chrome.trafficLightPosition).toEqual({ x: 7, y: (TITLEBAR_HEIGHT - 12) / 2 });
+		expect(chrome.trafficLightPosition.y).toBe(13);
+	});
+
+	test('非 macOS / forceNative：无红绿灯自定义位', () => {
+		expect(buildWindowChrome('win32').trafficLightPosition).toBeNull();
+		expect(buildWindowChrome('linux').trafficLightPosition).toBeNull();
+		expect(buildWindowChrome('darwin', { forceNative: true }).trafficLightPosition).toBeNull();
+	});
+
 	test('Windows：custom + hidden + titleBarOverlay(height=38)', () => {
 		const chrome = buildWindowChrome('win32');
 		expect(chrome.custom).toBe(true);

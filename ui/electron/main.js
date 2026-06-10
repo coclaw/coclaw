@@ -87,9 +87,10 @@ if (!gotLock) {
 				additionalArguments: chrome.custom ? ['--cc-titlebar-custom=1'] : [],
 			},
 		};
-		// 自定义壳：隐藏原生栏（mac 保留红绿灯；Windows 另配 titleBarOverlay 由系统画 WCO）
+		// 自定义壳：隐藏原生栏（mac 保留红绿灯、自定义位垂直居中；Windows 另配 titleBarOverlay 由系统画 WCO）
 		if (chrome.titleBarStyle) winOpts.titleBarStyle = chrome.titleBarStyle;
 		if (chrome.titleBarOverlay) winOpts.titleBarOverlay = chrome.titleBarOverlay;
+		if (chrome.trafficLightPosition) winOpts.trafficLightPosition = chrome.trafficLightPosition;
 
 		const win = new BrowserWindow(winOpts);
 
