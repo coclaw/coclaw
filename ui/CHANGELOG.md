@@ -1,5 +1,13 @@
 # @coclaw/ui
 
+## 0.32.1
+
+### Patch Changes
+
+- e05bf3f: Add a hairline below the Electron custom titlebar so the chrome band reads as intentional next to the sidebar and content on wide desktop windows. Two further electron-scoped options (deeper chrome fill, native full-height sidebar) are kept as commented opt-ins.
+- 1b762ae: Vertically center the macOS traffic lights in the 38px Electron custom titlebar (the OS default position is tuned for standard-height bars and sat too high).
+- 0af922c: Fix the Electron shell never quitting via Cmd+Q, SIGTERM, the updater, or OS logout: those quit paths do not set `app.isQuitting`, so the minimize-to-tray close handler cancelled the whole quit by preventing the window close. A `before-quit` hook now marks every quit intent as a real quit before windows close. On-machine root-cause research disproved the earlier "main thread wedges in RTC teardown" theory — the process stayed fully responsive with the quit simply cancelled, independent of RTC state.
+
 ## 0.32.0
 
 ### Minor Changes
