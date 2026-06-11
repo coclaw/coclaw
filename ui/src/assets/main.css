@@ -175,6 +175,24 @@ html.cc-electron-custom .cc-desktop-sidebar {
 	top: 0;
 	height: calc(100vh - var(--cc-titlebar-h));
 }
+/*
+ * 滚动条装饰（Electron-only）：内滚容器滚动条悬在窗口中部，默认粗滚动条观感笨重。
+ * scrollbar-color 可继承 → 挂作用域根，所有滚动盒统一半透明灰 thumb + 透明轨道；
+ * scrollbar-width 不可继承 → 只点名两处真实滚动者：.cc-app-content（全局容器滚）
+ * 与 ChatPage 消息区（唯一真内滚页面容器，经 cc-scrollbar-thin marker）。其余页面
+ * main 在 Electron 下高度链无约束、永不出滚动条，不挂 marker（挂了是死类）。
+ * 中性灰半透明深浅主题通吃。标准属性非 auto 后 Chromium(≥121) 忽略同元素的
+ * ::-webkit-scrollbar 定制；.scrollbar-hide 不受影响——其标准属性 scrollbar-width:
+ * none 直接令滚动条不渲染，继承来的 scrollbar-color 失去绘制对象。
+ * marker 在 web/Capacitor 下零规则命中、纯惰性 class。
+ */
+html.cc-electron-custom {
+	scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
+}
+html.cc-electron-custom .cc-app-content,
+html.cc-electron-custom .cc-scrollbar-thin {
+	scrollbar-width: thin;
+}
 /* 顶部浮层避让（toast teleport 到 body、仍是 html 后代，故能命中；+1rem 保留 Nuxt UI 默认 top-4 的 16px 视觉间距） */
 html.cc-electron-custom .cc-toaster-viewport {
 	top: calc(var(--cc-titlebar-h) + 1rem + var(--safe-area-inset-top, 0px));

@@ -12,6 +12,7 @@ import { login, navigateToChat } from './helpers.js';
  * - 超高居中弹窗避让标题栏（cc-modal-content marker + 居中点下移/max-h 扣条高 + 变量退化）
  * - fullscreen 弹窗避让标题栏（content top 让出条高 + 变量退化）
  * - <640px 居中变体（prompt 类弹窗）max-h 扣条高（覆盖基础规则 2rem 版 max-height 声明）
+ * - 滚动条装饰（thin + 半透明 thumb）只在作用域内生效、scrollbar-hide 不被压
  */
 
 const TITLEBAR_H = 38;
@@ -147,6 +148,7 @@ test('Electron 形态：ChatPage 容器无溢出（无双滚动条）、消息�
 			chatRootTop: chatRoot.getBoundingClientRect().top,
 			mainScrollH: main.scrollHeight,
 			mainClientH: main.clientHeight,
+			mainScrollbarWidth: getComputedStyle(main).scrollbarWidth,
 		};
 	});
 	// ChatPage 定高（h-dvh-safe electron 覆盖 = 容器高）恰好填满容器，无第二根滚动条
@@ -155,6 +157,8 @@ test('Electron 形态：ChatPage 容器无溢出（无双滚动条）、消息�
 	expect(m.mainScrollH).toBeGreaterThan(m.mainClientH);
 	// chat 根顶缘 = 标题栏下缘
 	expect(m.chatRootTop).toBeCloseTo(TITLEBAR_H, 0);
+	// 消息区滚动条收细（模板 cc-scrollbar-thin marker 没掉）
+	expect(m.mainScrollbarWidth).toBe('thin');
 });
 
 test('color-scheme 跟随明暗主题 @ui', async ({ page }) => {
@@ -243,6 +247,38 @@ test('浏览器形态（不挂作用域类）：document 照常滚、容器规�
 	expect(m.docScrollTop).toBeGreaterThan(0);
 	// .cc-app-content 仍是惰性 marker，未变成滚动容器
 	expect(m.contentOverflowY).toBe('visible');
+});
+
+test('Electron 形态：滚动条装饰（thin + 半透明 thumb）只在作用域内生效、scrollbar-hide 不被压 @ui', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+
+	// 对照（未挂作用域类）：标准滚动条属性保持初始值——锁「装饰规则不泄漏到 web」
+	const before = await page.evaluate(() => {
+		const cs = getComputedStyle(document.querySelector('.cc-app-content'));
+		return { width: cs.scrollbarWidth, color: cs.scrollbarColor };
+	});
+	expect(before.width).toBe('auto');
+	expect(before.color).toBe('auto');
+
+	await applyElectronScope(page);
+
+	const after = await page.evaluate(() => {
+		const content = getComputedStyle(document.querySelector('.cc-app-content'));
+		const hide = getComputedStyle(document.querySelector('.cc-desktop-sidebar .scrollbar-hide'));
+		return {
+			width: content.scrollbarWidth,
+			color: content.scrollbarColor,
+			hideWidth: hide.scrollbarWidth,
+		};
+	});
+	// 容器滚动条收细；thumb 色由作用域根继承覆盖（不断具体 rgba 串，防脆）
+	expect(after.width).toBe('thin');
+	expect(after.color).not.toBe('auto');
+	// 侧边栏整条隐藏滚动条不被宽度规则压回显形
+	expect(after.hideWidth).toBe('none');
 });
 
 test('Electron 形态：全屏往返（变量 0px ↔ 移除）布局退化且容器 scrollTop 保留 @ui', async ({ page }) => {
