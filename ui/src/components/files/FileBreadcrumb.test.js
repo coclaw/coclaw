@@ -14,6 +14,11 @@ function mountBreadcrumb(path = '') {
 }
 
 describe('FileBreadcrumb', () => {
+	test('nav 挂 Electron 细滚动条 marker（深路径横滚，web 下惰性）', () => {
+		const w = mountBreadcrumb('a/b');
+		expect(w.find('nav').classes()).toContain('cc-scrollbar-thin');
+	});
+
 	test('根目录只显示 rootDir 按钮', () => {
 		const w = mountBreadcrumb('');
 		const buttons = w.findAll('button');

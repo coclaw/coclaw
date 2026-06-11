@@ -628,6 +628,10 @@ describe('FileManagerPage', () => {
 			expect(wrapper.vm.duplicateItems).toHaveLength(1);
 			expect(wrapper.vm.duplicateItems[0].name).toBe('readme.md');
 			expect(wrapper.vm.duplicateItems[0].action).toBe('skip'); // 默认 skip
+
+			// 重名清单滚动区挂 Electron 细滚动条 marker（web 下惰性）
+			await wrapper.vm.$nextTick();
+			expect(wrapper.find('.max-h-60').classes()).toContain('cc-scrollbar-thin');
 		});
 
 		test('混合场景：部分重名部分新文件', async () => {

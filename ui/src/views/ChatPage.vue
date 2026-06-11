@@ -102,7 +102,7 @@
 		</div>
 
 		<!-- flex-1 + min-h-0：让 main 填充剩余空间并内部滚动；移除 min-h-0 会导致撑开父容器 -->
-		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto cc-scrollbar-thin" @scroll="onScroll" @wheel="onWheel">
+		<main ref="scrollContainer" class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto cc-scrollbar-thin cc-scrollbar-gutter" @scroll="onScroll" @wheel="onWheel">
 			<div ref="scrollContent" class="mx-auto w-full max-w-3xl" :style="!__scrollReady && chatMessages.length ? { visibility: 'hidden' } : undefined">
 				<div v-if="connStatusText" class="mx-4 mt-4 rounded-lg px-4 py-2 text-center text-sm" :class="connStatusSeverity === 'warn' ? 'bg-warning/10 text-warning' : 'bg-accented text-muted'">
 					{{ connStatusText }}

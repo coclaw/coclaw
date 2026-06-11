@@ -178,20 +178,32 @@ html.cc-electron-custom .cc-desktop-sidebar {
 /*
  * 滚动条装饰（Electron-only）：内滚容器滚动条悬在窗口中部，默认粗滚动条观感笨重。
  * scrollbar-color 可继承 → 挂作用域根，所有滚动盒统一半透明灰 thumb + 透明轨道；
- * scrollbar-width 不可继承 → 只点名两处真实滚动者：.cc-app-content（全局容器滚）
- * 与 ChatPage 消息区（唯一真内滚页面容器，经 cc-scrollbar-thin marker）。其余页面
- * main 在 Electron 下高度链无约束、永不出滚动条，不挂 marker（挂了是死类）。
- * 中性灰半透明深浅主题通吃。标准属性非 auto 后 Chromium(≥121) 忽略同元素的
- * ::-webkit-scrollbar 定制；.scrollbar-hide 不受影响——其标准属性 scrollbar-width:
- * none 直接令滚动条不渲染，继承来的 scrollbar-color 失去绘制对象。
- * marker 在 web/Capacitor 下零规则命中、纯惰性 class。
+ * scrollbar-width 不可继承 → 逐一点名真实滚动者：.cc-app-content（全局容器滚）、
+ * cc-scrollbar-thin marker（组件自有真滚元素：ChatPage 消息区、思考区工具结果块、
+ * 弹窗 body、聊天输入框、重名清单、OAuth 原文、文件面包屑）、markdown 渲染产物
+ * （生成 DOM 挂不了 marker，按其稳定类名点名：代码块/表格/KaTeX 横滚）。
+ * 其余页面 main 在 Electron 下高度链无约束、永不出滚动条，不挂 marker（挂了是死类）。
+ * 真滚动者同时显式钉自身 scrollbar-color：悬停加深只动被悬停容器，祖先 :hover
+ * 不会经继承把内层滚动条一起带深。中性灰半透明深浅主题通吃。
+ * 标准属性非 auto 后 Chromium(≥121) 忽略同元素的 ::-webkit-scrollbar 定制；
+ * .scrollbar-hide 不受影响——其标准属性 scrollbar-width: none 直接令滚动条不渲染，
+ * 继承来的 scrollbar-color 失去绘制对象。
+ * marker 在 web/Capacitor 下零规则命中、纯惰性 class；:is() 锁在 Electron 作用域内使用，无基线顾虑。
  */
 html.cc-electron-custom {
 	scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
 }
-html.cc-electron-custom .cc-app-content,
-html.cc-electron-custom .cc-scrollbar-thin {
+html.cc-electron-custom :is(.cc-app-content, .cc-scrollbar-thin, .hljs-code-container, .table-box, .katex-display > .katex > .katex-html) {
 	scrollbar-width: thin;
+	scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
+}
+/* 悬停加深滑块：指针在该滚动容器内即提亮本容器滚动条，提示可滚 */
+html.cc-electron-custom :is(.cc-app-content, .cc-scrollbar-thin, .hljs-code-container, .table-box, .katex-display > .katex > .katex-html):hover {
+	scrollbar-color: rgba(128, 128, 128, 0.6) transparent;
+}
+/* 预留滚动条槽位（marker，单点挂 ChatPage 消息区）：短对话变长刚出条时正文不横跳 */
+html.cc-electron-custom .cc-scrollbar-gutter {
+	scrollbar-gutter: stable;
 }
 /* 顶部浮层避让（toast teleport 到 body、仍是 html 后代，故能命中；+1rem 保留 Nuxt UI 默认 top-4 的 16px 视觉间距） */
 html.cc-electron-custom .cc-toaster-viewport {

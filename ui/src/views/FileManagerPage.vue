@@ -119,7 +119,7 @@
 		<UModal v-model:open="duplicateOpen" :title="$t('files.duplicateTitle')" description=" " :ui="duplicateModalUi">
 			<template #body>
 				<p class="mb-3 text-sm text-muted">{{ $t('files.duplicateDesc') }}</p>
-				<div class="max-h-60 space-y-2 overflow-y-auto">
+				<div class="max-h-60 space-y-2 overflow-y-auto cc-scrollbar-thin">
 					<div v-for="item in duplicateItems" :key="item.name" class="flex items-center justify-between gap-2 text-sm">
 						<span class="min-w-0 truncate">{{ item.name }}</span>
 						<URadioGroup

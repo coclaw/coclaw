@@ -126,6 +126,7 @@ describe('ProviderOAuthLoginStep — autostart + phase-1', () => {
 		expect(w.find('[data-testid="oauth-user-code"]').exists()).toBe(false);
 		const raw = w.find('[data-testid="oauth-raw-text"]');
 		expect(raw.exists()).toBe(true);
+		expect(raw.classes()).toContain('cc-scrollbar-thin'); // Electron 细滚动条 marker（web 下惰性）
 		expect(raw.text()).toContain('Open https://github.com/login/device');
 		w.unmount();
 	});

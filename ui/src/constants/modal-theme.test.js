@@ -23,6 +23,8 @@ describe('MODAL_THEME — 全局 modal 主题覆盖形态', () => {
 		expect(slots.body).toContain('pb-5');
 		// sm:pb-5 不可删：专为压住内置残留的 sm:p-6(24px)，否则桌面端 body 底边回弹到 24px
 		expect(slots.body).toContain('sm:pb-5');
+		// cc-scrollbar-thin：Electron 作用域细滚动条 marker，web/Capacitor 下惰性
+		expect(slots.body).toContain('cc-scrollbar-thin');
 	});
 
 	test('footer：横向对齐 + py-2，保留 flex 布局', () => {

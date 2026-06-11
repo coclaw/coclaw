@@ -173,6 +173,10 @@ describe('ChatMsgItem', () => {
 		expect(wrapper.text()).toContain('深度推理');
 		expect(wrapper.text()).toContain('Call search');
 		expect(wrapper.text()).toContain('搜索结果');
+		// toolResult 块挂 Electron 细滚动条 marker（web 下惰性）
+		const resultBlock = wrapper.find('.cc-scrollbar-thin');
+		expect(resultBlock.exists()).toBe(true);
+		expect(resultBlock.text()).toContain('搜索结果');
 	});
 
 	test('无 steps 时展开区域不渲染', async () => {

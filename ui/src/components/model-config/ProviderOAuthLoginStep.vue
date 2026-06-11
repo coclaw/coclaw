@@ -54,7 +54,7 @@
 			<!-- rawText 兜底：仅在结构化链接抠不到、且有原文时渲染（交用户自行阅读授权指引） -->
 			<div v-if="showRawText" class="flex flex-col gap-1">
 				<span class="text-sm text-muted">{{ $t('modelConfig.providerAuth.oauth.rawTextLabel') }}</span>
-				<pre data-testid="oauth-raw-text" class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated px-2 py-1 text-sm">{{ rawText }}</pre>
+				<pre data-testid="oauth-raw-text" class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated px-2 py-1 text-sm cc-scrollbar-thin">{{ rawText }}</pre>
 			</div>
 
 			<!-- 等待轮询：转圈 spinner 强化“仍在进行中”的暗示；mt-1 与上方链接再拉开一点间距 -->

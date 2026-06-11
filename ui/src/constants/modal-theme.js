@@ -32,7 +32,8 @@ export const MODAL_THEME = {
 		title: 'text-default!',
 		wrapper: 'flex-1 min-w-0',
 		close: 'static -me-2.5 cc-icon-btn-lg',
-		body: 'flex-1 px-4 sm:px-5 pt-4 sm:pt-5 pb-5 sm:pb-5',
+		// cc-scrollbar-thin：纯惰性 marker，仅 Electron 作用域下细化 body 长内容滚动条（同 cc-modal-content 机制）
+		body: 'flex-1 px-4 sm:px-5 pt-4 sm:pt-5 pb-5 sm:pb-5 cc-scrollbar-thin',
 		footer: 'flex items-center gap-1.5 px-4 sm:px-5 py-2',
 		content: 'cc-modal-content ' + MODAL_ELEVATION,
 	},

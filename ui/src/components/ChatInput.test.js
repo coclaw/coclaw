@@ -72,9 +72,10 @@ vi.mock('../stores/env.store.js', () => ({
 
 // stub UTextarea / UButton / UIcon
 const UTextareaStub = {
-	props: ['modelValue', 'placeholder', 'disabled', 'autoresize', 'rows', 'maxrows', 'size'],
+	props: ['modelValue', 'placeholder', 'disabled', 'autoresize', 'rows', 'maxrows', 'size', 'ui'],
 	emits: ['update:modelValue', 'keydown'],
-	template: '<textarea :value="modelValue" @keydown="$emit(\'keydown\', $event)" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+	// 仿真组件契约：ui.base 落到内部 textarea 元素的 class 上
+	template: '<textarea :value="modelValue" :class="ui && ui.base" @keydown="$emit(\'keydown\', $event)" @input="$emit(\'update:modelValue\', $event.target.value)" />',
 };
 
 const UButtonStub = {
@@ -175,6 +176,11 @@ describe('ChatInput', () => {
 		const middle = wrapper.find('form > div.flex-1');
 		expect(middle.exists()).toBe(true);
 		expect(middle.classes()).toContain('flex');
+	});
+
+	test('textarea 挂 Electron 细滚动条 marker（超 maxrows 内滚，web 下惰性）', () => {
+		const wrapper = createWrapper({ modelValue: '' });
+		expect(wrapper.find('textarea').classes()).toContain('cc-scrollbar-thin');
 	});
 
 	test('Enter on desktop triggers send', async () => {

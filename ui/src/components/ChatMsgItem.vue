@@ -135,7 +135,7 @@
 					<!-- toolResult -->
 					<div
 						v-else-if="step.kind === 'toolResult'"
-						class="max-h-32 overflow-auto text-dimmed"
+						class="max-h-32 overflow-auto text-dimmed cc-scrollbar-thin"
 					>
 						{{ step.text }}
 					</div>

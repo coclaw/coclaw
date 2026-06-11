@@ -13,6 +13,7 @@ import { login, navigateToChat } from './helpers.js';
  * - fullscreen 弹窗避让标题栏（content top 让出条高 + 变量退化）
  * - <640px 居中变体（prompt 类弹窗）max-h 扣条高（覆盖基础规则 2rem 版 max-height 声明）
  * - 滚动条装饰（thin + 半透明 thumb）只在作用域内生效、scrollbar-hide 不被压
+ * - 细滚动条推广（markdown 产物按类名点名 + marker）、悬停加深仅及被悬停容器、ChatPage 消息区预留槽位
  */
 
 const TITLEBAR_H = 38;
@@ -149,6 +150,7 @@ test('Electron 形态：ChatPage 容器无溢出（无双滚动条）、消息�
 			mainScrollH: main.scrollHeight,
 			mainClientH: main.clientHeight,
 			mainScrollbarWidth: getComputedStyle(main).scrollbarWidth,
+			mainScrollbarGutter: getComputedStyle(main).scrollbarGutter,
 		};
 	});
 	// ChatPage 定高（h-dvh-safe electron 覆盖 = 容器高）恰好填满容器，无第二根滚动条
@@ -159,6 +161,8 @@ test('Electron 形态：ChatPage 容器无溢出（无双滚动条）、消息�
 	expect(m.chatRootTop).toBeCloseTo(TITLEBAR_H, 0);
 	// 消息区滚动条收细（模板 cc-scrollbar-thin marker 没掉）
 	expect(m.mainScrollbarWidth).toBe('thin');
+	// 预留滚动条槽位（cc-scrollbar-gutter marker 没掉）：短对话变长出条时正文不横跳
+	expect(m.mainScrollbarGutter).toBe('stable');
 });
 
 test('color-scheme 跟随明暗主题 @ui', async ({ page }) => {
@@ -279,6 +283,80 @@ test('Electron 形态：滚动条装饰（thin + 半透明 thumb）只在作用�
 	expect(after.color).not.toBe('auto');
 	// 侧边栏整条隐藏滚动条不被宽度规则压回显形
 	expect(after.hideWidth).toBe('none');
+});
+
+test('Electron 形态：细滚动条推广到 markdown 产物与 marker、悬停加深仅及被悬停容器 @ui', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+
+	// 注入带 markdown 稳定类名的合成滚动元素（规则按类名点名，不依赖真实 markdown 渲染）；
+	// fixed 定位钉死坐标，让 hover 落点可控
+	await page.evaluate(() => {
+		const host = document.querySelector('.cc-app-content section') || document.body;
+		const make = (id, cls, top) => {
+			const el = document.createElement('div');
+			el.id = id;
+			el.className = cls;
+			el.style.cssText = `position:fixed;left:10px;top:${top}px;width:200px;height:50px;overflow:auto;`;
+			const inner = document.createElement('div');
+			inner.style.cssText = 'width:600px;height:300px;';
+			el.appendChild(inner);
+			host.appendChild(el);
+			return el;
+		};
+		make('e2e-code-box', 'hljs-code-container', 60);
+		make('e2e-table-box', 'table-box', 130);
+		make('e2e-thin-box', 'cc-scrollbar-thin', 200);
+		// KaTeX 是三层链选择器，按真实结构搭最小嵌套
+		const kd = make('e2e-katex-display', 'katex-display', 270);
+		kd.style.overflow = 'visible';
+		const k = document.createElement('span');
+		k.className = 'katex';
+		const kh = document.createElement('span');
+		kh.id = 'e2e-katex-html';
+		kh.className = 'katex-html';
+		kh.style.cssText = 'display:block;width:180px;height:40px;overflow-x:auto;';
+		k.appendChild(kh);
+		kd.appendChild(k);
+	});
+
+	const readWidths = () => page.evaluate(() => ({
+		code: getComputedStyle(document.getElementById('e2e-code-box')).scrollbarWidth,
+		table: getComputedStyle(document.getElementById('e2e-table-box')).scrollbarWidth,
+		thin: getComputedStyle(document.getElementById('e2e-thin-box')).scrollbarWidth,
+		katex: getComputedStyle(document.getElementById('e2e-katex-html')).scrollbarWidth,
+	}));
+
+	// 对照（web 形态）：新点名选择器不泄漏
+	const before = await readWidths();
+	expect(before).toEqual({ code: 'auto', table: 'auto', thin: 'auto', katex: 'auto' });
+
+	await applyElectronScope(page);
+
+	const after = await readWidths();
+	expect(after).toEqual({ code: 'thin', table: 'thin', thin: 'thin', katex: 'thin' });
+
+	// 悬停加深：指针移到标题栏带（y<38，.cc-app-content 之外）取基准色，再 hover 单个容器（不断具体 rgba 串，防脆）
+	await page.mouse.move(640, 10);
+	const base = await page.evaluate(() => ({
+		thin: getComputedStyle(document.getElementById('e2e-thin-box')).scrollbarColor,
+		code: getComputedStyle(document.getElementById('e2e-code-box')).scrollbarColor,
+		content: getComputedStyle(document.querySelector('.cc-app-content')).scrollbarColor,
+	}));
+	await page.locator('#e2e-thin-box').hover();
+	const hovered = await page.evaluate(() => ({
+		thin: getComputedStyle(document.getElementById('e2e-thin-box')).scrollbarColor,
+		code: getComputedStyle(document.getElementById('e2e-code-box')).scrollbarColor,
+		content: getComputedStyle(document.querySelector('.cc-app-content')).scrollbarColor,
+	}));
+	// 被悬停容器自身加深
+	expect(hovered.thin).not.toBe(base.thin);
+	// 祖先 .cc-app-content 处于 :hover（指针在其内容上方）→ 自身加深属预期
+	expect(hovered.content).not.toBe(base.content);
+	// 但加深不经继承传染未被悬停的内层滚动容器（自身钉色挡住祖先 :hover 的继承）
+	expect(hovered.code).toBe(base.code);
 });
 
 test('Electron 形态：全屏往返（变量 0px ↔ 移除）布局退化且容器 scrollTop 保留 @ui', async ({ page }) => {

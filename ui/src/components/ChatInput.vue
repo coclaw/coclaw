@@ -148,6 +148,7 @@
 					:maxrows="8"
 					size="xl"
 					class="w-full"
+					:ui="{ base: 'cc-scrollbar-thin' }"
 					@update:model-value="$emit('update:modelValue', $event)"
 					@keydown="onKeydown"
 				/>
