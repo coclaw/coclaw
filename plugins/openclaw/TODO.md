@@ -288,6 +288,15 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **2026-06-11 注记**（摆脱账本改造评审再确认）：维持"已接受模式"结论——gateway 与 worker 的写入由 `upgrade.lock` 时序隔离（worker 在跑时 scheduler 跳过整轮 check），新增的 L2 no-op 路径状态写入（addSkippedVersion / updateLastUpgrade / appendLog）同受此隔离，不另开条目。inflight 对账现也暴露在此窗口：锁 TTL 误清（worker 真活超 110min）后，活 worker 的 inflight 会被 scheduler 误记 interrupted + 双 spawn，账目最终被 worker 终态覆盖收敛。
 
+## auto-upgrade 物理 restore 后上游安装记录停在坏版本（账实偏差，E2E 复验观察）
+
+**发现日期**：2026-06-11（a3c49fdf 发版 gate 复验 Tb 链观察）
+**关联**：plugins/openclaw/src/auto-upgrade/worker-backup.js（restoreFromBackup）
+
+**问题**：验证失败回滚走 rename 恢复备份只改磁盘文件，上游 `plugins inspect` 的 install record 仍记坏版本（实测：磁盘已回 0.26.7，record version 仍 0.26.8）。直到下次 install/update 才被刷新。
+
+**影响**：纯元数据偏差，不影响加载（gateway 读磁盘文件）也不破坏后续升级逻辑——下一轮 checkForUpdate 用磁盘 package.json 判版本，L2 baseline 取陈旧 record 但"record 是否推进"的判定语义仍成立（本机 Run C 实测下一轮升级正常）。主要代价是排障困惑（inspect 显示坏版本"在装"）与 lastUpgrade.from 取磁盘、baseline 取 record 的字符串不一致。与 docs/auto-upgrade.md "rollback=文件态已恢复"语义一致，属已知权衡的具体化，暂不修。
+
 ## bridge async listener 其他真隐患（C 阶段维度 1）
 
 **发现日期**：2026-05-02
@@ -330,7 +339,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 |---|---|---|---|
 | 1 | worker.js:121-191, updater.js:65-97, worker-backup.js:42-56 | kill -9/OOM 在备份后 + 替换文件期间发生 → stale lock 清理只删锁不恢复备份 → 残破插件 + 残留 .bak | Critical |
 | 2 | worker-backup.js:52-56 | restore 先删 pluginDir 再 rename .bak → 中途崩溃整个插件目录消失 | High |
-| 3 | worker.js:208-219 | restore 失败 + fallback install 失败 仍记录 result='rollback'（误导监控） | High |
 | 4 | updater-spawn.js:45-66, updater.js:309-322 | child.pid undefined 时仍写 lock；async error/exit 未识别 | High |
 | 5 | updater-check.js:63-77, worker-verify.js:24-38 | 自定义 semver 不支持 prerelease ordering / build metadata | Medium |
 | 6 | updater-spawn.js:52-55 | worker stdio 被忽略，致命错误丢失 | Medium |
@@ -338,9 +346,11 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 | 8 | updater-check.js:35-55 | 初次 check 不走 registry fallback，主 registry 故障即无更新 | Low |
 | 9 | updater.js:17-25 | LOCK_TTL_MS 110min 接近 worker 最坏耗时，未来若超时矩阵增长，stale 清理可能起并行 worker | Low |
 
-**影响**：均属预存边角。auto-upgrade 是 gateway 启动稳定性关键链路，1/2/3 风险较高。
+**影响**：均属预存边角。auto-upgrade 是 gateway 启动稳定性关键链路，1/2 风险较高。
 
-**修复方向**：1/2 需要重设计 backup → 用 swap 模式；3 状态机加 rollback_failed；其他逐项处理。
+**修复方向**：1/2 需要重设计 backup → 用 swap 模式；其他逐项处理。
+
+**2026-06-11 注记**（a3c49fdf 升级链修复后复核）：原 #3（rollback 双失败仍记 result='rollback'）已实装修复（rollback-failed 终态）并删行；#1 的"残留 .bak"措辞已过时——备份迁至 `<state-dir>/coclaw/upgrade-backup/`，npm 地盘无残留，但"kill -9 于替换窗口致残破插件、stale lock 清理不恢复备份"主体仍在（inflight 对账会补记 interrupted 并保留备份供人工恢复，不自动 restore）；表内行号锚为 2026-05-02 快照，已陈旧，按问题描述定位。
 
 ## agent-run-response bypass 是否扩展到 lifecycle:end（产品决策待定）
 
