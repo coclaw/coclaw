@@ -235,6 +235,12 @@ import { useDraftStore } from '../stores/draft.store.js';
 /** 自动生成标题的 user message 数量上限 */
 const MAX_AUTO_TITLE_MSGS = 5;
 
+// iOS<16 WebKit bug 187449：用户惯性未停时程序化 scrollTo 被合成线程丢弃，
+// 惯性结束后重发即生效 → force 路径按帧重试直到稳定到底。
+// 超时用 Date 计时而非帧数——120Hz 设备帧数计时会把窗口砍半
+const FORCE_SCROLL_TIMEOUT_MS = 2500;
+const FORCE_SCROLL_STABLE_FRAMES = 3;
+
 export default {
 	name: 'ChatPage',
 	components: {
@@ -627,6 +633,8 @@ export default {
 					// store 切换（含变 null）都清回到底部按钮的显示状态：
 					// topic/new-topic 路由下 ChatInput 仍渲染，残留 true 会让按钮错误显现
 					this.farFromBottom = false;
+					// 滚动容器跨 chat 复用，旧 chat 的 force 循环不得滚到新 chat 上
+					this.__stopForceScroll(false);
 				}
 				if (this.__creatingTopic) return;
 				if (store && store !== prevStore) {
@@ -713,6 +721,7 @@ export default {
 	},
 	beforeUnmount() {
 		this.__unmounted = true;
+		this.__stopForceScroll(false);
 		this.unsuppressPullRefresh();
 		this.chatStore?.cleanup();
 		this.__resizeOb?.disconnect();
@@ -1143,11 +1152,24 @@ export default {
 			if (!el?.scrollTo) return;
 			if (!force && this.userScrolledUp) return;
 			if (this.__loadingHistory) {
-				// 历史加载中 scrollTop 由 __loadMoreHistory 自管，这里不再补一次 scroll；
+				// 历史加载中 scrollTop 由 __loadMoreHistory 自管，这里不补一次 scroll；
 				// 但首屏 visibility 解锁不能被它卡死——否则 __onConnReady 的强制 scroll 撞上
 				// chatMessages watcher 触发的 __autoFillHistory（视口未满 → 立即 loadOlderMessages）这条 race，
 				// __scrollReady 就再也回不到 true，整面板永久 visibility:hidden。
-				if (force && !this.__scrollReady) this.__scrollReady = true;
+				if (force) {
+					if (!this.__scrollReady) this.__scrollReady = true;
+					// force 不再被吞：循环在锁释放前不发 scrollTo（不干扰位置恢复），释放后补滚到底
+					this.__startForceScroll();
+				}
+				return;
+			}
+			if (force) {
+				// force 委托 rAF 逐帧逼近循环；解锁时机与原单发实现等价——
+				// tick() 同步首发与解锁在同一 tick 内完成，paint 在其后，无闪顶
+				this.$nextTick(() => {
+					this.__startForceScroll();
+					if (!this.__scrollReady) this.__scrollReady = true;
+				});
 				return;
 			}
 
@@ -1163,11 +1185,95 @@ export default {
 					if (el.scrollHeight - el.scrollTop - el.clientHeight > 10) {
 						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
 					}
-					// 仅 force 调用（__onConnReady）才解锁 visibility，
-					// 避免 ResizeObserver 等非 force 路径过早移除 hidden
-					if (!this.__scrollReady && force) this.__scrollReady = true;
 				});
 			});
+		},
+		/**
+		 * force 滚动的 rAF 逐帧逼近循环：每帧重发 scrollTo，直到连续 FORCE_SCROLL_STABLE_FRAMES
+		 * 帧距底 ≤1px 或超时。iOS<16 惯性期被吞的帧落空、惯性一停下一帧即生效；
+		 * 其余平台首发即中、数帧后退出，无感知。
+		 * 循环状态全部用非响应式实例字段（模板不读，先例 __connReadyStore/__pullStartY）。
+		 */
+		__startForceScroll() {
+			const el = this.$refs.scrollContainer;
+			if (!el?.scrollTo) return;
+			// 重启（连点按钮等）：旧循环先停但不回置 flag，由新循环收尾时统一 resync
+			if (this.__forceScrollActive) this.__stopForceScroll(false);
+			// start 时缓存容器引用，stop 从同一引用摘监听，钉死"加谁摘谁"
+			this.__forceScrollEl = el;
+			// 世代令牌：停止/重启后已排队的旧世代残帧一律灭活（cancelRAF 之外的第二道闸）
+			this.__forceScrollGen = (this.__forceScrollGen || 0) + 1;
+			const gen = this.__forceScrollGen;
+			this.__forceScrollActive = true;
+			this.__forceScrollDeadline = Date.now() + FORCE_SCROLL_TIMEOUT_MS;
+			this.__forceScrollStable = 0;
+			// 用户真实介入信号：scroll 事件不可作信号——程序化滚动与残余惯性都会发；
+			// mousedown 兜桌面拖滚动条（部分引擎滚动条交互不发 pointerdown）；
+			// 键盘 PgUp/Home/End 不覆盖，由总超时兜底
+			el.addEventListener('touchstart', this.__onForceScrollUserIntervene, { passive: true });
+			el.addEventListener('wheel', this.__onForceScrollUserIntervene, { passive: true });
+			el.addEventListener('pointerdown', this.__onForceScrollUserIntervene, { passive: true });
+			el.addEventListener('mousedown', this.__onForceScrollUserIntervene, { passive: true });
+			const tick = () => {
+				if (gen !== this.__forceScrollGen || !this.__forceScrollActive) return;
+				if (this.__unmounted || this.$refs.scrollContainer !== el) {
+					this.__stopForceScroll(false);
+					return;
+				}
+				if (Date.now() > this.__forceScrollDeadline) {
+					this.__stopForceScroll(true);
+					return;
+				}
+				if (this.__loadingHistory) {
+					// 翻页位置恢复在飞：本帧不发 scrollTo 免互踩，锁释放后继续逼近
+					this.__forceScrollStable = 0;
+				} else {
+					// Math.ceil 容差：DPR 非整数时 scrollTop 带小数，到底也差 <1px
+					const dist = el.scrollHeight - Math.ceil(el.scrollTop) - el.clientHeight;
+					if (dist <= 1) {
+						if (++this.__forceScrollStable >= FORCE_SCROLL_STABLE_FRAMES) {
+							// 判稳退出后不得再排帧
+							this.__stopForceScroll(true);
+							return;
+						}
+					} else {
+						this.__forceScrollStable = 0;
+						el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+					}
+				}
+				this.__forceScrollRaf = requestAnimationFrame(tick);
+			};
+			// 同步首发不等下一帧：保住 __scrollReady 解锁前已定位，防闪顶
+			tick();
+		},
+		/** 停止 force 循环；resync=true 按真实落点回置滚动 flag（解"被吞后 userScrolledUp 卡死"的放大器） */
+		__stopForceScroll(resync = true) {
+			if (!this.__forceScrollActive) return;
+			this.__forceScrollActive = false;
+			this.__forceScrollGen++;
+			cancelAnimationFrame(this.__forceScrollRaf);
+			this.__forceScrollRaf = null;
+			const el = this.__forceScrollEl;
+			if (el) {
+				el.removeEventListener('touchstart', this.__onForceScrollUserIntervene);
+				el.removeEventListener('wheel', this.__onForceScrollUserIntervene);
+				el.removeEventListener('pointerdown', this.__onForceScrollUserIntervene);
+				el.removeEventListener('mousedown', this.__onForceScrollUserIntervene);
+				this.__forceScrollEl = null;
+			}
+			if (resync && !this.__unmounted) this.__syncScrollFlags();
+		},
+		/** force 循环期间用户真实介入（触摸/滚轮/按下）→ 立即让权并按落点回置 flag */
+		__onForceScrollUserIntervene() {
+			this.__stopForceScroll(true);
+		},
+		/** 与 onScroll 同公式回置滚动 flag，不带翻页触发 */
+		__syncScrollFlags() {
+			const el = this.$refs.scrollContainer;
+			if (!el) return;
+			const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+			this.userScrolledUp = dist >= 60;
+			this.farFromBottom = dist > el.clientHeight;
 		},
 		onClickBackToBottom() {
 			this.userScrolledUp = false;
@@ -1176,11 +1282,16 @@ export default {
 		},
 		/** ResizeObserver 等非 scroll 路径需要主动调；不动 userScrolledUp 以保留自动追尾决策 */
 		__refreshFarFromBottom() {
+			// 与 onScroll 同款循环期间抑制：流式长高会让按钮中途闪现
+			if (this.__forceScrollActive) return;
 			const el = this.$refs.scrollContainer;
 			if (!el) return;
 			this.farFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight > el.clientHeight;
 		},
 		onScroll() {
+			// 强制滚动循环期间 scroll 事件来源不可分（残余惯性 / 自家 scrollTo），一律不更新
+			// flag、不触发翻页；用户真实介入由 touchstart/wheel/pointerdown/mousedown 接管
+			if (this.__forceScrollActive) return;
 			const el = this.$refs.scrollContainer;
 			if (!el) return;
 			const dist = el.scrollHeight - el.scrollTop - el.clientHeight;

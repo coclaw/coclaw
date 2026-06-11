@@ -1995,6 +1995,8 @@ describe('ChatPage scroll', () => {
 		await new Promise(r => requestAnimationFrame(r));
 		// force=true 路径触发 scrollTo，且滚到 scrollHeight、瞬时滚动
 		expect(scrollToSpy).toHaveBeenCalledWith({ top: 1500, behavior: 'auto' });
+		// force 循环用真实 rAF 会空转到 2.5s deadline，unmount 强停防泄漏
+		wrapper.unmount();
 	});
 
 	test('scrollToBottom $nextTick 内二次检查 userScrolledUp（竞态防护）', async () => {
@@ -2038,9 +2040,10 @@ describe('ChatPage scroll', () => {
 
 		const scrollToSpy = vi.fn();
 		scrollContainer.scrollTo = scrollToSpy;
+		// 距底 500 > 1：force 循环只在"未到底"时才发 scrollTo（已到底直接判稳，不再像旧实现无脑单发）
 		Object.defineProperties(scrollContainer, {
 			scrollHeight: { value: 1000, configurable: true },
-			scrollTop: { value: 940, configurable: true, writable: true },
+			scrollTop: { value: 0, configurable: true, writable: true },
 			clientHeight: { value: 500, configurable: true },
 		});
 
@@ -2053,6 +2056,8 @@ describe('ChatPage scroll', () => {
 
 		// force=true 时应忽略 userScrolledUp，执行 scrollTo
 		expect(scrollToSpy).toHaveBeenCalled();
+		// force 循环用真实 rAF 会空转到 2.5s deadline，unmount 强停防泄漏
+		wrapper.unmount();
 	});
 
 	// 锁住"首屏 visibility 解锁与历史加载锁解耦"的契约：
@@ -2060,7 +2065,9 @@ describe('ChatPage scroll', () => {
 	// 一旦 __onConnReady 的强制 scroll 撞上 chatMessages watcher 触发的 __autoFillHistory（视口未满 → 立刻
 	// loadOlderMessages → __loadingHistory=true）这条 race，整面板会永久 visibility:hidden，
 	// 只能切走再回来重挂 ChatPage 才恢复。
-	test('contract: force 路径在 __loadingHistory 占锁时仍需解锁 __scrollReady（race 防卡死）', async () => {
+	// 语义升级（force 滚动循环）：force 撞锁从"被吞"变为"改等"——仍立即解锁 __scrollReady，
+	// 同时启动循环；循环在锁释放前不发 scrollTo（不干扰位置恢复）。
+	test('contract: force 路径在 __loadingHistory 占锁时仍解锁 __scrollReady，且循环改等不吞', async () => {
 		const wrapper = createWrapper();
 		await flushPromises();
 		// 双下划线开头的 data 字段在 reserved-prefix runtime-core 里不上 ctx，
@@ -2069,7 +2076,8 @@ describe('ChatPage scroll', () => {
 
 		const scrollContainer = wrapper.vm.$refs.scrollContainer;
 		if (!scrollContainer) return;
-		scrollContainer.scrollTo = vi.fn();
+		const scrollToSpy = vi.fn();
+		scrollContainer.scrollTo = scrollToSpy;
 		Object.defineProperties(scrollContainer, {
 			scrollHeight: { value: 1000, configurable: true },
 			scrollTop: { value: 0, configurable: true, writable: true },
@@ -2080,12 +2088,315 @@ describe('ChatPage scroll', () => {
 		// __onConnReady 的 $nextTick 这时才轮到调 scrollToBottom(true)。
 		wrapper.vm.$data.__loadingHistory = true;
 		wrapper.vm.scrollToBottom(true);
-		await wrapper.vm.$nextTick();
-		await new Promise(r => requestAnimationFrame(r));
 
 		// 即便 scroll 被 history-load 路径接管而跳过，首屏 visibility 也必须解锁，
 		// 否则整面板会一直 visibility:hidden 直到用户主动切走重挂。
 		expect(wrapper.vm.$data.__scrollReady).toBe(true);
+		// force 不再被吞：循环已启动、等锁释放后补滚
+		expect(wrapper.vm.$.proxy.__forceScrollActive).toBe(true);
+
+		await wrapper.vm.$nextTick();
+		await new Promise(r => requestAnimationFrame(r));
+		// 锁未释放期间循环不发 scrollTo（不干扰位置恢复）
+		expect(scrollToSpy).not.toHaveBeenCalled();
+
+		// force 循环用真实 rAF 会空转到 2.5s deadline，unmount 强停防泄漏
+		wrapper.unmount();
+		expect(wrapper.vm.$.proxy.__forceScrollActive).toBe(false);
+	});
+
+	// --- force 滚动重试循环（iOS<16 WebKit 惯性吞 scrollTo 的根治路径） ---
+	describe('force 滚动重试循环', () => {
+		// jsdom 假绿陷阱：Element.prototype.scrollTo 不存在、scrollHeight/clientHeight 默认全 0
+		// （3 帧即"判稳"）——每个循环用例必须显式 stub scrollTo + defineProperties 撑出非零距底，
+		// 并前置断言循环真发射/排帧过，否则整组假绿。
+		// rAF 手动驱动：stub 必须在 mount 之前装好（beforeEach），避免 createWrapper 触发的
+		// 非 force rAF 兜底污染逐帧计数。
+		let rafQueue;
+		let rafSeq;
+
+		/** 步进一帧：执行当前已排队的全部 rAF 回调 */
+		function runFrame() {
+			const cbs = [...rafQueue.values()];
+			rafQueue.clear();
+			for (const cb of cbs) cb();
+		}
+
+		beforeEach(() => {
+			rafQueue = new Map();
+			rafSeq = 0;
+			vi.stubGlobal('requestAnimationFrame', (cb) => {
+				rafQueue.set(++rafSeq, cb);
+				return rafSeq;
+			});
+			vi.stubGlobal('cancelAnimationFrame', (id) => {
+				rafQueue.delete(id);
+			});
+			// Date 走 fake timers（vi.spyOn(Date,'now') 在关 restoreMocks 的 config 下忘 restore 即泄漏）；
+			// setup.js 的 afterEach useRealTimers 自动兜底
+			vi.useFakeTimers({ toFake: ['Date'] });
+		});
+
+		// config 不开 unstubGlobals，本 describe 自清 rAF stub
+		afterEach(() => {
+			vi.unstubAllGlobals();
+		});
+
+		/**
+		 * 挂载并撑出非零距底（1500/0/500，距底 1000）。
+		 * applyScroll=false 模拟"被吞"（scrollTo 不动 scrollTop）；true 模拟生效（写入并 clamp）。
+		 */
+		async function setupLoopWrapper({ applyScroll = false } = {}) {
+			const wrapper = createWrapper();
+			await flushPromises();
+			const el = wrapper.vm.$refs.scrollContainer;
+			const scrollToSpy = applyScroll
+				? vi.fn(function ({ top }) { this.scrollTop = Math.min(top, this.scrollHeight - this.clientHeight); })
+				: vi.fn();
+			el.scrollTo = scrollToSpy;
+			Object.defineProperties(el, {
+				scrollHeight: { value: 1500, configurable: true },
+				scrollTop: { value: 0, configurable: true, writable: true },
+				clientHeight: { value: 500, configurable: true },
+			});
+			return { wrapper, el, scrollToSpy };
+		}
+
+		test('被吞期间每帧重发，生效后 3 帧稳定停止且不再排帧', async () => {
+			const { wrapper, el, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+
+			proxy.scrollToBottom(true);
+			await wrapper.vm.$nextTick();
+			// 前置断言：循环已启动且同步首发已发出
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(scrollToSpy).toHaveBeenCalledTimes(1);
+
+			// 被吞：scrollTo 不动 scrollTop → 每帧重发
+			runFrame();
+			runFrame();
+			expect(scrollToSpy).toHaveBeenCalledTimes(3);
+
+			// 惯性结束：scrollTo 开始生效
+			scrollToSpy.mockImplementation(function ({ top }) {
+				el.scrollTop = Math.min(top, el.scrollHeight - el.clientHeight);
+			});
+			runFrame(); // 本帧距底仍 >1 → 发射且生效（落底）
+			const callsAfterLanding = scrollToSpy.mock.calls.length;
+			runFrame(); // stable=1
+			runFrame(); // stable=2
+			runFrame(); // stable=3 → 停止
+			expect(proxy.__forceScrollActive).toBe(false);
+			// 稳定帧不再发射，判稳退出后也不再排帧
+			expect(scrollToSpy.mock.calls.length).toBe(callsAfterLanding);
+			expect(rafQueue.size).toBe(0);
+			wrapper.unmount();
+		});
+
+		test('永远被吞 → 超时停止并按真实落点回置 flag', async () => {
+			const { wrapper, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+
+			proxy.scrollToBottom(true);
+			await wrapper.vm.$nextTick();
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(scrollToSpy).toHaveBeenCalledTimes(1); // 前置：循环真发射过
+			runFrame();
+
+			vi.advanceTimersByTime(2501); // 仅伪造 Date：推过 FORCE_SCROLL_TIMEOUT_MS
+			runFrame(); // 本帧检测超时 → 停止 + resync
+			expect(proxy.__forceScrollActive).toBe(false);
+			// 距底 1000：≥60 → userScrolledUp=true；>clientHeight → farFromBottom=true（按钮重现）
+			expect(wrapper.vm.userScrolledUp).toBe(true);
+			expect(wrapper.vm.farFromBottom).toBe(true);
+			wrapper.unmount();
+		});
+
+		test('循环期间 onScroll 被抑制：flag 不变、scrollTop<50 不触发翻页', async () => {
+			const { wrapper, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+			const loadSpy = vi.spyOn(proxy, '__loadMoreHistory').mockImplementation(() => {});
+
+			proxy.scrollToBottom(true);
+			await wrapper.vm.$nextTick();
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(scrollToSpy).toHaveBeenCalled(); // 前置：循环真发射过
+
+			// 惯性停点 scroll 事件：scrollTop=0（<50 翻页阈值）、距底 1000（≥60）
+			proxy.onScroll();
+			// 未抑制时 userScrolledUp 会被打回 true（放大器），翻页会被误触发
+			expect(wrapper.vm.userScrolledUp).toBe(false);
+			expect(wrapper.vm.farFromBottom).toBe(false);
+			expect(loadSpy).not.toHaveBeenCalled();
+			wrapper.unmount();
+		});
+
+		for (const evtType of ['touchstart', 'wheel', 'pointerdown', 'mousedown']) {
+			test(`用户介入（${evtType}）立即让权停止并按落点回置 flag`, async () => {
+				const { wrapper, el, scrollToSpy } = await setupLoopWrapper();
+				const proxy = wrapper.vm.$.proxy;
+				// 隔离：wheel 会同时进 onWheel 的翻页路径，touchstart 进下拉跟踪，与本用例无关
+				vi.spyOn(proxy, '__loadMoreHistory').mockImplementation(() => {});
+
+				proxy.scrollToBottom(true);
+				await wrapper.vm.$nextTick();
+				expect(proxy.__forceScrollActive).toBe(true);
+				expect(scrollToSpy).toHaveBeenCalled(); // 前置：循环真发射过
+				const calls = scrollToSpy.mock.calls.length;
+
+				// jsdom 对 PointerEvent/TouchEvent 构造器支持不全，用裸 Event 构造
+				el.dispatchEvent(new Event(evtType));
+				expect(proxy.__forceScrollActive).toBe(false);
+				// 按真实落点（距底 1000）回置
+				expect(wrapper.vm.userScrolledUp).toBe(true);
+				expect(wrapper.vm.farFromBottom).toBe(true);
+				// 残帧灭活：不再发射
+				runFrame();
+				expect(scrollToSpy.mock.calls.length).toBe(calls);
+				wrapper.unmount();
+			});
+		}
+
+		test('#2: __loadingHistory 占锁不发射，锁释放后看到恢复位置并继续逼近到底', async () => {
+			const { wrapper, el, scrollToSpy } = await setupLoopWrapper({ applyScroll: true });
+			const proxy = wrapper.vm.$.proxy;
+			wrapper.vm.$data.__loadingHistory = true;
+
+			proxy.scrollToBottom(true); // 锁占用：同步分支直接启动循环
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(rafQueue.size).toBeGreaterThan(0); // 前置：循环真在排帧（占锁时只跳过发射）
+			runFrame();
+			runFrame();
+			expect(scrollToSpy).not.toHaveBeenCalled();
+
+			// 锁释放 + 同一 turn 内模拟 __loadMoreHistory 的 $nextTick 位置恢复赋值。
+			// 钉前提 18：恢复是微任务、循环帧必在微任务排空后执行，首个解锁帧看到的就是恢复后位置
+			wrapper.vm.$data.__loadingHistory = false;
+			el.scrollTop = 300;
+			runFrame(); // 解锁后第一帧：从恢复位置继续逼近 → 发射
+			expect(scrollToSpy).toHaveBeenCalledTimes(1);
+			expect(el.scrollTop).toBe(1000); // 生效 → 到底（1500-500）
+			runFrame(); // stable=1
+			runFrame(); // stable=2
+			runFrame(); // stable=3 → 停止
+			expect(proxy.__forceScrollActive).toBe(false);
+			wrapper.unmount();
+		});
+
+		test('unmount 强停循环并摘除 4 个介入监听', async () => {
+			const { wrapper, el, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+			const removeSpy = vi.spyOn(el, 'removeEventListener');
+
+			proxy.scrollToBottom(true);
+			await wrapper.vm.$nextTick();
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(scrollToSpy).toHaveBeenCalled(); // 前置：循环真发射过
+			const calls = scrollToSpy.mock.calls.length;
+
+			wrapper.unmount();
+			expect(proxy.__forceScrollActive).toBe(false);
+			// 按 handler 引用过滤：beforeUnmount 还会摘下拉手势的 touchstart 等监听
+			const intervene = proxy.__onForceScrollUserIntervene;
+			const removed = removeSpy.mock.calls.filter((c) => c[1] === intervene).map((c) => c[0]).sort();
+			expect(removed).toEqual(['mousedown', 'pointerdown', 'touchstart', 'wheel']);
+			// 残帧灭活
+			runFrame();
+			expect(scrollToSpy.mock.calls.length).toBe(calls);
+		});
+
+		test('切 chatStore 强停循环（旧循环不得滚到新 chat）', async () => {
+			const { wrapper, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+
+			proxy.scrollToBottom(true);
+			await wrapper.vm.$nextTick();
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(scrollToSpy).toHaveBeenCalled(); // 前置：循环真发射过
+			const calls = scrollToSpy.mock.calls.length;
+
+			// 模拟 chatStore watcher 的 store 切换清理块（handler this 须用 $.proxy 才读得到 __ 字段）；
+			// storeB 用最小桩，仅满足 watcher body 内 store.activate() 调用
+			const watcher = wrapper.vm.$options.watch.chatStore;
+			const storeA = wrapper.vm.chatStore;
+			const storeB = { activate: vi.fn() };
+			watcher.handler.call(wrapper.vm.$.proxy, storeB, storeA);
+
+			expect(proxy.__forceScrollActive).toBe(false);
+			// 旧循环残帧不再发射（不得滚到新 chat）
+			runFrame();
+			expect(scrollToSpy.mock.calls.length).toBe(calls);
+			wrapper.unmount();
+		});
+
+		test('非 force 路径不启动循环：多帧最多 2 次 scrollTo', async () => {
+			const { wrapper, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+
+			proxy.scrollToBottom(); // watcher / ResizeObserver / 发送路径的非 force 语义
+			await wrapper.vm.$nextTick(); // nextTick 内单发第 1 次
+			runFrame(); // rAF 兜底：距底仍 >10 → 第 2 次
+			runFrame();
+			runFrame();
+			expect(scrollToSpy).toHaveBeenCalled();
+			expect(scrollToSpy.mock.calls.length).toBeLessThanOrEqual(2);
+			expect(proxy.__forceScrollActive).toBeFalsy();
+			wrapper.unmount();
+		});
+
+		test('循环期间 __refreshFarFromBottom 被抑制：farFromBottom 不变（按钮不中途闪现）', async () => {
+			const { wrapper, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+
+			proxy.scrollToBottom(true);
+			await wrapper.vm.$nextTick();
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(scrollToSpy).toHaveBeenCalled(); // 前置：循环真发射过
+
+			expect(wrapper.vm.farFromBottom).toBe(false);
+			proxy.__refreshFarFromBottom(); // 距底 1000 > clientHeight，未抑制时会翻 true
+			expect(wrapper.vm.farFromBottom).toBe(false);
+			wrapper.unmount();
+		});
+
+		test('循环重入（连点按钮）：监听不重复挂、旧世代残帧灭活、单 rAF 链', async () => {
+			const { wrapper, el, scrollToSpy } = await setupLoopWrapper();
+			const proxy = wrapper.vm.$.proxy;
+			const addSpy = vi.spyOn(el, 'addEventListener');
+			const removeSpy = vi.spyOn(el, 'removeEventListener');
+
+			proxy.onClickBackToBottom();
+			await wrapper.vm.$nextTick();
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(scrollToSpy).toHaveBeenCalledTimes(1); // 前置：首循环已发射
+			const gen1 = proxy.__forceScrollGen;
+			// 捕获旧世代已排队的帧（模拟 cancelRAF 漏网的残帧）
+			const staleCbs = [...rafQueue.values()];
+
+			proxy.onClickBackToBottom(); // active 中再次 force → 重启
+			await wrapper.vm.$nextTick();
+			expect(proxy.__forceScrollActive).toBe(true);
+			expect(proxy.__forceScrollGen).toBeGreaterThan(gen1);
+
+			// 监听不重复挂：重启先摘旧 4 个再挂新 4 个，净挂载恒为 4
+			const intervene = proxy.__onForceScrollUserIntervene;
+			const added = addSpy.mock.calls.filter((c) => c[1] === intervene).length;
+			const removed = removeSpy.mock.calls.filter((c) => c[1] === intervene).length;
+			expect(added).toBe(8);
+			expect(added - removed).toBe(4);
+
+			// 旧世代残帧手动补刀：世代令牌应使其既不发射也不再排帧（不独赖 cancelRAF）
+			scrollToSpy.mockClear();
+			const pending = rafQueue.size;
+			for (const cb of staleCbs) cb();
+			expect(scrollToSpy).not.toHaveBeenCalled();
+			expect(rafQueue.size).toBe(pending);
+
+			// 新循环单 rAF 链：步进一帧恰好发射一次
+			runFrame();
+			expect(scrollToSpy).toHaveBeenCalledTimes(1);
+			wrapper.unmount();
+		});
 	});
 
 	// --- ResizeObserver ---

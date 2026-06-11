@@ -68,6 +68,50 @@ test('回到底部按钮：距底 > 1 屏显示，点击后滚回底部并隐藏
 	expect(distFromBottom).toBeLessThan(60);
 });
 
+// iOS<16 WebKit 惯性期吞程序化 scrollTo 的修复路径：force 滚动改为 rAF 逐帧重试循环。
+// Chromium 无法复现真实惯性吞没，用猴补 scrollTo（首次调用起 500ms 内丢弃）模拟"被吞窗口"，
+// 真浏览器端到端验证循环重试收敛到底 + flag 回置（按钮保持隐藏）。
+test('回到底部按钮：scrollTo 被吞 500ms 仍收敛到底（force 重试循环） @ui', async ({ page }) => {
+	await login(page);
+	const info = await navigateToChat(page);
+	test.skip(!info, 'No chat session available');
+	await waitChatReady(page);
+
+	const dims = await injectLongContent(page);
+	test.skip(!dims || dims.scrollH < dims.clientH * 2, 'Cannot inject enough content for >1 screen scroll');
+
+	const btn = page.getByTestId('btn-back-to-bottom');
+
+	// 滚到顶部（距底远 > 1 屏）→ 按钮显示
+	await setMainScrollTop(page, 0);
+	await expect(btn).toBeVisible({ timeout: 2000 });
+
+	// 猴补实例方法覆盖原型方法：从第一次调用起 500ms 内丢弃 scrollTo，之后放行原生实现
+	await page.evaluate(() => {
+		const main = document.querySelector('[data-testid="chat-root"] main');
+		const native = main.scrollTo.bind(main);
+		let dropUntil = 0;
+		main.scrollTo = (...args) => {
+			if (!dropUntil) dropUntil = Date.now() + 500;
+			if (Date.now() < dropUntil) return; // 模拟惯性期被合成线程丢弃
+			native(...args);
+		};
+	});
+
+	await btn.click();
+
+	// 循环应在放行后数帧内收敛：2s 内距底 ≤1px
+	await expect
+		.poll(() => page.evaluate(() => {
+			const main = document.querySelector('[data-testid="chat-root"] main');
+			return main ? main.scrollHeight - main.scrollTop - main.clientHeight : null;
+		}), { timeout: 2000 })
+		.toBeLessThanOrEqual(1);
+
+	// flag 已按真实落点回置：按钮保持隐藏
+	await expect(btn).not.toBeVisible();
+});
+
 test('回到底部按钮：距底 < 1 屏时不显示 @ui', async ({ page }) => {
 	await login(page);
 	const info = await navigateToChat(page);
