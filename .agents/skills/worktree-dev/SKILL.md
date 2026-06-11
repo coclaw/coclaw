@@ -18,6 +18,11 @@ cd <worktree绝对路径>/<工作区> && <cmd>      # 如 cd /home/.../.agents/w
 否则命令在主检出跑，绿是假绿（测的不是你 worktree 的改动）。worktree 真实路径在
 `<repo>/.agents/worktrees/<名>`（EnterWorktree 回显的 `.claude/...` 是同一处）。
 
+## 坑 C：新 worktree 首装缺件
+
+- `pnpm install` 默认拦 postinstall 构建脚本（approve-builds 机制）→ server 的 prisma client 不会生成，跑 server 测试 / E2E 前先 `cd <wt>/server && pnpm exec prisma generate`。
+- worktree 不带 gitignored 文件（如 `server/.env`）——需要时从主检出拷。
+
 ## 插件（plugins/openclaw）：还有坑 A——活主网关只认主检出
 
 主网关装的插件 `src` 是软链回**主检出**，所以 worktree 改插件 + restart 主网关**看不到**。
