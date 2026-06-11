@@ -1,5 +1,13 @@
 # @coclaw/ui
 
+## 0.32.4
+
+### Patch Changes
+
+- a965270: Declare `color-scheme` following the light/dark theme so browser-native UI (scrollbars, form controls, autofill) renders dark in dark mode, and move Electron in-app scrolling from the document into the content container below the custom titlebar — scrollbars no longer span the titlebar (on Windows the scrollbar's top arrow was covered by window controls), and sticky elements naturally anchor below the titlebar.
+- 7c2a8cf: Add thin translucent scrollbar decoration for Electron shell scroll containers: `scrollbar-color` is declared once on the `html.cc-electron-custom` scope root (inherited by all scroll boxes), and `scrollbar-width: thin` targets the two real page-level scrollers (`.cc-app-content` and the ChatPage message area via a `cc-scrollbar-thin` marker class). Hidden scrollbars (`scrollbar-hide`) are unaffected; web and Capacitor are unaffected.
+- 9df3a70: Fix Electron custom titlebar overlapping the top of tall and fullscreen modals: add geometric avoidance rules (centered modals shift down by half the titlebar height with reduced max-height; fullscreen modals offset their top edge) scoped to `html.cc-electron-custom` via a `cc-modal-content` marker class, so modal headers and close buttons stay clickable below the drag strip and OS window controls. Web and Capacitor are unaffected.
+
 ## 0.32.3
 
 ### Patch Changes
