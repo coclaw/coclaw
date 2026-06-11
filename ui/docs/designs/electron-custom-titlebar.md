@@ -128,6 +128,8 @@ App.vue 是 `custom`/`isFullScreen` 的唯一持有者与 `cc-electron-custom` �
 
 **toaster 偏移仍要保留**：toast `z-[100]` 在条之上、且桌面默认右上与 WCO 同处，故仍须 §5.3 的 `.cc-toaster-viewport` 偏移清开按钮区（与本 z 结论无关、不可省）。**实机门禁**：modal（居中/fullscreen）、popover、select、toast 不被条遮、关闭按钮可点——并入 §8 release-blocking 实机逐项验。
 
+**弹窗避让（高弹窗 header 被条吃掉的修复落点）**：marker `cc-modal-content` 由 `modal-theme.js` 注入所有 UModal content（web 上纯惰性），`main.css` 作用域内三条规则做几何避让——居中变体（`.fixed:not(.inset-0)`）居中点下移半条高 + max-h 扣条高；fullscreen 变体（`.inset-0`）只盖 `top` 长属性让出条高；OS 全屏变量置 0 时逐属性退化为内置基线。**勘误**：TODO 原表述「色带 z-60 层级盖住弹窗」与本节 z 模型矛盾（浮层 teleport 到 body、恒画在 `#app` 子树之上）——真实失效是**几何**：header 上半截落进 38px 拖动区（app-region 命中按几何判定）+ fullscreen 标题被 OS 层红绿灯/WCO 压住，两者都不受谁画在上面影响。考虑过且不采的替代：z-index 压制（浮层本就在条之上，救不了拖动判定与 OS 层按钮）；`-webkit-app-region: no-drag`（能救拖动区点击、救不了红绿灯/WCO 压 fullscreen 标题）；用 `[data-slot="content"]` 等价选择器（可免主题改动，但 marker 与 toaster 先例一致更显式，主动选一致性）。**残留行为（期望语义非 bug）**：修复后 38px 带内点击仍是拖窗、不触发 click-outside 关弹窗——避让本就是让弹窗不进那条带。
+
 ## 6. 主题同步（Windows WCO 按钮色，`src/services/theme-mode.js`）
 
 `applyThemeMode()` 是全应用切 `.dark` 的唯一选点。尾部追加：若 `window.electronAPI?.titleBar?.custom` 且平台 Windows，按 `appliedTheme` 调 `setTitleBarOverlay({ color, symbolColor, height:38 })`（同样**必须走 `window.electronAPI`**，理由见 §5.2）。

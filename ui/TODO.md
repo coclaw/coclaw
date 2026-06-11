@@ -17,17 +17,14 @@
 - 现状：package.json 仍有 7 个 tauri 相关脚本（`tauri` / `tauri:*`）、`src-tauri/` 目录、`ui/scripts/tauri-build.sh|.ps1`（2026-06-10 skills/commands 梳理补充）、`docs/designs/tauri-desktop-shell.md`，而桌面壳方案已定为 Electron（ui/AGENTS.md 已加一句定性"早期评估残留，勿再使用"）。
 - 待决策：删除残留（脚本 + 目录 + 相关 devDependencies），或保留归档；删除需确认 `src-tauri/` 无被引用的共享资源。
 
-## Electron 自定义标题栏盖住高弹窗顶部（拖动色带吃掉超高对话框的标题 + 关闭叉上半截）
+## ImgViewDialog 图片上限 85vh 与 Electron 弹窗避让叠加后内滚阈值升高
 
-**发现日期**：2026-06-10
-**来源**：本批待 push commit（自定义标题栏特性 `1710206e`）的发布前 review（renderer 维度 subagent + 主线核实 z-index/形态）
+**发现日期**：2026-06-11
+**来源**：Electron 标题栏盖高弹窗修复的实施评审（评审新增跟进项，条件不满足未随主修复动）
 
-- 症状：桌面壳（Mac + Windows 自定义标题栏模式）顶部 38px 不透明拖动色带（`ElectronTitleBar.vue`：`fixed top-0 z-[60] bg-elevated` + `app-region: drag`）层级高于 @nuxt/ui 弹窗。弹窗 overlay/content 在主题里都**无 z-index**（生成主题 `overlay: 'fixed inset-0'`、content 居中 `max-h-[calc(100dvh-2rem)]`；项目 `modal-theme.js` 覆盖也不加 z-index），故恒在 z-60 之下。绝大多数弹窗矮、居中、顶离屏顶很远，无碍；但**几乎占满屏高的弹窗**（provider catalog `AddProviderDialog`、`PrimaryModelPickerDialog`、`WebAgentPickerDialog` 等长列表撑到 max-h）顶边顶到约 16px，其 header（`min-h-13`=52px）的标题与关闭叉上半截落进 0–38px 色带：被不透明色带盖住 + 落在拖动区 → 点那块是拖窗而非关窗。叉的下半截仍可点，弹窗非彻底关不掉。
-- 影响范围：仅桌面壳、仅自定义标题栏开着、仅那几个超高弹窗；web/Capacitor 完全不受影响（整套样式锁在 `html.cc-electron-custom` 作用域，二者拿不到该类——已核实此前提成立）。Mac 与 Windows 均中招（非 Windows 独有）。
-- 严重度：中。非崩溃/丢数据/安全；是本批新特性在主力桌面端的可见瑕疵——高弹窗 header 顶部被裁、关闭叉被吃掉一半，观感像坏了。
-- 修法方向（任一）：在 `main.css` 的 `html.cc-electron-custom` 作用域给弹窗 overlay/content 让出 38px 顶距（top inset / padding-top）；或把色带 z 压到弹窗之下（但弹窗无 z-index，按 DOM 顺序决胜不稳，更稳是给弹窗在该作用域显式抬 z 或加 inset）。配套补回归：高弹窗 + 自定义标题栏下断言 header/close 不落进色带区。2026-06-11 容器滚动化 review 再次确认本条仍在（modal teleport 到 body、定位仍以视口为基准，不随容器让位）；亦可在该作用域给 modal content 加 max-height 避让规则。
-- **2026-06-11 实机验证新增形态：全屏模式对话框**（窄窗下 UModal fullscreen 变体，如「用户信息」对话框）`inset-0` 占满整窗，标题行顶到窗口最顶——mac 上被红绿灯直接压住标题文字（截图实锤），Windows 上同理会被 WCO 按钮区覆盖。修复时需把 fullscreen 变体一并纳入 38px 顶部避让。
-- 范围：仅 UI（`ElectronTitleBar.vue` / `main.css` / 受影响弹窗或全局 modal 主题）。
+- 现状：`ImgViewDialog.vue` 图片用 `max-h-[85vh]` 封顶；Electron 避让规则给 modal content 的 max-h 扣掉 38px 条高后，窗高 **<~680px** 即 85vh 超出 content 可用高 → body 内滚（修复前该阈值约 ~426px）。图片查看器内滚观感差。
+- 未顺手修的原因：改成容器相对（`max-h-full`）在现 DOM 结构上 percentage 解析不了——content 是 `height:auto` 仅受 max-height 封顶、父链无确定高度，需重构 body/包裹层为定高或 flex `min-h-0` 收缩链路才成立，且该改动全端生效需评估 web/Capacitor 观感，超出「数个 class」范围。
+- 修法方向：把 body → 图片包裹层改成可收缩 flex 链（`min-h-0` + 图片去 vh 上限改随容器收缩），或图片上限改 calc 扣除 `var(--cc-titlebar-h, 0px)`（web 取 fallback 0 不变）；二选一时优先前者（语义干净、不引变量依赖）。
 
 ## Electron 自定义标题栏的几个低优项（窄屏移动 header / toaster 安全区重复 / HMR 监听未注销 / 页面 zoom 与系统按钮错位）
 

@@ -9,6 +9,9 @@ import { login, navigateToChat } from './helpers.js';
  * - color-scheme 跟随明暗主题（暗色滚动条根因）
  * - modal 锁滚与容器滚动不互踩
  * - 全屏往返（inline 变量 --cc-titlebar-h 0px ↔ 移除）布局退化且 scrollTop 保留
+ * - 超高居中弹窗避让标题栏（cc-modal-content marker + 居中点下移/max-h 扣条高 + 变量退化）
+ * - fullscreen 弹窗避让标题栏（content top 让出条高 + 变量退化）
+ * - <640px 居中变体（prompt 类弹窗）max-h 扣条高（覆盖基础规则 2rem 版 max-height 声明）
  */
 
 const TITLEBAR_H = 38;
@@ -280,6 +283,120 @@ test('Electron 形态：全屏往返（变量 0px ↔ 移除）布局退化且�
 	});
 	expect(outFs.top).toBeCloseTo(TITLEBAR_H, 0);
 	expect(outFs.scrollTop).toBeCloseTo(300, 0);
+});
+
+test('Electron 形态：超高居中弹窗避让标题栏（含未挂类对照与变量退化） @ui', async ({ page }) => {
+	// 视口必须 ≥768px 宽：窄于 768 时设置弹窗切到 fullscreen 变体，断言会断在错误变体上
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+
+	await page.getByTestId('menu-settings').click();
+	const dialog = page.locator('[role="dialog"]');
+	await expect(dialog).toBeVisible({ timeout: 5000 });
+
+	// 注入确定性超高内容逼 content 撞到 max-h 上限——否则弹窗矮居中、y 断言必飘
+	await page.evaluate(() => {
+		const body = document.querySelector('[role="dialog"] [data-slot="body"]');
+		const div = document.createElement('div');
+		div.id = 'e2e-tall-modal-body';
+		div.style.height = '2000px';
+		body.appendChild(div);
+	});
+
+	// 对照（未挂作用域类）：marker 已落 DOM；content 顶到 (720-656)/2≈32 < 38
+	// ——钉死「问题真实存在」（38px 拖动色带会吃掉 header 上半截），防本用例空转假绿
+	await expect(dialog).toHaveClass(/cc-modal-content/);
+	await expect.poll(async () => (await dialog.boundingBox()).y).toBeCloseTo(32, 0);
+
+	// 挂作用域类：居中点下移半条高 + max-h 扣条高 → 顶缘 = 38 + 32 = 70
+	await applyElectronScope(page);
+	await expect.poll(async () => (await dialog.boundingBox()).y).toBeCloseTo(TITLEBAR_H + 32, 0);
+	const box = await dialog.boundingBox();
+	// 底边不越视口（max-h 已扣条高，整体仍装得下）
+	expect(box.y + box.height).toBeLessThanOrEqual(720 + 1);
+	// header 与关闭叉整体让出色带区（可点、不被拖动区吃掉）。
+	// 关闭叉锚点用 header 内 button：UButton 根元素写死 data-slot="base"，
+	// Modal 传入的 data-slot="close" 不落 DOM，无法直接按 slot 名命中
+	const tops = await page.evaluate(() => ({
+		header: document.querySelector('[role="dialog"] [data-slot="header"]').getBoundingClientRect().top,
+		close: document.querySelector('[role="dialog"] [data-slot="header"] button').getBoundingClientRect().top,
+	}));
+	expect(tops.header).toBeGreaterThanOrEqual(TITLEBAR_H);
+	expect(tops.close).toBeGreaterThanOrEqual(TITLEBAR_H);
+
+	// OS 全屏（inline 变量置 0，与既有全屏往返用例同手法）→ 逐属性退化回内置基线
+	await page.evaluate(() => {
+		document.documentElement.style.setProperty('--cc-titlebar-h', '0px');
+	});
+	await expect.poll(async () => (await dialog.boundingBox()).y).toBeCloseTo(32, 0);
+});
+
+test('Electron 形态（窄视口）：fullscreen 弹窗避让标题栏（top 让出条高、变量退化恢复） @ui', async ({ page }) => {
+	await page.setViewportSize({ width: 375, height: 812 });
+	await login(page);
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+
+	await applyElectronScope(page);
+
+	// 窄于 md(768px) → 设置弹窗走 fullscreen 变体（inset-0）
+	await page.getByTestId('menu-settings').click();
+	const dialog = page.locator('[role="dialog"]');
+	await expect(dialog).toBeVisible({ timeout: 5000 });
+
+	// content 顶缘让出条高；只盖 top 长属性、bottom/left/right 保留 → 高度 = 视口减条高
+	await expect.poll(async () => (await dialog.boundingBox()).y).toBeCloseTo(TITLEBAR_H, 0);
+	const box = await dialog.boundingBox();
+	expect(box.height).toBeCloseTo(812 - TITLEBAR_H, 0);
+	// 标题行与关闭叉不再被 mac 红绿灯 / Windows WCO 压住（close 锚点同居中用例：header 内 button）
+	const tops = await page.evaluate(() => ({
+		header: document.querySelector('[role="dialog"] [data-slot="header"]').getBoundingClientRect().top,
+		close: document.querySelector('[role="dialog"] [data-slot="header"] button').getBoundingClientRect().top,
+	}));
+	expect(tops.header).toBeGreaterThanOrEqual(TITLEBAR_H);
+	expect(tops.close).toBeGreaterThanOrEqual(TITLEBAR_H);
+
+	// OS 全屏（变量置 0）→ 退化为内置 inset-0 满屏
+	await page.evaluate(() => {
+		document.documentElement.style.setProperty('--cc-titlebar-h', '0px');
+	});
+	await expect.poll(async () => (await dialog.boundingBox()).y).toBeCloseTo(0, 0);
+	const fsBox = await dialog.boundingBox();
+	expect(fsBox.height).toBeCloseTo(812, 0);
+});
+
+test('Electron 形态（窄视口）：<640 居中变体（prompt 类弹窗）max-h 扣条高、底边不越视口 @ui', async ({ page }) => {
+	await page.setViewportSize({ width: 375, height: 812 });
+	await login(page);
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+
+	await applyElectronScope(page);
+
+	// 设置弹窗（fullscreen）内打开改密码弹窗：promptModalUi 无 fullscreen 能力，窄视口仍走居中变体
+	await page.getByTestId('menu-settings').click();
+	await expect(page.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });
+	await page.getByTestId('btn-change-password').click();
+	// 两层弹窗并存，:not(.inset-0) 唯一命中居中的改密码弹窗
+	const centered = page.locator('[role="dialog"]:not(.inset-0)');
+	await expect(centered).toBeVisible({ timeout: 5000 });
+
+	// 注入超高内容逼 content 撞到 <640 的 max-h 上限（100dvh - 条高 - 2rem）
+	await page.evaluate(() => {
+		const body = document.querySelector('[role="dialog"]:not(.inset-0) [data-slot="body"]');
+		const div = document.createElement('div');
+		div.style.height = '2000px';
+		body.appendChild(div);
+	});
+
+	// 顶缘 = 条高 + 2rem/2 = 54；高度 = 视口 - 条高 - 2rem；底边不越视口
+	// ——基础规则的 max-height（2rem 版）单独删除时此处必红（顶缘回 35、底边越界）
+	await expect.poll(async () => (await centered.boundingBox()).y).toBeCloseTo(TITLEBAR_H + 16, 0);
+	const cBox = await centered.boundingBox();
+	expect(cBox.height).toBeCloseTo(812 - TITLEBAR_H - 32, 0);
+	expect(cBox.y + cBox.height).toBeLessThanOrEqual(812 + 1);
 });
 
 test('Electron 形态（窄视口）：MobilePageHeader sticky 贴标题栏下缘、不钻条 @ui', async ({ page }) => {

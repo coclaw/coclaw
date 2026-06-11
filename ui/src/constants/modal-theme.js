@@ -17,6 +17,8 @@
 //
 // content 是「脱离背景」的补强：叠 quasar 多层投影 + 暗色柔和白光晕（MODAL_ELEVATION），内置 shadow-lg
 // 被去重换掉，尺寸/圆角/ring 保留。注意只能放在 base slots，不能放进 variants.fullscreen.true（那条仍是红线）。
+// content 另带 cc-modal-content：纯惰性 marker，仅 html.cc-electron-custom 作用域下被 main.css 赋
+// 标题栏避让样式，web/Capacitor 无任何规则匹配、零影响。
 // overlay 不再覆盖：保持内置 /75。之前加深过（/85→/80）但仍偏暗——对话框靠上面的光晕已能清晰脱离背景，
 //   遮罩浓度交还 nuxt 默认即可（quasar 自身遮罩更浅 ~40%，无需在此追求更深）。
 import { MODAL_ELEVATION } from './popup-elevation.js';
@@ -32,7 +34,7 @@ export const MODAL_THEME = {
 		close: 'static -me-2.5 cc-icon-btn-lg',
 		body: 'flex-1 px-4 sm:px-5 pt-4 sm:pt-5 pb-5 sm:pb-5',
 		footer: 'flex items-center gap-1.5 px-4 sm:px-5 py-2',
-		content: MODAL_ELEVATION,
+		content: 'cc-modal-content ' + MODAL_ELEVATION,
 	},
 	variants: {
 		fullscreen: {

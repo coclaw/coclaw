@@ -48,6 +48,8 @@ describe('MODAL_THEME — 全局 modal 主题覆盖形态', () => {
 		expect(slots.content).toContain('shadow-[');
 		expect(slots.content).toContain('dark:shadow-[');
 		expect(slots.content).toContain('dark:ring-white/10');
+		// cc-modal-content：Electron 标题栏避让的惰性 marker（main.css 作用域规则的命中锚点）
+		expect(slots.content).toContain('cc-modal-content');
 	});
 
 	test('overlay：不覆盖，保持 nuxt 内置 /75（之前的加深偏暗，光晕已足够脱离背景）', () => {

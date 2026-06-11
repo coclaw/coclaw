@@ -179,6 +179,31 @@ html.cc-electron-custom .cc-desktop-sidebar {
 html.cc-electron-custom .cc-toaster-viewport {
 	top: calc(var(--cc-titlebar-h) + 1rem + var(--safe-area-inset-top, 0px));
 }
+/*
+ * 弹窗避让标题栏（marker `cc-modal-content`，由 modal-theme.js 注入所有 UModal content）：
+ * 0–38px 是拖动色带 + OS 窗口按钮区（mac 红绿灯 / Windows WCO）——app-region 命中是几何判定、
+ * OS 按钮永远画在 webview 之上，故方向是几何避让而非 z 压制（抬 z 救不了拖动判定与 OS 层按钮）。
+ * - 居中变体（.fixed 非 inset-0）：居中点下移半条高（content 自带 -translate-y-1/2）、max-h 扣条高，
+ *   2rem/4rem 与内置 max-h-[calc(100dvh-2rem)] / sm:max-h-[calc(100dvh-4rem)] 一一对应；
+ * - fullscreen 变体（.inset-0）：只盖 top 长属性，bottom/left/right 保留；
+ * - OS 全屏 App.vue 把 --cc-titlebar-h inline 置 0 → 各属性逐项退化为内置基线值。
+ * 此处裸用 100dvh 无 fallback 的理由：规则只在 Electron（Chromium 内核恒支持 dvh）作用域生效，
+ * 且 @nuxt/ui 内置 modal max-h 本就用 dvh——未引入新依赖，不违基线 fallback 约束。
+ * 选择器借内置工具类 .fixed/.inset-0 区分变体，升级 @nuxt/ui 须随 e2e 复检；
+ * scrollable 变体（content 走 relative 非 fixed）项目未用，引入时另评。
+ */
+html.cc-electron-custom .cc-modal-content.fixed:not(.inset-0) {
+	top: calc(50% + var(--cc-titlebar-h) / 2);
+	max-height: calc(100dvh - var(--cc-titlebar-h) - 2rem);
+}
+@media (min-width: 640px) {
+	html.cc-electron-custom .cc-modal-content.fixed:not(.inset-0) {
+		max-height: calc(100dvh - var(--cc-titlebar-h) - 4rem);
+	}
+}
+html.cc-electron-custom .cc-modal-content.inset-0 {
+	top: var(--cc-titlebar-h);
+}
 
 /*
  * chrome 观感增强（同色 chrome 是主流惯例，原缺内角 hairline）：
