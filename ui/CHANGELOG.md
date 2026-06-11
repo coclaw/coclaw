@@ -1,5 +1,12 @@
 # @coclaw/ui
 
+## 0.32.5
+
+### Patch Changes
+
+- b3a619d: fix(ui): make ChatPage back-to-bottom button reliable on iOS 15 by retrying force scroll until stable (WebKit drops programmatic scrolls during momentum); suppress scroll-flag writes during the retry loop, yield to real user input, and stop swallowing forced scrolls while history pagination is in flight
+- 90abd05: Extend slim translucent scrollbars to all real inner scroll areas in the Electron shell (markdown code blocks/tables/KaTeX, thinking tool-result blocks, modal bodies, chat input, file rename list, OAuth raw text, file breadcrumb), deepen the scrollbar thumb on container hover, and reserve a stable scrollbar gutter for the chat message area. Web and mobile keep native scrollbars.
+
 ## 0.32.4
 
 ### Patch Changes

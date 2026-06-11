@@ -1,5 +1,0 @@
----
-'@coclaw/openclaw-coclaw': patch
----
-
-Fix the auto-upgrade chain. The worker's post-restart half (verify, rollback, accounting, reporting) was unreachable under systemd because `gateway restart` killed the worker's own cgroup; the worker is now spawned through a probe-gated `systemd-run --scope` escape, and a scheduler-side inflight reconcile backfills terminal accounting (`ok`/`interrupted`) when a worker dies mid-flight. Upgrades now run `plugins update` with the bare npm package name, which un-pins exact install specs (left behind by forced installs or manual `pkg@x.y.z` installs) that would otherwise freeze auto-upgrade on one version forever. The rollback path is repaired: backups move out of the npm-managed tree (npm pruned them as extraneous), the fallback becomes a single `plugins install --force` reinstall, and a new `rollback-failed` terminal state replaces false rollback success. A prerelease published as `latest` no longer triggers an hourly upgrade/rollback/restart loop, and command failures now surface real causes (sanitized stdout/stderr tails) in upgrade logs and state.
