@@ -63,7 +63,7 @@ disable-model-invocation: true
 
 ### 自愈不变量相关
 
-- `coclaw.upgradeHealth` gateway method 被删，或返回对象不再含 `version: string`
+- `coclaw.upgradeHealth` gateway method 被删，或返回对象不再含 `version: string|null`（null=加载时快照不可得，verify 侧保守判未达标；handler 返回的是模块加载时刻快照，禁止改回调用时读磁盘）
 - `AutoUpgradeScheduler` 不再作为 service 注册
 - `upgrade-state.json` 里既有字段（如 `skippedVersions`、`lastCheck`、`lastRunAt`）被删或改名；或新增字段未考虑旧版兼容
 - `worker.js` 调用的 `openclaw` CLI 参数格式变了（注意：这里看的是"当前发布版本的 worker.js 会调用什么 CLI"；用户装的是旧版，旧版 worker.js 跑的是旧 CLI 格式——所以真正的风险是"本次发布到这些 CLI 命令定义的变更，使得**未来**下一次升级的 worker.js 无法生效"）
@@ -78,7 +78,7 @@ disable-model-invocation: true
 ### 回滚不变量相关
 
 - `fallbackInstallOldVersion`（或项目里的同等回滚机制）被删，或调用链破损
-- 回滚用到的 CLI（如 `openclaw plugins install @coclaw/openclaw-coclaw@<旧版>`、`openclaw plugins uninstall <id>`）参数格式变了
+- 回滚用到的 CLI（单命令 `openclaw plugins install @coclaw/openclaw-coclaw@<旧版> --force`，依赖 `--force` 映射 mode=update 的覆盖装语义）参数格式或 `--force` 语义变了
 - 升级相关锁文件（如 `upgrade.lock`）格式变了，导致锁永不释放
 
 ## 工作流

@@ -11,8 +11,8 @@
  *
  * 磁盘 package.json 的版本仅作为诊断写入本地日志，不参与判定——安装目录路径
  * 取自权威记录（经 openclaw plugins inspect 读取），仍可能在 id-migration 等
- * 极端场景发生漂移，而 upgradeHealth 是 gateway 进程内"新代码真的被加载"的
- * 权威信号。
+ * 极端场景发生漂移，而 upgradeHealth 返回 gateway 进程模块加载时刻钉住的版本
+ * 快照（handler 不读磁盘），是"新代码真的被加载"的权威信号。
  *
  * worker 运行在独立子进程中，禁止使用 remoteLog；诊断信息全部通过 logger
  * （本地日志）输出，由 updater 记录到 upgrade-log.jsonl。
@@ -74,18 +74,22 @@ function runCmd(cmd, args, opts) {
 }
 
 /**
- * 触发一次 gateway 重启；失败不抛（后续轮询 RPC 会兜底验证 gateway 是否就绪）
+ * 触发一次 gateway 重启；失败不抛（后续轮询 RPC 会兜底验证 gateway 是否就绪）。
+ * 返回命令是否成功——回滚路径据此追加 rollback-restart-failed 诊断事件，
+ * verify 路径忽略返回值（轮询兜底）。
  * @param {object} [opts]
  * @param {Function} [opts.execFileFn]
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>}
  */
 export async function triggerGatewayRestart(opts) {
 	try {
 		await runCmd('openclaw', ['gateway', 'restart'], opts);
+		return true;
 	}
 	catch {
 		// restart 命令本身失败不阻断：openclaw 可能已在重启/daemon 自恢复；
 		// 无论如何都进入后续 upgradeHealth 轮询，由它判定 gateway 最终是否可用
+		return false;
 	}
 }
 

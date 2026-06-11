@@ -6,7 +6,7 @@ import os from 'node:os';
 
 import { setRuntime } from '../runtime.js';
 import { readState } from './state.js';
-import { runUpgrade } from './worker.js';
+import { formatCmdFailure, runUpgrade } from './worker.js';
 
 // 测试前清除 runtime
 setRuntime(null);
@@ -35,6 +35,11 @@ async function cleanTmpEnv(base) {
 	await fs.rm(base, { recursive: true, force: true });
 }
 
+/** 备份目录（自管位置：state-dir 下，npm prune 免疫）；与 worker 传参 pluginId 对应 */
+function backupDirOf(stateDir, pluginId = 'test-plugin') {
+	return nodePath.join(stateDir, 'coclaw', 'upgrade-backup', pluginId);
+}
+
 /**
  * 创建 mock execFileFn
  * @param {object} behavior - 按命令类型控制行为
@@ -44,7 +49,6 @@ async function cleanTmpEnv(base) {
  * @param {string} [behavior.healthVersion] - upgradeHealth 返回的版本号
  * @param {boolean} [behavior.healthFails] - upgradeHealth 是否失败
  * @param {boolean} [behavior.fallbackInstallFails] - fallback install 是否失败
- * @param {boolean} [behavior.uninstallFails] - plugins uninstall 是否失败
  * @param {string} [behavior.inspectVersion] - plugins inspect 返回的记录版本
  * @param {boolean} [behavior.inspectFails] - plugins inspect 是否失败
  * @param {boolean} [behavior.inspectNoRecord] - plugins inspect 是否无 install 记录
@@ -57,7 +61,6 @@ function createMockExec(behavior = {}) {
 		healthVersion = '1.1.0',
 		healthFails = false,
 		fallbackInstallFails = false,
-		uninstallFails = false,
 		inspectVersion = '1.1.0',
 		inspectFails = false,
 		inspectNoRecord = false,
@@ -96,12 +99,6 @@ function createMockExec(behavior = {}) {
 			if (argsStr.includes('plugins list')) {
 				if (pluginListed) return cb(null, 'test-plugin', '');
 				return cb(null, 'other-plugin', '');
-			}
-
-			// plugins uninstall（兜底回滚先卸载再安装）
-			if (argsStr.includes('plugins uninstall')) {
-				if (uninstallFails) return cb(new Error('uninstall boom'));
-				return cb(null, 'ok', '');
 			}
 
 			// upgradeHealth
@@ -162,7 +159,7 @@ test('runUpgrade — 成功升级：备份→更新→验证→删除备份→�
 
 		// 备份目录应已被删除
 		await assert.rejects(
-			fs.access(`${pluginDir}.bak`),
+			fs.access(backupDirOf(stateDir)),
 			'备份目录应已被删除',
 		);
 
@@ -254,18 +251,9 @@ test('runUpgrade — 成功升级但备份清理失败时仍正常完成', async
 		const { execFileFn } = createMockExec({ healthVersion: '1.1.0' });
 		const { logs, logger } = createLogger();
 
-		// 在 update 命令完成后，将 .bak 替换为一个文件使 fs.rm 的 recursive 语义仍可用
-		// 但更简单的方式：在 createBackup 完成后给 .bak 目录设置只读权限，
-		// 或者直接 mock removeBackup。这里通过修改 .bak 为无法删除的目标来触发失败。
-		// 实际上 removeBackup 使用 force: true，很难让它失败。
-		// 改用 mock：在 opts 中注入一个抛异常的 removeBackup 不可行（未暴露注入口）。
-		// 最直接方式：临时替换 worker-backup 模块。但那会影响其他测试。
-		// 替代方案：让 pluginDir.bak 指向一个不存在的特殊路径使 rm 失败。
-
-		// 通过在 verify 成功后但 removeBackup 执行前把 .bak 改为受保护的情况，
-		// 但 fs.rm with force:true 几乎不会失败。
-		// 唯一可靠的方式是利用权限：将 .bak 的父目录设为只读
-		const bakDir = `${pluginDir}.bak`;
+		// removeBackup 使用 force: true 很难失败，唯一可靠的方式是利用权限：
+		// 在备份目录下创建只读子目录使 rm 失败
+		const bakDir = backupDirOf(stateDir);
 
 		// 让 backup 创建完成后，把父目录改为只读
 		// 我们需要在 update 完成之后、removeBackup 之前执行
@@ -277,7 +265,7 @@ test('runUpgrade — 成功升级但备份清理失败时仍正常完成', async
 				restartCalls++;
 				if (restartCalls === 1) {
 					// 第一次 gateway restart（verify 阶段的 triggerGatewayRestart）时，
-					// 在 .bak 下创建一个只读子目录使 rm 失败
+					// 在备份目录下创建一个只读子目录使 rm 失败
 					const protectedDir = nodePath.join(bakDir, 'protected');
 					fs.mkdir(protectedDir, { recursive: true })
 						.then(() => fs.chmod(bakDir, 0o444))
@@ -313,7 +301,7 @@ test('runUpgrade — 成功升级但备份清理失败时仍正常完成', async
 		assert.ok(logs.some(l => l.includes('Upgrade complete')));
 	} finally {
 		// 确保恢复权限
-		try { await fs.chmod(`${pluginDir}.bak`, 0o755); } catch {}
+		try { await fs.chmod(backupDirOf(stateDir), 0o755); } catch {}
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
 	}
@@ -345,8 +333,8 @@ test('runUpgrade — 更新命令失败：回滚但不记录 skippedVersions（�
 			logger,
 		});
 
-		// 备份恢复后 .bak 应消失
-		await assert.rejects(fs.access(`${pluginDir}.bak`));
+		// 备份恢复后备份目录应消失
+		await assert.rejects(fs.access(backupDirOf(stateDir)));
 
 		// 插件目录应被恢复（package.json 仍是旧版本）
 		const pkg = JSON.parse(
@@ -449,7 +437,7 @@ test('runUpgrade — 备份恢复失败时使用兜底 npm install', async () =>
 			if (argsStr.includes('plugins update') && !updateCalled) {
 				updateCalled = true;
 				// 在回调前删除 .bak 目录，模拟备份丢失
-				fs.rm(`${pluginDir}.bak`, { recursive: true, force: true })
+				fs.rm(backupDirOf(stateDir), { recursive: true, force: true })
 					.then(() => cb(new Error('update boom')));
 				return;
 			}
@@ -470,23 +458,22 @@ test('runUpgrade — 备份恢复失败时使用兜底 npm install', async () =>
 		assert.ok(logs.some(l => l.includes('Backup restore failed')));
 		assert.ok(logs.some(l => l.includes('Fallback install completed')));
 
-		// 验证 plugins uninstall 先于 install 被调用
-		const uninstallIdx = calls.findIndex(
-			c => c.args.join(' ').includes('plugins uninstall'),
+		// 单命令兜底：不再 uninstall 前置（非 TTY 下 uninstall 要求交互确认必失败）
+		assert.ok(
+			!calls.some(c => c.args.join(' ').includes('plugins uninstall')),
+			'不应调用 plugins uninstall',
 		);
-		const installIdx = calls.findIndex(
+
+		// 验证 plugins install 被调用（包含 pkgName@version + --force 覆盖装）
+		const installCall = calls.find(
 			c => c.args.join(' ').includes('plugins install'),
 		);
-		assert.ok(uninstallIdx >= 0, '应调用 plugins uninstall');
-		assert.ok(uninstallIdx < installIdx, 'uninstall 应先于 install');
-
-		// 验证 plugins install 被调用（包含 pkgName@version）
-		const installCall = calls[installIdx];
 		assert.ok(installCall, '应调用 plugins install');
 		assert.ok(
 			installCall.args.some(a => a.includes('@test/pkg@1.0.0')),
 			'应安装旧版本',
 		);
+		assert.ok(installCall.args.includes('--force'), 'install 必须带 --force 覆盖已装插件');
 
 		// state 应记录 rollback
 		const state = await readState();
@@ -553,10 +540,10 @@ test('runUpgrade — restoreFromBackup 抛异常时仍走兜底安装并记录�
 });
 
 // ============================================================
-// 4c. 兜底回滚时 uninstall 失败，仍继续 install
+// 4c. 兜底 install 命令形态：单命令 `plugins install <pkg>@<ver> --force`
 // ============================================================
 
-test('runUpgrade — 兜底回滚时 uninstall 失败不阻断，仍完成 install', async () => {
+test('runUpgrade — 兜底回滚是单条 install --force 命令（无 uninstall 前置）', async () => {
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
@@ -564,18 +551,17 @@ test('runUpgrade — 兜底回滚时 uninstall 失败不阻断，仍完成 insta
 	try {
 		const { execFileFn, calls } = createMockExec({
 			updateFails: true,
-			uninstallFails: true,
 			gatewayRunning: true,
 		});
 		const { logs, logger } = createLogger();
 
-		// 删除 .bak 使 restoreFromBackup 返回 false → 走 fallback 路径
+		// 删除备份使 restoreFromBackup 返回 false → 走 fallback 路径
 		let updateCalled = false;
 		const wrappedExecFn = (cmd, args, opts, cb) => {
 			const argsStr = args.join(' ');
 			if (argsStr.includes('plugins update') && !updateCalled) {
 				updateCalled = true;
-				fs.rm(`${pluginDir}.bak`, { recursive: true, force: true })
+				fs.rm(backupDirOf(stateDir), { recursive: true, force: true })
 					.then(() => cb(new Error('update boom')));
 				return;
 			}
@@ -592,20 +578,17 @@ test('runUpgrade — 兜底回滚时 uninstall 失败不阻断，仍完成 insta
 			logger,
 		});
 
-		// uninstall 失败不阻断，install 仍应成功
 		assert.ok(logs.some(l => l.includes('Fallback install completed')));
 
-		// 验证 uninstall 确实被调用（且失败）
-		const uninstallCall = calls.find(
-			c => c.args.join(' ').includes('plugins uninstall'),
-		);
-		assert.ok(uninstallCall, '应调用 plugins uninstall');
-
-		// install 也被调用
+		// 精确命令形态：openclaw plugins install @test/pkg@1.0.0 --force
 		const installCall = calls.find(
 			c => c.args.join(' ').includes('plugins install'),
 		);
 		assert.ok(installCall, '应调用 plugins install');
+		assert.deepEqual(installCall.args, ['plugins', 'install', '@test/pkg@1.0.0', '--force']);
+
+		// 不再有 uninstall 前置
+		assert.ok(!calls.some(c => c.args.join(' ').includes('plugins uninstall')));
 
 		const state = await readState();
 		assert.equal(state.lastUpgrade.result, 'rollback');
@@ -619,7 +602,7 @@ test('runUpgrade — 兜底回滚时 uninstall 失败不阻断，仍完成 insta
 // 5. 兜底 install 也失败
 // ============================================================
 
-test('runUpgrade — 兜底 install 也失败时仍记录失败', async () => {
+test('runUpgrade — 兜底 install 也失败时记录 rollback-failed 终态（error 带真因）', async () => {
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
@@ -638,7 +621,7 @@ test('runUpgrade — 兜底 install 也失败时仍记录失败', async () => {
 			const argsStr = args.join(' ');
 			if (argsStr.includes('plugins update') && !updateCalled) {
 				updateCalled = true;
-				fs.rm(`${pluginDir}.bak`, { recursive: true, force: true })
+				fs.rm(backupDirOf(stateDir), { recursive: true, force: true })
 					.then(() => cb(new Error('update boom')));
 				return;
 			}
@@ -658,18 +641,23 @@ test('runUpgrade — 兜底 install 也失败时仍记录失败', async () => {
 		// 应记录两种失败
 		assert.ok(logs.some(l => l.includes('Backup restore failed')));
 		assert.ok(logs.some(l => l.includes('Fallback install also failed')));
+		assert.ok(logs.some(l => l.includes('Rollback failed')));
 
-		// state 仍应记录 rollback，但 update 命令失败不记录 skippedVersions
+		// 两路回滚都死 → rollback-failed 独立终态（账实一致：不再谎报 rollback）；
+		// update 命令失败不记录 skippedVersions
 		const state = await readState();
-		assert.equal(state.lastUpgrade.result, 'rollback');
+		assert.equal(state.lastUpgrade.result, 'rollback-failed');
 		assert.equal(state.skippedVersions, undefined);
+		// error 带真因：原始失败 + 回滚失败原因
+		assert.ok(state.lastUpgrade.error.includes('rollback failed'));
 
 		// 日志文件也应记录
 		const logPath = nodePath.join(stateDir, 'coclaw', 'upgrade-log.jsonl');
 		const logContent = await fs.readFile(logPath, 'utf8');
-		const entry = JSON.parse(logContent.trim());
-		assert.equal(entry.result, 'rollback');
-		assert.ok(entry.error);
+		const lines = logContent.trim().split('\n');
+		const entry = JSON.parse(lines[0]);
+		assert.equal(entry.result, 'rollback-failed');
+		assert.ok(entry.error.includes('install boom'), 'jsonl error 应含 fallback install 真因');
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
@@ -680,7 +668,7 @@ test('runUpgrade — 兜底 install 也失败时仍记录失败', async () => {
 // 6. 备份恢复失败 + fromVersion 不合法 → fallbackInstallOldVersion 拒绝
 // ============================================================
 
-test('runUpgrade — 备份恢复失败且 fromVersion 不合法时，版本校验拒绝仍记录 rollback', async () => {
+test('runUpgrade — 备份恢复失败且 fromVersion 不合法时，版本校验拒绝记录 rollback-failed', async () => {
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
@@ -698,7 +686,7 @@ test('runUpgrade — 备份恢复失败且 fromVersion 不合法时，版本校�
 			const argsStr = args.join(' ');
 			if (argsStr.includes('plugins update') && !updateCalled) {
 				updateCalled = true;
-				fs.rm(`${pluginDir}.bak`, { recursive: true, force: true })
+				fs.rm(backupDirOf(stateDir), { recursive: true, force: true })
 					.then(() => cb(new Error('update boom')));
 				return;
 			}
@@ -722,9 +710,9 @@ test('runUpgrade — 备份恢复失败且 fromVersion 不合法时，版本校�
 		assert.ok(logs.some(l => l.includes('Fallback install also failed')));
 		assert.ok(logs.some(l => l.includes('invalid version format')));
 
-		// state 仍应记录 rollback，但 update 命令失败不记录 skippedVersions
+		// 两路都死 → rollback-failed；update 命令失败不记录 skippedVersions
 		const state = await readState();
-		assert.equal(state.lastUpgrade.result, 'rollback');
+		assert.equal(state.lastUpgrade.result, 'rollback-failed');
 		assert.equal(state.skippedVersions, undefined);
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
@@ -753,7 +741,7 @@ test('runUpgrade — fromVersion 含尾部注入内容时，SEMVER_RE 拒绝', a
 			const argsStr = args.join(' ');
 			if (argsStr.includes('plugins update') && !updateCalled) {
 				updateCalled = true;
-				fs.rm(`${pluginDir}.bak`, { recursive: true, force: true })
+				fs.rm(backupDirOf(stateDir), { recursive: true, force: true })
 					.then(() => cb(new Error('update boom')));
 				return;
 			}
@@ -800,7 +788,7 @@ test('runUpgrade — fromVersion 为 pre-release 格式时，兜底安装正常�
 			const argsStr = args.join(' ');
 			if (argsStr.includes('plugins update') && !updateCalled) {
 				updateCalled = true;
-				fs.rm(`${pluginDir}.bak`, { recursive: true, force: true })
+				fs.rm(backupDirOf(stateDir), { recursive: true, force: true })
 					.then(() => cb(new Error('update boom')));
 				return;
 			}
@@ -851,7 +839,7 @@ test('runUpgrade — fromVersion 为含连字符的 pre-release（如 rc-1）时
 			const argsStr = args.join(' ');
 			if (argsStr.includes('plugins update') && !updateCalled) {
 				updateCalled = true;
-				fs.rm(`${pluginDir}.bak`, { recursive: true, force: true })
+				fs.rm(backupDirOf(stateDir), { recursive: true, force: true })
 					.then(() => cb(new Error('update boom')));
 				return;
 			}
@@ -994,21 +982,27 @@ test('runUpgrade — 回滚路径触发 gateway restart（尽力而为）', asyn
 	}
 });
 
-test('runUpgrade — 回滚路径中 gateway restart 命令失败也不抛', async () => {
+test('runUpgrade — 回滚路径中 gateway restart 命令失败也不抛，且记账先于 restart + 落事件', async () => {
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
 
 	try {
 		const { execFileFn } = createMockExec({ updateFails: true });
-		// 包一层使 gateway restart 命令失败
+		// 包一层使 gateway restart 命令失败；并在 restart 时点断言记账已完成
+		// （记账前移：worker 在不可脱逃形态下可能被自己触发的重启杀死，
+		//  记账必须发生在 restart 之前才不丢账）
+		let stateAtRestart = null;
 		const wrappedExecFn = (cmd, args, opts, cb) => {
 			if (args.join(' ').includes('gateway restart')) {
-				return cb(new Error('restart boom'));
+				readState()
+					.then((s) => { stateAtRestart = s; })
+					.then(() => cb(new Error('restart boom')));
+				return;
 			}
 			return execFileFn(cmd, args, opts, cb);
 		};
-		const { logger } = createLogger();
+		const { logs, logger } = createLogger();
 
 		// 未抛即为通过
 		await runUpgrade({
@@ -1023,6 +1017,17 @@ test('runUpgrade — 回滚路径中 gateway restart 命令失败也不抛', asy
 
 		const state = await readState();
 		assert.equal(state.lastUpgrade.result, 'rollback');
+
+		// 记账前移锚点：restart 触发时刻 lastUpgrade 已落盘、inflight 已清
+		assert.ok(stateAtRestart, 'restart 应被触发');
+		assert.equal(stateAtRestart.lastUpgrade?.result, 'rollback', '记账必须先于 restart');
+		assert.equal(stateAtRestart.inflight, undefined, 'inflight 必须在 restart 前清除');
+
+		// restart 命令失败 → jsonl 落 rollback-restart-failed 事件（worker 禁 remoteLog）
+		const logPath = nodePath.join(stateDir, 'coclaw', 'upgrade-log.jsonl');
+		const lines = (await fs.readFile(logPath, 'utf8')).trim().split('\n').map(l => JSON.parse(l));
+		assert.ok(lines.some(e => e.event === 'rollback-restart-failed'));
+		assert.ok(logs.some(l => l.includes('Gateway restart command failed after rollback')));
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
@@ -1346,7 +1351,7 @@ test('L2 — exit 0 + record 达标（版本相等，等号防"严格大于"回�
 		assert.equal(state.lastUpgrade.to, '1.1.0');
 		// 真升级不记 skippedVersions
 		assert.equal(state.skippedVersions, undefined);
-		await assert.rejects(fs.access(`${pluginDir}.bak`), '备份应已清理');
+		await assert.rejects(fs.access(backupDirOf(stateDir)), '备份应已清理');
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
@@ -1379,8 +1384,8 @@ test('L2 — exit 0 + record 未推进 → no-op：不重启不回滚、删 .bak
 		assert.ok(!calls.some(c => c.args.join(' ').includes('gateway restart')), 'no-op 不得触发 restart');
 		assert.ok(!calls.some(c => c.args.join(' ').includes('coclaw.upgradeHealth')), 'no-op 不得进健康轮询');
 
-		// 删 .bak；插件目录原封不动
-		await assert.rejects(fs.access(`${pluginDir}.bak`), '备份应已删除');
+		// 删备份；插件目录原封不动
+		await assert.rejects(fs.access(backupDirOf(stateDir)), '备份应已删除');
 		const pkg = JSON.parse(await fs.readFile(nodePath.join(pluginDir, 'package.json'), 'utf8'));
 		assert.equal(pkg.version, '1.0.0');
 
@@ -1408,11 +1413,11 @@ test('L2 — no-op 分支删 .bak 失败时不阻断 skipVersion 与状态记录
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
-	const bakDir = `${pluginDir}.bak`;
+	const bakDir = backupDirOf(stateDir);
 
 	try {
 		const { execFileFn } = createMockExec({ inspectVersion: '1.0.0' });
-		// 在 no-op 删 .bak 之前（inspect 时点）把备份目录改为只读，使 removeBackup 抛错
+		// 在 no-op 删备份之前（inspect 时点）把备份目录改为只读，使 removeBackup 抛错
 		const wrappedExecFn = (cmd, args, opts, cb) => {
 			const argsStr = args.join(' ');
 			if (argsStr.includes('plugins inspect')) {
@@ -1484,7 +1489,7 @@ test('L2 — exit 0 + record 推进未达标 + 实装版本健康 → ok 并 ski
 		assert.equal(state.lastUpgrade.result, 'ok');
 		assert.equal(state.lastUpgrade.to, '1.0.5');
 		assert.ok(state.skippedVersions.includes('1.1.0'));
-		await assert.rejects(fs.access(`${pluginDir}.bak`), '备份应已清理');
+		await assert.rejects(fs.access(backupDirOf(stateDir)), '备份应已清理');
 	} finally {
 		process.env.OPENCLAW_STATE_DIR = origEnv;
 		await cleanTmpEnv(base);
@@ -1665,3 +1670,324 @@ test('L2 — exit 0 + inspect 正常但无 install 记录 → 保守按真升级
 	}
 });
 
+
+// ============================================================
+// 17. 缺陷 6 方案 A：update 用裸 npm 包名（解钉 spec）
+// ============================================================
+
+test('runUpgrade — plugins update 用裸包名而非插件 id（裸包名 update 顺带解钉 spec）', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		const { execFileFn, calls } = createMockExec({ healthVersion: '1.1.0' });
+		const { logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		const updateCall = calls.find(c => c.args.join(' ').includes('plugins update'));
+		assert.ok(updateCall);
+		assert.deepEqual(updateCall.args, ['plugins', 'update', '@test/pkg']);
+		assert.ok(!updateCall.args.includes('test-plugin'), '不得用插件 id 调 update');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 18. inflight 生命周期：update 前写入、verify 前推进、终态清除
+// ============================================================
+
+test('runUpgrade — inflight 在 update 前写入（phase=update）、verify 前推进、成功终态清除', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// latest-compatible 封顶场景顺带钉死 verifyTarget 同步：目标 1.1.0 实装 1.0.5
+		const { execFileFn } = createMockExec({ inspectVersion: '1.0.5', healthVersion: '1.0.5' });
+		const observed = {};
+		const wrappedExecFn = (cmd, args, opts, cb) => {
+			const argsStr = args.join(' ');
+			if (argsStr.includes('plugins update') && !observed.atUpdate) {
+				// update 时点：inflight 应已写入且 phase=update
+				readState()
+					.then((s) => { observed.atUpdate = s.inflight; })
+					.then(() => execFileFn(cmd, args, opts, cb));
+				return;
+			}
+			if (argsStr.includes('coclaw.upgradeHealth') && !observed.atVerify) {
+				// 健康轮询时点：phase 应已推进到 verify，verifyTarget 同步为实装版本
+				readState()
+					.then((s) => { observed.atVerify = s.inflight; })
+					.then(() => execFileFn(cmd, args, opts, cb));
+				return;
+			}
+			execFileFn(cmd, args, opts, cb);
+		};
+		const { logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			baselineVersion: '1.0.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(wrappedExecFn),
+			logger,
+		});
+
+		// update 时点
+		assert.ok(observed.atUpdate, 'update 前应已写 inflight');
+		assert.equal(observed.atUpdate.phase, 'update');
+		assert.equal(observed.atUpdate.from, '1.0.0');
+		assert.equal(observed.atUpdate.to, '1.1.0');
+		assert.equal(observed.atUpdate.verifyTarget, '1.1.0');
+		assert.equal(observed.atUpdate.pluginDir, pluginDir);
+		assert.ok(observed.atUpdate.ts);
+
+		// verify 时点
+		assert.ok(observed.atVerify, 'verify 期应有 inflight');
+		assert.equal(observed.atVerify.phase, 'verify');
+		assert.equal(observed.atVerify.verifyTarget, '1.0.5', 'advancedShortfall 须同步 verifyTarget');
+
+		// 终态：inflight 清除 + ok 落账
+		const state = await readState();
+		assert.equal(state.inflight, undefined);
+		assert.equal(state.lastUpgrade.result, 'ok');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('runUpgrade — 回滚路径 inflight phase 推进到 rollback 后由终态清除', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// 验证失败 → 回滚；回滚期 restart 时点（记账已前移到其前）inflight 应已清
+		const { execFileFn } = createMockExec({ healthVersion: '1.0.0' });
+		const observed = { restarts: [] };
+		const wrappedExecFn = (cmd, args, opts, cb) => {
+			if (args.join(' ').includes('gateway restart')) {
+				readState()
+					.then((s) => { observed.restarts.push(s); })
+					.then(() => execFileFn(cmd, args, opts, cb));
+				return;
+			}
+			execFileFn(cmd, args, opts, cb);
+		};
+		const { logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(wrappedExecFn),
+			logger,
+		});
+
+		// 两次 restart：verify 期 inflight 在（phase=verify）；
+		// 回滚期记账已前移完成、inflight 已清、终态已落
+		assert.equal(observed.restarts.length, 2);
+		assert.equal(observed.restarts[0].inflight?.phase, 'verify', 'verify 期 restart 时 inflight 应在');
+		assert.equal(observed.restarts[1].inflight, undefined, '回滚期 restart 时 inflight 应已清');
+		assert.equal(observed.restarts[1].lastUpgrade?.result, 'rollback', '回滚记账须先于 restart');
+
+		const state = await readState();
+		assert.equal(state.inflight, undefined, '终态后 inflight 应清除');
+		assert.equal(state.lastUpgrade.result, 'rollback');
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// ============================================================
+// 19. 错因富化：子命令双流尾部进账 + 脱敏
+// ============================================================
+
+test('runUpgrade — update 失败时子命令 stdout/stderr 真因进 lastUpgrade 与 jsonl', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// 上游错误 outcome 走 stdout（console.log），execFile err.message 只附 stderr——
+		// 必须双流都收，否则真因（如 prerelease 拒装）丢失
+		const execFileFn = (cmd, args, opts, cb) => {
+			const argsStr = args.join(' ');
+			if (argsStr.includes('plugins update')) {
+				return cb(new Error('Command failed'), 'refusing to install prerelease 2.0.0-rc.1', 'some stderr detail');
+			}
+			if (argsStr.includes('config get registry')) {
+				return cb(null, 'https://registry.npmjs.org/\n', '');
+			}
+			return cb(null, '', '');
+		};
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '2.0.0-rc.1',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		// worker 本地日志含真因
+		assert.ok(logs.some(l => l.includes('refusing to install prerelease')));
+
+		// lastUpgrade 与 jsonl 都带真因（stdout 与 stderr 两路）
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'rollback');
+		assert.ok(state.lastUpgrade.error.includes('refusing to install prerelease'));
+		assert.ok(state.lastUpgrade.error.includes('some stderr detail'));
+
+		const logPath = nodePath.join(stateDir, 'coclaw', 'upgrade-log.jsonl');
+		const entry = JSON.parse((await fs.readFile(logPath, 'utf8')).trim());
+		assert.ok(entry.error.includes('stdout: refusing to install prerelease 2.0.0-rc.1'));
+		assert.ok(entry.error.includes('stderr: some stderr detail'));
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+// --- formatCmdFailure 单元 ---
+
+test('formatCmdFailure — 拼接 prefix + message + 双流', () => {
+	const msg = formatCmdFailure('plugins update failed', new Error('exit 1'), 'out text', 'err text');
+	assert.equal(msg, 'plugins update failed: exit 1 | stdout: out text | stderr: err text');
+});
+
+test('formatCmdFailure — 空流省略对应段', () => {
+	const msg = formatCmdFailure('x failed', new Error('boom'), '', undefined);
+	assert.equal(msg, 'x failed: boom');
+});
+
+test('formatCmdFailure — 双流各取尾部 ≤500 字符（真因在尾部）', () => {
+	const longOut = `${'a'.repeat(600)}REAL-CAUSE`;
+	const msg = formatCmdFailure('x failed', new Error('boom'), longOut, '');
+	const stdoutPart = msg.split('stdout: ')[1];
+	assert.equal(stdoutPart.length, 500);
+	assert.ok(stdoutPart.endsWith('REAL-CAUSE'));
+});
+
+test('formatCmdFailure — stderr 侧独立超长截断（不依赖 stdout 路径）', () => {
+	const longErr = `${'b'.repeat(600)}ERR-CAUSE`;
+	const msg = formatCmdFailure('x failed', new Error('boom'), '', longErr);
+	const stderrPart = msg.split('stderr: ')[1];
+	assert.equal(stderrPart.length, 500);
+	assert.ok(stderrPart.endsWith('ERR-CAUSE'));
+});
+
+test('formatCmdFailure — 脱敏 registry userinfo 与 _authToken', () => {
+	const msg = formatCmdFailure(
+		'x failed',
+		new Error('fetch https://user:secret@registry.example.com/pkg failed'),
+		'//registry.example.com/:_authToken=npm_abcdef123 rejected',
+		'',
+	);
+	assert.ok(!msg.includes('secret'), 'userinfo 必须脱敏');
+	assert.ok(msg.includes('://***@registry.example.com'));
+	assert.ok(!msg.includes('npm_abcdef123'), '_authToken 必须脱敏');
+	assert.ok(msg.includes('_authToken=***'));
+});
+
+test('formatCmdFailure — 先脱敏再截尾（截断撕裂凭据时不留裸密码）', () => {
+	// 判别构造：凭据 URL 开头放在 500 字尾部边界之前——
+	// 错误实现（先截尾再脱敏）：截掉 "https://user:"，残留 "topsecret@host/" 无 "://"
+	// 可锚，正则漏匹配，裸密码进输出；
+	// 正确实现（先脱敏再截尾）：脱敏先把 userinfo 换成 ***，截尾只切掉无害前缀。
+	const url = 'https://user:topsecret@host/'; // 28 字符，"user:" 止于第 13 字符
+	const out = `${url}${'y'.repeat(485)}`; // 总长 513：尾部 500 恰从 "topsecret" 起切
+	const msg = formatCmdFailure('x failed', new Error('boom'), out, '');
+	assert.ok(!msg.includes('topsecret'), '截断撕裂凭据 URL 时不得留下裸密码');
+	assert.ok(msg.includes('://***@host'), '脱敏后的掩码应保留在输出中');
+});
+
+// ============================================================
+// 20. 记账防护：state 写入全挂也非致命
+// ============================================================
+
+test('runUpgrade — state 文件不可写时成功路径仍完成（记账非致命）', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		// 在 state 文件路径预置目录：所有 state 读写报 EISDIR（备份目录不受影响）
+		await fs.mkdir(nodePath.join(stateDir, 'coclaw', 'upgrade-state.json'), { recursive: true });
+
+		const { execFileFn } = createMockExec({ healthVersion: '1.1.0' });
+		const { logs, logger } = createLogger();
+
+		// 未抛即为通过：升级确实成功，记账失败不该让 worker 报 fatal
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.ok(logs.some(l => l.includes('Failed to write inflight marker (non-fatal)')));
+		assert.ok(logs.some(l => l.includes('Failed to update inflight marker (non-fatal)')));
+		assert.ok(logs.some(l => l.includes('Failed to record terminal state (non-fatal)')));
+		assert.ok(logs.some(l => l.includes('Upgrade complete')));
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});
+
+test('runUpgrade — state 文件不可写时回滚路径仍完成且触发 restart', async () => {
+	const { base, pluginDir, stateDir } = await createTmpEnv();
+	const origEnv = process.env.OPENCLAW_STATE_DIR;
+	process.env.OPENCLAW_STATE_DIR = stateDir;
+
+	try {
+		await fs.mkdir(nodePath.join(stateDir, 'coclaw', 'upgrade-state.json'), { recursive: true });
+
+		const { execFileFn, calls } = createMockExec({ updateFails: true });
+		const { logs, logger } = createLogger();
+
+		await runUpgrade({
+			pluginDir,
+			fromVersion: '1.0.0',
+			toVersion: '1.1.0',
+			pluginId: 'test-plugin',
+			pkgName: '@test/pkg',
+			opts: fastOpts(execFileFn),
+			logger,
+		});
+
+		assert.ok(logs.some(l => l.includes('Failed to record terminal state (non-fatal)')));
+		assert.ok(logs.some(l => l.includes('Rollback complete')));
+		// 记账失败不阻断后续 restart
+		assert.ok(calls.some(c => c.args.join(' ').includes('gateway restart')));
+	} finally {
+		process.env.OPENCLAW_STATE_DIR = origEnv;
+		await cleanTmpEnv(base);
+	}
+});

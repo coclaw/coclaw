@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import {
 	AutoUpgradeScheduler,
+	getLoadedPluginVersion,
 	getLockPath,
 	isPathInside,
 	isUpgradeLocked,
@@ -14,8 +15,13 @@ import {
 	writeUpgradeLock,
 } from './updater.js';
 import { setRuntime } from '../runtime.js';
-import { addSkippedVersion, readState, writeState } from './state.js';
+import { addSkippedVersion, readState, writeInflight, writeState } from './state.js';
 import { __reset as resetRemoteLog, __buffer as remoteLogBuffer } from '../remote-log.js';
+
+// 测试确定性：本测试进程可能跑在 systemd 环境（CI runner 等），删掉触发
+// spawn 探针的环境变量，使 __check 默认走裸 spawn；探针行为用 opts 显式注入测试
+delete process.env.OPENCLAW_SYSTEMD_UNIT;
+delete process.env.INVOCATION_ID;
 
 // updater-check.js 的 getPackageInfo 默认读取 import.meta.dirname/../.. 即插件根目录的 package.json
 // 无需在 src/ 创建临时文件，直接使用真实 package.json
@@ -1682,6 +1688,597 @@ test('__check - skippedVersions 命中时 remoteLog upgrade.skipped', async () =
 		await s.__check();
 
 		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.skipped version=99.0.0'));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__check - skippedVersions 命中信号按 (skipped, version) 去重：两轮只发一条', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await addSkippedVersion('99.0.0');
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.skipped version=99.0.0').length,
+			1,
+			'稳定态 skipped 信号必须去重，不能每小时刷一条',
+		);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+// --- __check: prerelease 闸 ---
+
+test('__check - latest 为 prerelease 时不 spawn、prerelease-skip 信号去重、不写 skip', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		let spawnCalls = 0;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0-beta.1\n'),
+				inspectInstallFn: npmInspectFn(),
+				spawnFn: () => { spawnCalls += 1; return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		assert.equal(spawnCalls, 0, 'prerelease 不得 spawn worker');
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.prerelease-skip version=99.0.0-beta.1').length,
+			1,
+			'prerelease-skip 信号去重',
+		);
+		assert.ok(logger.infos.some(m => m.includes('prerelease')));
+
+		// 闸不落持久状态：不写 skip / lastUpgrade（latest 回正后自然恢复）
+		const state = await readState();
+		assert.equal(state.skippedVersions, undefined);
+		assert.equal(state.lastUpgrade, undefined);
+		// lastCheck 照旧推进
+		assert.equal(typeof state.lastCheck, 'string');
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+// --- __check: inflight 对账 ---
+
+test('__reconcileInflight - 运行态达 verifyTarget 时补记 ok + 删备份 + 同周期上报', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		// 模拟 worker 死在 verify 期：inflight 留存、终态未记
+		await writeInflight({ from: '1.0.0', to: '99.0.0', verifyTarget: '99.0.0', pluginDir: '/opt/p', phase: 'verify' });
+
+		const removed = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				// 对账后 checkForUpdate 看到 latest=本地版本 → 无更新，不 spawn
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+				runtimeVersion: '99.0.0',
+				removeBackupFn: async (id) => { removed.push(id); },
+			},
+		});
+
+		await s.__check();
+
+		const state = await readState();
+		assert.equal(state.inflight, undefined, 'inflight 应被消化清除');
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.equal(state.lastUpgrade.from, '1.0.0');
+		assert.equal(state.lastUpgrade.to, '99.0.0');
+		assert.equal(state.skippedVersions, undefined, 'verifyTarget==to 不补 skip');
+		assert.deepEqual(removed, [TEST_PLUGIN_ID], '成功对账应删备份');
+		assert.ok(logger.infos.some(m => m.includes('Reconciled interrupted upgrade as ok')));
+		// 补记的终态经同周期 __reportLastUpgradeResult 上报
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.result result=ok from=1.0.0 to=99.0.0'));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reconcileInflight - verifyTarget≠to 时复刻 worker 语义补 skip（advancedShortfall）', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		// latest-compatible 封顶：目标 99.1.0、实装/验证目标 99.0.5
+		await writeInflight({ from: '1.0.0', to: '99.1.0', verifyTarget: '99.0.5', pluginDir: '/opt/p', phase: 'verify' });
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+				runtimeVersion: '99.0.5',
+				removeBackupFn: async () => {},
+			},
+		});
+
+		await s.__check();
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.equal(state.lastUpgrade.to, '99.0.5');
+		assert.ok(state.skippedVersions.includes('99.1.0'), 'toVersion 已知到不了须补 skip');
+		assert.equal(state.inflight, undefined);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reconcileInflight - 运行态未达标时补记 interrupted（带 phase）、不 skip、不删备份、当周期继续重试', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '99.0.0', verifyTarget: '99.0.0', pluginDir: '/opt/p', phase: 'update' });
+
+		const removed = [];
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				// 对账后 checkForUpdate 仍看到 99.0.0 可用 → 正常重试 spawn
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn(),
+				runtimeVersion: '1.0.0',
+				removeBackupFn: async (id) => { removed.push(id); },
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'interrupted');
+		assert.equal(state.lastUpgrade.phase, 'update', '账目须带中断时刻 phase');
+		assert.equal(state.skippedVersions, undefined, 'interrupted 不自动 skip');
+		assert.equal(removed.length, 0, 'interrupted 不清备份（保留人工恢复）');
+		assert.ok(remoteLogBuffer.some(e =>
+			e.text === 'upgrade.interrupted from=1.0.0 to=99.0.0 phase=update runtime=1.0.0'));
+		// 先对账再检查：同周期内正常走 checkForUpdate 重试
+		assert.equal(spawnCalls.length, 1, '对账完成后当周期应继续检查并 spawn 重试');
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reconcileInflight - 判据不可得（runtimeVersion 空）时保留 inflight、跳过本周期', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '99.0.0', verifyTarget: '99.0.0', pluginDir: '/opt/p', phase: 'update' });
+
+		let checkCalled = false;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: (_cmd, _args, _opts, cb) => { checkCalled = true; cb(null, '99.0.0\n'); },
+				runtimeVersion: '',
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		assert.equal(checkCalled, false, '判据不可得时不得进入 checkForUpdate');
+		const state = await readState();
+		assert.ok(state.inflight, 'inflight 应保留待下轮');
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.reconcile-no-version to=99.0.0').length,
+			1,
+			'no-version 信号去重',
+		);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('getLoadedPluginVersion - 返回模块加载时刻捕获的自身版本（与 package.json 一致）', async () => {
+	// 测试进程加载 updater.js 后未改过磁盘 package.json，快照应与磁盘一致
+	const pkgPath = nodePath.join(import.meta.dirname, '..', '..', 'package.json');
+	const diskVersion = JSON.parse(await fs.readFile(pkgPath, 'utf8')).version;
+	assert.equal(getLoadedPluginVersion(), diskVersion);
+});
+
+test('__reconcileInflight - 畸形 inflight（verifyTarget 与 to 皆缺）按 interrupted/malformed 消化，管线继续', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		// writeInflight({}) 只落 ts——复刻"字段缺失"的畸形在途标记
+		await writeInflight({});
+
+		const removed = [];
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				// 消化后 checkForUpdate 看到 99.0.0 可用 → 管线恢复正常 spawn
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn(),
+				removeBackupFn: async (id) => { removed.push(id); },
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		const state = await readState();
+		assert.equal(state.inflight, undefined, '畸形 inflight 应被消化，不得永久停摆');
+		assert.equal(state.lastUpgrade.result, 'interrupted');
+		assert.equal(state.lastUpgrade.phase, 'malformed');
+		assert.equal(state.lastUpgrade.from, 'unknown');
+		assert.equal(state.lastUpgrade.to, 'unknown');
+		assert.equal(state.skippedVersions, undefined, 'malformed 不自动 skip');
+		assert.equal(removed.length, 0, 'malformed 不清备份（保留人工恢复）');
+		assert.ok(logger.warns.some(m => m.includes('Malformed inflight')));
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.reconcile-malformed').length,
+			1,
+			'malformed 信号去重',
+		);
+		// 消化后管线恢复：同周期继续 checkForUpdate 并 spawn（第二周期被锁 mock 放行后正常重试）
+		assert.ok(spawnCalls.length >= 1, '消化后后续周期应恢复正常检查');
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reconcileInflight - 畸形 inflight 终态写失败时保留 inflight、跳过本周期', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		// from 在场 / to 为空串：仍属畸形（无判定目标），且覆盖 from/to 非 nullish 取值侧
+		await writeInflight({ from: '9.9.9', to: '' });
+
+		let checkCalled = false;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: (_cmd, _args, _opts, cb) => { checkCalled = true; cb(null, '99.0.0\n'); },
+				recordUpgradeTerminalFn: async () => { throw new Error('disk full'); },
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(checkCalled, false, '未消化时不得继续本周期');
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.reconcile-failed msg=disk full'));
+		assert.ok(logger.warns.some(m => m.includes('Inflight reconcile failed')));
+		const state = await readState();
+		assert.ok(state.inflight, 'inflight 应保留待下轮');
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reconcileInflight - 终态写失败时 remoteLog reconcile-failed、保留 inflight、跳过本周期', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '99.0.0', verifyTarget: '99.0.0', pluginDir: '/opt/p', phase: 'verify' });
+
+		let checkCalled = false;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: (_cmd, _args, _opts, cb) => { checkCalled = true; cb(null, '99.0.0\n'); },
+				runtimeVersion: '99.0.0',
+				recordUpgradeTerminalFn: async () => { throw new Error('disk full'); },
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(checkCalled, false, '对账未消化时不得继续本周期');
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.reconcile-failed msg=disk full'));
+		assert.ok(logger.warns.some(m => m.includes('Inflight reconcile failed')));
+		const state = await readState();
+		assert.ok(state.inflight, 'inflight 应保留');
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reconcileInflight - inflight 读取失败时 reconcile-failed、跳过本周期', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		let checkCalled = false;
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: (_cmd, _args, _opts, cb) => { checkCalled = true; cb(null, '99.0.0\n'); },
+				readInflightFn: async () => { throw new Error('read boom'); },
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(checkCalled, false);
+		assert.ok(remoteLogBuffer.some(e => e.text === 'upgrade.reconcile-failed msg=read boom'));
+		assert.ok(logger.warns.some(m => m.includes('Inflight read failed')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reconcileInflight - 备份清理失败不影响 ok 终态（non-fatal）', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '99.0.0', verifyTarget: '99.0.0', pluginDir: '/opt/p', phase: 'verify' });
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, `${LOCAL_VERSION}\n`),
+				runtimeVersion: '99.0.0',
+				removeBackupFn: async () => { throw new Error('rm boom'); },
+			},
+		});
+
+		await s.__check();
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.equal(state.inflight, undefined);
+		assert.ok(logger.warns.some(m => m.includes('Reconcile backup cleanup failed')));
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+// --- __check: spec 钉死可见性信号 ---
+
+test('__check - install.spec 为精确版本时发 spec-pinned 去重信号（行为不变仍 spawn）', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn({
+					source: 'npm', installPath: '/opt/test-plugin', version: '1.0.0',
+					spec: '@test/pkg@1.0.0',
+				}),
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.spec-pinned spec=@test/pkg@1.0.0').length,
+			1,
+			'spec-pinned 信号去重',
+		);
+		// 仅可见性信号，不拦行为：worker 侧裸包名 update 负责解钉
+		assert.equal(spawnCalls.length, 2);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__check - install.spec 非精确版本（裸名 / range）时不发 spec-pinned', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const logger = silentLogger();
+		for (const spec of ['@test/pkg', 'pkg@^1.0.0', undefined]) {
+			const s = new AutoUpgradeScheduler({
+				pluginId: TEST_PLUGIN_ID,
+				logger,
+				opts: {
+					execFileFn: mockExecFile(null, '99.0.0\n'),
+					inspectInstallFn: npmInspectFn({
+						source: 'npm', installPath: '/opt/test-plugin', version: '1.0.0', spec,
+					}),
+					spawnFn: () => ({ pid: 1, unref: () => {}, on: () => {} }),
+					isUpgradeLockedFn: async () => false,
+					writeUpgradeLockFn: async () => {},
+				},
+			});
+			await s.__check();
+		}
+
+		assert.equal(remoteLogBuffer.filter(e => e.text.startsWith('upgrade.spec-pinned')).length, 0);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+// --- __check: cgroup 脱逃失败信号 ---
+
+test('__check - systemd 形态探针全失败时降级裸 spawn 并发 cgroup-escape-failed 去重信号', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: (cmd, _args, _opts, cb) => {
+					if (cmd === 'systemd-run') return cb(new Error('probe boom'));
+					cb(null, '99.0.0\n');
+				},
+				platform: 'linux',
+				scopeEnv: { INVOCATION_ID: 'abc' },
+				inspectInstallFn: npmInspectFn(),
+				spawnFn: (cmd, args) => { spawnCalls.push({ cmd, args }); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+		await s.__check();
+
+		// 降级=现状：仍裸 spawn（worker 只 spawn 一次/周期，无重拉）
+		assert.equal(spawnCalls.length, 2);
+		assert.equal(spawnCalls[0].cmd, process.execPath);
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text === 'upgrade.cgroup-escape-failed to=99.0.0').length,
+			1,
+			'escape-failed 信号去重',
+		);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__check - systemd 形态探针通过时 spawn 包成 systemd-run scope', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: (cmd, _args, _opts, cb) => {
+					if (cmd === 'systemd-run') return cb(null, '', '');
+					cb(null, '99.0.0\n');
+				},
+				platform: 'linux',
+				scopeEnv: { OPENCLAW_SYSTEMD_UNIT: 'openclaw-gateway.service' },
+				inspectInstallFn: npmInspectFn(),
+				spawnFn: (cmd, args) => { spawnCalls.push({ cmd, args }); return { pid: 4321, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		await s.__check();
+
+		assert.equal(spawnCalls.length, 1);
+		assert.equal(spawnCalls[0].cmd, 'systemd-run');
+		assert.deepEqual(spawnCalls[0].args.slice(0, 6), ['--user', '--scope', '--quiet', '--collect', '--', process.execPath]);
+		assert.equal(remoteLogBuffer.filter(e => e.text.startsWith('upgrade.cgroup-escape-failed')).length, 0);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
+test('__reportLastUpgradeResult - lastUpgrade 带 error 时上报行附 error=', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		await writeState({
+			lastUpgrade: {
+				from: '1.0.0', to: '1.1.0', result: 'rollback-failed',
+				error: 'fallback install failed: boom', ts: '2026-06-11T00:00:00.000Z',
+			},
+		});
+
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({ pluginId: TEST_PLUGIN_ID, logger });
+		await s.__reportLastUpgradeResult();
+
+		assert.ok(remoteLogBuffer.some(e =>
+			e.text === 'upgrade.result result=rollback-failed from=1.0.0 to=1.1.0 error=fallback install failed: boom'));
 	} finally {
 		resetEnv();
 		resetRemoteLog();

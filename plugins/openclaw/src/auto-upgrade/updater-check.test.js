@@ -4,7 +4,7 @@ import nodePath from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 
-import { checkForUpdate, getLatestVersion, getPackageInfo, inspectPluginInstall, isNewerVersion } from './updater-check.js';
+import { checkForUpdate, getLatestVersion, getPackageInfo, inspectPluginInstall, isNewerVersion, isPrereleaseVersion } from './updater-check.js';
 import { writeState } from './state.js';
 import { setRuntime } from '../runtime.js';
 
@@ -372,4 +372,71 @@ test('checkForUpdate - skippedVersions 非数组时正常处理', async () => {
 	assert.equal(result.available, true);
 	assert.equal(result.latestVersion, '1.1.0');
 	assert.equal(result.pkgName, '@test/pkg');
+});
+
+// --- isPrereleaseVersion（semver 语义：build metadata 不算 prerelease）---
+
+test('isPrereleaseVersion - 正式版本不是 prerelease', () => {
+	assert.equal(isPrereleaseVersion('1.2.3'), false);
+});
+
+test('isPrereleaseVersion - 含 prerelease 段', () => {
+	assert.equal(isPrereleaseVersion('1.2.3-beta.1'), true);
+	assert.equal(isPrereleaseVersion('1.2.3-rc-1'), true);
+});
+
+test('isPrereleaseVersion - 纯 build metadata 不是 prerelease（裸 indexOf("-") 的坑）', () => {
+	assert.equal(isPrereleaseVersion('1.2.3+build.5'), false);
+	assert.equal(isPrereleaseVersion('1.2.3+exp-sha.5114f85'), false);
+});
+
+test('isPrereleaseVersion - prerelease + build metadata 仍是 prerelease', () => {
+	assert.equal(isPrereleaseVersion('1.2.3-rc.1+build.5'), true);
+});
+
+// --- checkForUpdate prerelease 闸 ---
+
+test('checkForUpdate - latest 是 prerelease 时返回 unavailable + prerelease 标记，不写 skip', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	const pluginDir = await makeTmpDir('coclaw-checker-pkg-');
+	await fs.writeFile(
+		nodePath.join(pluginDir, 'package.json'),
+		JSON.stringify({ name: '@test/pkg', version: '1.0.0' }),
+		'utf8',
+	);
+
+	const fn = mockExecFile(null, '1.1.0-rc.1\n');
+	const result = await checkForUpdate({ execFileFn: fn, pluginDir });
+	assert.equal(result.available, false);
+	assert.equal(result.prerelease, true);
+	assert.equal(result.latestVersion, '1.1.0-rc.1');
+	assert.equal(result.currentVersion, '1.0.0');
+	assert.equal(result.pkgName, '@test/pkg');
+
+	// 闸不落持久状态：不写 skip / lastUpgrade；lastCheck 照旧推进
+	const statePath = nodePath.join(dir, 'coclaw', 'upgrade-state.json');
+	const stateRaw = JSON.parse(await fs.readFile(statePath, 'utf8'));
+	assert.equal(stateRaw.skippedVersions, undefined);
+	assert.equal(stateRaw.lastUpgrade, undefined);
+	assert.equal(typeof stateRaw.lastCheck, 'string');
+});
+
+test('checkForUpdate - latest 带纯 build metadata 时不触发 prerelease 闸', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	const pluginDir = await makeTmpDir('coclaw-checker-pkg-');
+	await fs.writeFile(
+		nodePath.join(pluginDir, 'package.json'),
+		JSON.stringify({ name: '@test/pkg', version: '1.0.0' }),
+		'utf8',
+	);
+
+	const fn = mockExecFile(null, '1.1.0+build.7\n');
+	const result = await checkForUpdate({ execFileFn: fn, pluginDir });
+	assert.equal(result.available, true);
+	assert.equal(result.prerelease, undefined);
+	assert.equal(result.latestVersion, '1.1.0+build.7');
 });

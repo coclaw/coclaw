@@ -286,7 +286,7 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：用文件级 advisory lock（如 `proper-lockfile` 或 flock）保护 read-modify-write 段。改动跨进程协议，影响面大；当前接受现状，标 TODO 提示长尾。
 
-**2026-06-11 注记**（摆脱账本改造评审再确认）：维持"已接受模式"结论——gateway 与 worker 的写入由 `upgrade.lock` 时序隔离（worker 在跑时 scheduler 跳过整轮 check），新增的 L2 no-op 路径状态写入（addSkippedVersion / updateLastUpgrade / appendLog）同受此隔离，不另开条目。
+**2026-06-11 注记**（摆脱账本改造评审再确认）：维持"已接受模式"结论——gateway 与 worker 的写入由 `upgrade.lock` 时序隔离（worker 在跑时 scheduler 跳过整轮 check），新增的 L2 no-op 路径状态写入（addSkippedVersion / updateLastUpgrade / appendLog）同受此隔离，不另开条目。inflight 对账现也暴露在此窗口：锁 TTL 误清（worker 真活超 110min）后，活 worker 的 inflight 会被 scheduler 误记 interrupted + 双 spawn，账目最终被 worker 终态覆盖收敛。
 
 ## bridge async listener 其他真隐患（C 阶段维度 1）
 
@@ -704,12 +704,14 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 | 调用 | 锚点 | 失败后果 |
 |---|---|---|
-| `openclaw plugins update <id>` | `worker.js:52` | 升级直接失败 → 回滚（不 skipVersion，按瞬态） |
-| `openclaw plugins uninstall <id>` + `plugins install <pkg>@<ver>` | `worker.js:89/95` | 备份恢复失败时无兜底回滚 |
-| `openclaw gateway restart` | `worker-verify.js:80` | 验证前 gateway 不被主动重启，依赖 watcher 自恢复 |
-| `openclaw gateway call <method> --json` | `worker-verify.js:114` | 见下条 |
+| `openclaw plugins update <pkg-name>`（2026-06-11 起传裸 npm 包名而非插件 id，借 update 的包名匹配把安装记录 spec 重写为裸名、解除 exact spec 钉死；依赖"裸包名恰好单匹配一条 npm 安装记录"，0/多匹配退回按 id 处理 → no-op skip） | `worker.js` | 升级直接失败 → 回滚（不 skipVersion，按瞬态） |
+| `openclaw plugins install <pkg>@<ver> --force`（2026-06-11 起单命令覆盖装回滚兜底，替代原 uninstall+install 两段；依赖 `--force` 映射 mode=update 绕开 already exists） | `worker.js` | 备份恢复失败叠加此失败 → 终态 `rollback-failed`（坏版本在位） |
+| `openclaw gateway restart` | `worker-verify.js` | 验证前 gateway 不被主动重启，依赖 watcher 自恢复；回滚分支该命令失败追加 jsonl 事件 `rollback-restart-failed` |
+| `openclaw gateway call <method> --json` | `worker-verify.js` | 见下条 |
 | `--json` 输出 = RPC result 原值（无 envelope） | 同上 | 若上游加 `{ok,result}` 包装，`JSON.parse(output).version` 取到 undefined → 一直 missing-version → 验证超时 → 误判为"新版本坏掉"并 skipVersion + 回滚 |
 | `openclaw plugins inspect <id> --json`（2026-06-11 新增依赖） | `updater-check.js` `inspectPluginInstall`（gateway L1 来源门禁 + worker L2 结局核对共用）；`_lib.sh` `load_install_record` | L1 失败 → 本周期跳过（去重 `upgrade.gate-inspect-failed`，下周期自愈）；L2 失败 → 保守按真升级走 restart+verify。**契约点**：exit code（未安装非 0）、顶层 `install` 字段透传原始 record（含 `source`/`installPath`/`version`/`sourcePath`） |
+
+**前提注（2026-06-11）**：表中"后半程"行——回滚兜底 install、`gateway restart` 之后的 `gateway call` / `--json` 解析等——仅在 worker 能存活过网关重启的形态下成立；npm+systemd 默认形态曾被本机实测证伪（worker 与 gateway 同 cgroup，重启清场连带杀死，后半程整段不可达），worker cgroup 脱逃修复（systemd-run scope 包装）后恢复成立；探针失败的降级形态仍不成立，账目由 scheduler inflight 对账兜底（见 `docs/auto-upgrade.md`）。
 
 **风险等级**：CLI 子命令名长期稳定（CHANGELOG 没出现过重命名），但 `--json` 输出包装是历史相对短的接口，`docs/auto-upgrade.md` 里也标了"`coclaw.upgradeHealth` 返回格式 → 待定"。
 
@@ -1489,10 +1491,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 **发现日期**：2026-06-11（设计稿 `docs/designs/auto-upgrade-ledger-free-gate.md` 残余风险节 + 实施 review）
 **关联**：`src/auto-upgrade/`、`scripts/_lib.sh`。均不阻塞、独立可修；state.js 无锁 read-modify-write 一条并入上方既有条目"auto-upgrade state read-modify-write 缺跨进程互斥"的 2026-06-11 注记，不在此重复。
 
-### worker 备份 .bak 目录可能被 npm prune 清理
-
-新 npm 托管布局（`<state-dir>/npm/projects/`）下 `.bak` 备份目录与插件目录同级、落在 npm 管理的目录树内，`plugins update` 触发的 npm 操作（prune/dedupe）理论上可能清掉这个非 package 目录，使回滚失去物理备份（届时走 npm 兜底重装旧版，网络不可用时回滚失败）。修向：备份挪到 npm 树外（如 `<state-dir>/coclaw/` 下）。
-
 ### 托管布局回滚后"新依赖+旧代码"混搭风险
 
 备份只覆盖插件目录本身；托管布局下依赖树可能由 npm 在插件目录之外统一管理，mv 回旧代码后依赖仍是新版安装时改写的状态，形成"新依赖+旧代码"混搭。同族限制：布局迁移场景（老布局升级 → record 指新托管路径）回滚不完美——备份的是旧实体、record 已指新处（`worker-verify.js` 头注释已有记述）。
@@ -1505,21 +1503,13 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 头注释的 `.bak` 命名约束论证基于旧 `extensions/` 目录扫描机制（"gateway 启动时扫描 extensions/ 下所有子目录"）；新 npm 托管布局经安装记录加载、不靠目录扫描。约束本身无害可保留，rationale 需对齐现状。
 
-### upgrade.skipped 信号每小时重发无去重（含稳定 mismatch 态 upgrade.available 同模式重发）
+### 稳定 mismatch 态 upgrade.available 信号每周期重发无去重
 
-`upgrade.skipped`（latest 已在 skippedVersions）每周期重发一条 remoteLog，无 `__gateSignalOnce` 类去重——预存模式。review 第二轮确认：稳定 mismatch 态（有新版、L1 放行、但升级始终未完成且未 skip）下 `upgrade.available` 也同模式逐周期重发。修向：并入既有 (原因, toVersion) 去重。
+稳定 mismatch 态（有新版、L1 放行、但升级始终未完成且未 skip）下 `upgrade.available` 每周期重发一条 remoteLog——预存模式。修向：并入既有 `__gateSignalOnce` (原因, toVersion) 去重。（同模式的 `upgrade.skipped` 已随 2026-06-11 升级链修复并入去重销账。）
 
 ### runtime 缺失时 spawner 传给 worker 的 env state-dir 兜底理论错位
 
 `updater-spawn.js` 经 `state.js` `resolveStateDir()`（runtime → env → `~/.openclaw` 三级）取值传 `OPENCLAW_STATE_DIR` 给 worker；runtime 不可用时兜底值可能与上游真实 state-dir（profile / CLI flag 派生）分叉，worker 的 state 文件写错位置。理论场景——scheduler 正常运行时 runtime 必在。
-
-### updater.js 外层 catch-all 的 err.message 无可选链
-
-`__check` 外层 catch 直接插值 `err.message`；内部 throw 非 Error（字符串等）时插值为 undefined，remoteLog/日志信息劣化。与项目 `err?.message ?? String(err)` 惯例不一致，顺手修即可。
-
-### worker.js 成功路径 updateLastUpgrade/appendLog 未包 try/catch
-
-成功分支末尾的 `updateLastUpgrade` / `appendLog` 是全文件唯一未包 try/catch 的状态写入；state 目录异常时 worker fatal exit 1——但升级实际已成功且备份已删，lastUpgrade 不落盘，scheduler 下轮无 result 可报。修向：与其它状态写入对齐，包 try/catch 记日志不阻断。
 
 ### _lib.sh symlink 泄漏核对的 find|head 管线在 pipefail 下有 SIGPIPE 提前打断风险
 
@@ -1532,3 +1522,24 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 ### worker.test.js chmod 注入故障法以 root 跑测时失效
 
 多处用 `fs.chmod(0o444/0o555)` 制造写失败注入故障；root（CAP_DAC_OVERRIDE）下权限不生效，故障分支不触发 → 用例断言失败或假绿。环境依赖性失败源——CI/容器以 root 跑测会撞。修向：用例前置探测 root 时 skip，或换不依赖权限的注入法（mock fs）。
+
+## 2026-06-11 auto-upgrade 升级链修复 follow-up（不阻塞发版）
+
+**发现日期**：2026-06-11（升级链缺陷修复方案评审收尾时商定；缺陷修复本体随同期 commit 落地、不在此留账，实测细节见 git 历史与 `tmp/upgrade-verify-20260611/` 留档）
+**关联**：`src/auto-upgrade/`、`docs/auto-upgrade.md`。
+
+### 非 prerelease 成因的持久性 update 失败每周期循环（policy/integrity/engines 等）
+
+持久性 update 失败（registry policy 拒装、integrity 校验失败、engines 不满足等）按瞬态语义不写 skipVersion，每周期重复"失败→回滚→重启网关"。本次修复**有意不动**：失败时乱写 skip 会把网络抖动等真瞬态失败误伤成永久跳过，v3.1 评审砍掉重试计数器是同一判断。错因富化后 upgrade-log/lastUpgrade.error 已可见真因，循环周期 1h 可观测。候选解法是未来的有界重试 / 失败分类议题。同族推论——"磁盘新、运行旧"悬置态：worker 死于 update 阶段（磁盘已写新版）且网关未重启时，对账补记 interrupted 后 checkForUpdate 读磁盘判"无更新"，新版本等下次自然重启才激活且无人验证（备份保留，仍可人工回滚）。
+
+### V4：spec 钉死 no-op 端到端复现待专项验证
+
+"显式版本 install 记 exact spec → `plugins update` 跟随 spec 永远 no-op"的端到端复现未专项跑过（T7 仅间接观察到 update 未推进）。修复（裸包名 update 解钉）依赖的单匹配解钉行为另有发版 gate（V3）覆盖；本条是历史钉死形态的复现验证，补实验坐实即可销账。
+
+### isNewerVersion 对带 build metadata 的版本在 patch 位比出 NaN
+
+`updater-check.js` 的 `isNewerVersion` 比较 `1.0.1+b` vs `1.0.0` 时 patch 位 Number() 出 NaN、误判"不更新"（2026-06-11 修复实施中发现的预存问题；本次修复明令不动比较器故未修）。实际影响极小：npm latest 带 build metadata 罕见，且 minor/major 位差异不受影响。修向：剥 `+` 后缀后再逐位比较。
+
+### V5：跨平台形态摸底（systemd system service 探针、macOS/Windows restart 行为）
+
+systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行为未实测——主路径只承诺 user service 推荐形态；macOS / Windows 形态 `openclaw gateway restart` 是否连带杀 detached worker 也未摸底。不阻塞发版：非 systemd 形态不走 scope 分支、行为零改动；探针失败降级=现状 + `upgrade.cgroup-escape-failed` 信号 + inflight 对账兜底。

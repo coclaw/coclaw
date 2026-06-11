@@ -5,6 +5,7 @@ import os from 'node:os';
 import { after, test } from 'node:test';
 
 import plugin, { __resetPluginVersion, __resetAbortThrewReported, awaitPluginInit } from './index.js';
+import { getLoadedPluginVersion, __setLoadedPluginVersionForTest } from './src/auto-upgrade/updater.js';
 import { createMockServer } from './src/mock-server.helper.js';
 import { setRuntime, getRuntime } from './src/runtime.js';
 import { stopRealtimeBridge } from './src/realtime-bridge.js';
@@ -174,6 +175,46 @@ test('coclaw.info should omit clawVersion when runtime.version is unknown', asyn
 	});
 	assert.equal(infoOut.ok, true);
 	assert.equal(infoOut.payload.clawVersion, undefined);
+});
+
+test('coclaw.upgradeHealth 返回模块加载时刻快照而非磁盘现值', async () => {
+	process.env.OPENCLAW_STATE_DIR = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'coclaw-health-'));
+	setRuntime(null);
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+	const callHealth = () => {
+		let out = null;
+		handlers.get('coclaw.upgradeHealth')({ respond(ok, payload) { out = { ok, payload }; } });
+		return out;
+	};
+
+	// 基线：返回加载时快照
+	let out = callHealth();
+	assert.equal(out.ok, true);
+	assert.equal(out.payload.version, getLoadedPluginVersion());
+
+	// 判别（fail-then-pass）：把快照改成与磁盘不同的哨兵值——若 handler 回退成
+	// 调用时读磁盘 package.json（旧实现），返回的将是磁盘版本而非哨兵值。
+	// 等价于"磁盘写新版本号、快照不动"，不污染真实 package.json
+	const prev = __setLoadedPluginVersionForTest('0.0.0-loaded-snapshot');
+	try {
+		out = callHealth();
+		assert.equal(out.ok, true);
+		assert.equal(out.payload.version, '0.0.0-loaded-snapshot', 'handler 必须返回加载时快照，不得读磁盘');
+		const diskVersion = JSON.parse(
+			await fs.readFile(nodePath.join(import.meta.dirname, 'package.json'), 'utf8'),
+		).version;
+		assert.notEqual(out.payload.version, diskVersion, '哨兵值必须与磁盘现值可区分');
+
+		// 快照不可得时返回 { version: null }（保守"未达标"），禁止回退读磁盘
+		__setLoadedPluginVersionForTest(null);
+		out = callHealth();
+		assert.equal(out.ok, true);
+		assert.equal(out.payload.version, null);
+	}
+	finally {
+		__setLoadedPluginVersionForTest(prev);
+	}
 });
 
 test('coclaw.info.get should be an alias of coclaw.info', async () => {

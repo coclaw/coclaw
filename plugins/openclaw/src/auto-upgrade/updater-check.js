@@ -123,11 +123,24 @@ export function isNewerVersion(a, b) {
 }
 
 /**
+ * 判断版本是否含 prerelease 段。
+ * semver 语义：build metadata（`+` 之后）不算 prerelease——必须先剥掉再看 `-`，
+ * 否则 `1.0.0+exp-sha.5` 这类纯 build 后缀会被误判（裸 indexOf('-') 的坑）。
+ * 核心段 X.Y.Z 不含 `-`，剥掉 build 后出现 `-` 即为 prerelease。
+ * @param {string} version
+ * @returns {boolean}
+ */
+export function isPrereleaseVersion(version) {
+	const core = String(version).split('+')[0];
+	return core.includes('-');
+}
+
+/**
  * 检查是否有可用更新
  * @param {object} [opts]
  * @param {Function} [opts.execFileFn] - 可注入的 execFile（测试用）
  * @param {string} [opts.pluginDir] - 插件目录
- * @returns {Promise<{ available: boolean, currentVersion: string, latestVersion?: string, pkgName: string }>}
+ * @returns {Promise<{ available: boolean, currentVersion: string, latestVersion?: string, pkgName: string, skipped?: boolean, prerelease?: boolean }>}
  */
 export async function checkForUpdate(opts) {
 	const { name: pkgName, version: currentVersion } = await getPackageInfo(opts?.pluginDir);
@@ -137,6 +150,13 @@ export async function checkForUpdate(opts) {
 
 	if (!isNewerVersion(latestVersion, currentVersion)) {
 		return { available: false, currentVersion, pkgName };
+	}
+
+	// prerelease 闸：上游 plugins update 对裸 spec 一律拒装 prerelease，放行会进
+	// "spawn → 拒装 → 回滚 → 重启" 的每周期循环。此处一票否决：不 spawn、
+	// 不写 skip / lastUpgrade（latest 回到正式版本后自然恢复，无持久状态）
+	if (isPrereleaseVersion(latestVersion)) {
+		return { available: false, currentVersion, latestVersion, pkgName, prerelease: true };
 	}
 
 	// 检查是否在 skippedVersions 中（曾升级失败并回滚的版本）

@@ -11,8 +11,7 @@ import { createSessionManager } from './src/session-manager/manager.js';
 import { TopicManager } from './src/topic-manager/manager.js';
 import { ChatHistoryManager, classifyChatHistorySessionKey } from './src/chat-history-manager/manager.js';
 import { generateTitle } from './src/topic-manager/title-gen.js';
-import { AutoUpgradeScheduler } from './src/auto-upgrade/updater.js';
-import { getPackageInfo } from './src/auto-upgrade/updater-check.js';
+import { AutoUpgradeScheduler, getLoadedPluginVersion } from './src/auto-upgrade/updater.js';
 import { createFileHandler } from './src/file-manager/handler.js';
 import { abortAgentRun } from './src/agent-abort.js';
 import { decideCancelResponse } from './src/agent-cancel-heuristic.js';
@@ -742,10 +741,13 @@ const plugin = {
 			}
 		});
 
-		api.registerGatewayMethod('coclaw.upgradeHealth', async ({ respond }) => {
+		// 升级健康检查：返回模块加载时刻钉住的版本快照（即当前进程真正加载的代码），
+		// 禁止改回调用时读磁盘 package.json——重启命令失败被吞、旧 gateway 仍活着时
+		// 磁盘可能已是未加载的新版本，按磁盘回答会让 worker verify 假阳性通过并删掉
+		// 回滚备份。快照不可得时返回 { version: null }，verify 侧按"未达标"保守处理。
+		api.registerGatewayMethod('coclaw.upgradeHealth', ({ respond }) => {
 			try {
-				const { version } = await getPackageInfo();
-				respond(true, { version });
+				respond(true, { version: getLoadedPluginVersion() });
 			}
 			catch (err) {
 				respondError(respond, err);

@@ -4,7 +4,9 @@ import nodePath from 'node:path';
 
 import { checkForUpdate, getPackageInfo, inspectPluginInstall } from './updater-check.js';
 import { spawnUpgradeWorker } from './updater-spawn.js';
-import { readState, resolveStateDir, writeState } from './state.js';
+import { readInflight, readState, recordUpgradeTerminal, resolveStateDir, writeState } from './state.js';
+import { removeBackup } from './worker-backup.js';
+import { isVersionReached } from './worker-verify.js';
 import { getRuntime } from '../runtime.js';
 import { remoteLog } from '../remote-log.js';
 import { atomicWriteFile } from '../utils/atomic-write.js';
@@ -25,6 +27,46 @@ const LOCK_FILENAME = 'upgrade.lock';
 // 代价是 worker 真卡超 110 分钟会多起一个并行 worker，此概率在当前超时矩阵下极低，
 // 且底层升级命令失败会走回滚，不会破坏插件。
 const LOCK_TTL_MS = 110 * 60 * 1000; // 110 分钟
+
+// 精确 semver 形态（含可选 prerelease / build 段），spec 钉死检测用
+const EXACT_SEMVER_RE = /^\d+\.\d+\.\d+(-[\w.-]+)?(\+[\w.-]+)?$/;
+
+// 运行态版本：模块加载时刻同步捕获，coclaw.upgradeHealth handler 与 inflight
+// 对账共用本快照（getLoadedPluginVersion）。成功判据必须反映"当前 gateway
+// 真正加载的代码"，禁止判定时再读磁盘 package.json：中断的升级可能已把磁盘
+// 写成新版本而新代码从未被加载，误记成功会删掉唯一的回滚备份。
+// （src/plugin-version.js 的懒读缓存原语是 info 展示用，语义不同，勿互相替代。）
+let LOADED_PLUGIN_VERSION = null;
+try {
+	const rawPkg = nodeFs.readFileSync(nodePath.resolve(import.meta.dirname, '../../package.json'), 'utf8');
+	const ver = JSON.parse(rawPkg)?.version;
+	LOADED_PLUGIN_VERSION = typeof ver === 'string' ? ver : null;
+}
+/* c8 ignore next 3 -- 自身 package.json 读取失败的兜底：测试环境必可读 */
+catch {
+	// 读不到自身 package.json：对账退化为"无法判定"，保留 inflight 下轮重试
+}
+
+/**
+ * 加载时刻钉住的自身版本快照（即当前进程真正加载的代码）。
+ * 快照不可得时返回 null——调用方把 null 当"未达标"是保守正确方向；
+ * 禁止加"为 null 就回退读磁盘"的 fallback（见上方快照注释的 Why）。
+ * @returns {string|null}
+ */
+export function getLoadedPluginVersion() {
+	return LOADED_PLUGIN_VERSION;
+}
+
+/**
+ * 测试用：覆盖加载时快照（判别"返回快照 vs 调用时读磁盘"），返回旧值便于恢复。
+ * @param {string|null} version
+ * @returns {string|null}
+ */
+export function __setLoadedPluginVersionForTest(version) {
+	const prev = LOADED_PLUGIN_VERSION;
+	LOADED_PLUGIN_VERSION = version;
+	return prev;
+}
 
 // ── upgrade.lock：保证同时最多一个 worker 进程 ──
 
@@ -229,6 +271,12 @@ export class AutoUpgradeScheduler {
 	 * @param {Function} [params.opts.inspectInstallFn] - L1 来源门禁的 inspect 注入
 	 * @param {string} [params.opts.pluginRoot] - L0 位置自检/L1 回退的包根注入
 	 * @param {string} [params.opts.stateDir] - L0 位置自检的 state-dir 注入
+	 * @param {Function} [params.opts.readInflightFn] - inflight 对账读注入
+	 * @param {Function} [params.opts.recordUpgradeTerminalFn] - inflight 对账终态写注入
+	 * @param {Function} [params.opts.removeBackupFn] - inflight 对账备份清理注入
+	 * @param {string} [params.opts.runtimeVersion] - 运行态版本覆盖（对账判据注入）
+	 * @param {string} [params.opts.platform] - spawn 探针平台覆盖
+	 * @param {NodeJS.ProcessEnv} [params.opts.scopeEnv] - spawn 探针 env 覆盖
 	 */
 	constructor(params) {
 		if (params?.pluginId) this.__pluginId = params.pluginId;
@@ -325,7 +373,9 @@ export class AutoUpgradeScheduler {
 			if (!last?.ts || last.ts === state.lastReport) return;
 			if (last.ts === this.__lastReportedUpgradeTs) return;
 			this.__lastReportedUpgradeTs = last.ts;
-			remoteLog(`upgrade.result result=${last.result} from=${last.from} to=${last.to}`);
+			// error 附上报行（lastUpgrade.error 已在写入时截断），真因远程可见
+			const errSuffix = last.error ? ` error=${last.error}` : '';
+			remoteLog(`upgrade.result result=${last.result} from=${last.from} to=${last.to}${errSuffix}`);
 			this.__logger.info?.(`[auto-upgrade] Last upgrade: ${last.from} → ${last.to} result=${last.result}`);
 			state.lastReport = last.ts;
 			const writeStateFn = this.__opts.writeStateFn ?? writeState;
@@ -334,6 +384,98 @@ export class AutoUpgradeScheduler {
 		catch (err) {
 			this.__logger.warn?.(`[auto-upgrade] Report last upgrade result failed: ${err?.message}`);
 			remoteLog(`upgrade.report-failed msg=${err?.message}`);
+		}
+	}
+
+	/**
+	 * inflight 对账：worker 写过 inflight 但没活到终态记账（典型：被自己触发的
+	 * 网关重启杀死）时，由 scheduler 在锁空闲周期补记终态。
+	 *
+	 * 成功判据用模块加载时刻捕获的运行态版本（LOADED_PLUGIN_VERSION，与
+	 * upgradeHealth 同源）：达 verifyTarget → 补记 ok + 删备份（verifyTarget ≠
+	 * toVersion 时复刻 worker advancedShortfall 语义补 skip）；未达 → 补记
+	 * interrupted（带 phase）+ 告警，不自动 skip——回滚记账已前移 + 终态原子化后，
+	 * 中断窗口只剩"死在回滚中途"，下周期重验自然收敛，自动 skip 反而误伤瞬态。
+	 * interrupted 不清备份（保留人工恢复，下次备份前覆盖）。
+	 *
+	 * 畸形 inflight（verifyTarget 与 to 皆缺）永远无法判定达标，defer 会让升级
+	 * 管线永久停摆——按 interrupted（phase=malformed）消化；只有自身快照不可得
+	 * （runtimeVersion 空）才 defer（"无法判定就不动盘"的正确保守）。
+	 *
+	 * @returns {Promise<boolean>} false 表示 inflight 存在但未消化（判据不可得 /
+	 *   终态写失败），本周期应跳过 checkForUpdate，避免新 spawn 覆盖中断账目
+	 */
+	async __reconcileInflight() {
+		let inflight;
+		try {
+			/* c8 ignore next -- ?? fallback */
+			const readInflightFn = this.__opts.readInflightFn ?? readInflight;
+			inflight = await readInflightFn();
+		}
+		catch (err) {
+			this.__logger.warn?.(`[auto-upgrade] Inflight read failed: ${err?.message}`);
+			remoteLog(`upgrade.reconcile-failed msg=${err?.message}`);
+			return false;
+		}
+		if (!inflight) return true;
+
+		const { from, to, verifyTarget, phase } = inflight;
+		/* c8 ignore next -- ?? fallback */
+		const recordTerminal = this.__opts.recordUpgradeTerminalFn ?? recordUpgradeTerminal;
+		const target = verifyTarget || to;
+		if (!target) {
+			// 畸形 inflight：无判定目标，defer 等不来转机，按 interrupted 消化让管线继续
+			try {
+				await recordTerminal({ from: from || 'unknown', to: to || 'unknown', result: 'interrupted', phase: 'malformed' });
+			}
+			catch (err) {
+				// 终态写失败：inflight 保留，下轮重试；本周期不再 spawn
+				this.__logger.warn?.(`[auto-upgrade] Inflight reconcile failed: ${err?.message}`);
+				remoteLog(`upgrade.reconcile-failed msg=${err?.message}`);
+				return false;
+			}
+			this.__gateSignalOnce('reconcile-malformed', 'upgrade.reconcile-malformed');
+			this.__logger.warn?.('[auto-upgrade] Malformed inflight (no verifyTarget/to), recorded as interrupted');
+			return true;
+		}
+		/* c8 ignore next -- ?? fallback */
+		const runtimeVersion = this.__opts.runtimeVersion ?? LOADED_PLUGIN_VERSION;
+		if (!runtimeVersion) {
+			// 判据不可得：不下结论，保留 inflight 下轮重试
+			this.__gateSignalOnce(
+				`reconcile-no-version|${to}`,
+				`upgrade.reconcile-no-version to=${to}`,
+			);
+			this.__logger.warn?.('[auto-upgrade] Inflight found but reconcile criteria unavailable, deferring');
+			return false;
+		}
+		try {
+			if (isVersionReached(runtimeVersion, target)) {
+				// 运行态已达 verifyTarget：升级实际生效（worker 只是没活到记账），补记成功
+				await recordTerminal({
+					from, to: runtimeVersion, result: 'ok',
+					skipVersion: target !== to ? to : undefined,
+				});
+				/* c8 ignore next -- ?? fallback */
+				const doRemoveBackup = this.__opts.removeBackupFn ?? removeBackup;
+				try { await doRemoveBackup(this.__pluginId); }
+				catch (e) { this.__logger.warn?.(`[auto-upgrade] Reconcile backup cleanup failed (non-fatal): ${e?.message}`); }
+				this.__logger.info?.(`[auto-upgrade] Reconciled interrupted upgrade as ok: ${from} → ${runtimeVersion}`);
+			}
+			else {
+				/* c8 ignore next -- ?? fallback */
+				const phaseToken = phase ?? 'unknown';
+				await recordTerminal({ from, to, result: 'interrupted', phase: phaseToken });
+				remoteLog(`upgrade.interrupted from=${from} to=${to} phase=${phaseToken} runtime=${runtimeVersion}`);
+				this.__logger.warn?.(`[auto-upgrade] Interrupted upgrade detected: ${from} → ${to} (phase=${phaseToken})`);
+			}
+			return true;
+		}
+		catch (err) {
+			// 终态写失败：inflight 保留，下轮重试；本周期不再 spawn
+			this.__logger.warn?.(`[auto-upgrade] Inflight reconcile failed: ${err?.message}`);
+			remoteLog(`upgrade.reconcile-failed msg=${err?.message}`);
+			return false;
 		}
 	}
 
@@ -352,6 +494,10 @@ export class AutoUpgradeScheduler {
 				return;
 			}
 
+			// 锁空闲才对账：先消化 inflight（补记中断 worker 的终态），再跑新
+			// checkForUpdate——未消化就 spawn 会让新 worker 覆盖中断账目
+			if (!(await this.__reconcileInflight())) return;
+
 			// 报告上一次升级结果（若有未报告的）
 			await this.__reportLastUpgradeResult();
 
@@ -361,8 +507,19 @@ export class AutoUpgradeScheduler {
 			});
 
 			if (!result.available) {
-				if (result.skipped) {
-					remoteLog(`upgrade.skipped version=${result.latestVersion}`);
+				if (result.prerelease) {
+					// prerelease 挂 latest（人为失误）是稳定态，逐周期重验须去重防刷屏
+					this.__gateSignalOnce(
+						`prerelease-skip|${result.latestVersion}`,
+						`upgrade.prerelease-skip version=${result.latestVersion}`,
+					);
+					this.__logger.info?.(`[auto-upgrade] Latest ${result.latestVersion} is a prerelease, skipping`);
+				} else if (result.skipped) {
+					// skipped 同为稳定态（直到下个正式版发布），同模式去重
+					this.__gateSignalOnce(
+						`skipped|${result.latestVersion}`,
+						`upgrade.skipped version=${result.latestVersion}`,
+					);
 					this.__logger.info?.(`[auto-upgrade] Version ${result.latestVersion} skipped (previously failed)`);
 				} else {
 					this.__logger.info?.(`[auto-upgrade] No update available (current: ${result.currentVersion})`);
@@ -413,6 +570,18 @@ export class AutoUpgradeScheduler {
 				return;
 			}
 
+			// spec 钉死可见性：install.spec 是精确版本时 update 永远 resolve 同一版本
+			//（fallback install / 人工 `pkg@x.y.z` 留下的）。worker 侧裸包名 update 会
+			// 顺带解钉，这里只发去重信号，不改行为
+			const spec = typeof install.spec === 'string' ? install.spec : '';
+			const specAt = spec.lastIndexOf('@');
+			if (specAt > 0 && EXACT_SEMVER_RE.test(spec.slice(specAt + 1))) {
+				this.__gateSignalOnce(
+					`spec-pinned|${result.latestVersion}`,
+					`upgrade.spec-pinned spec=${spec}`,
+				);
+			}
+
 			// 来源验明 npm 后才上报 available——否则永不升级的装置每小时刷一条
 			remoteLog(`upgrade.available from=${result.currentVersion} to=${result.latestVersion}`);
 			this.__logger.info?.(`[auto-upgrade] Update available: ${result.currentVersion} → ${result.latestVersion}`);
@@ -449,16 +618,29 @@ export class AutoUpgradeScheduler {
 			const baselineVersion = typeof install.version === 'string' ? install.version : '';
 			this.__logger.info?.(`[auto-upgrade] Pre-upgrade baseline: version=${baselineVersion || '(unknown)'} path=${pluginDir}`);
 
-			const { child } = spawnUpgradeWorker({
+			const { child, escapeFailed } = await spawnUpgradeWorker({
 				pluginDir,
 				fromVersion: result.currentVersion,
 				toVersion: result.latestVersion,
 				baselineVersion,
 				pluginId: this.__pluginId,
 				pkgName: result.pkgName,
-				opts: { spawnFn: this.__opts.spawnFn },
+				opts: {
+					spawnFn: this.__opts.spawnFn,
+					execFileFn: this.__opts.execFileFn,
+					platform: this.__opts.platform,
+					scopeEnv: this.__opts.scopeEnv,
+				},
 				logger: this.__logger,
 			});
+			if (escapeFailed) {
+				// systemd 形态但 scope 脱逃不可用：worker 大概率活不过自己触发的重启，
+				// 终态靠下轮 inflight 对账兜底；稳定态信号去重防每小时刷屏
+				this.__gateSignalOnce(
+					`cgroup-escape-failed|${result.latestVersion}`,
+					`upgrade.cgroup-escape-failed to=${result.latestVersion}`,
+				);
+			}
 
 			// 记录 worker PID，下次 check 时据此判断 worker 是否仍在运行
 			/* c8 ignore next -- ?? fallback */
@@ -466,8 +648,10 @@ export class AutoUpgradeScheduler {
 			await writeLock(child.pid);
 		}
 		catch (err) {
-			remoteLog(`upgrade.check-failed msg=${err.message}`);
-			this.__logger.warn?.(`[auto-upgrade] Check failed: ${err.message}`);
+			/* c8 ignore next -- ?? fallback：err 字段缺省的兜底分支不强制覆盖 */
+			const msg = err?.message ?? String(err);
+			remoteLog(`upgrade.check-failed msg=${msg}`);
+			this.__logger.warn?.(`[auto-upgrade] Check failed: ${msg}`);
 		}
 		finally {
 			this.__checking = false;

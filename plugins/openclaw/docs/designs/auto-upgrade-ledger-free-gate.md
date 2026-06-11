@@ -4,6 +4,7 @@
 > v2 → v3：吸收第 2 轮三路评审（场景推演 / 复杂度裁判 / codex 复审）。要点：L2 结局矩阵补全（失败路径原样保留）、砍掉 no-op 计数器（改立即记跳过）、比较器措辞对齐现行实现、信号分类与去重、`upgrade.available` 后移。
 > v3 → v3.1（评审终版）：L2 矩阵"版本未达标"拆分为 record 推进 / 未推进两支（推进未达标 → verify 目标参数化为实装版本；未推进 → no-op），补"基线不可得"退化分支；配套 updater-spawn 新增 `--baselineVersion` argv 接线（`install.version` 不只记日志，作 L2 推进判定基线；缺失不传 flag）。
 > 归档时已按设计稿规范清理易腐 file:line 引用（保留路径级指针）。
+> 2026-06-11 本机实测发现的升级链缺陷与修复（worker cgroup 脱逃、回滚链加固、prerelease 闸等）见 `docs/auto-upgrade.md` 与 `TODO.md`（修复随 vNEXT 发布）；本稿维持归档、正文不追新。
 
 ## 背景与问题
 

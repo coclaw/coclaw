@@ -66,7 +66,7 @@ async function cleanTmpDir(dir) {
 // triggerGatewayRestart
 // ============================================================
 
-test('triggerGatewayRestart — 命令成功时 resolve', async () => {
+test('triggerGatewayRestart — 命令成功时返回 true', async () => {
 	let called = false;
 	const execFileFn = createExecFileFn((cmd, args) => {
 		called = true;
@@ -74,14 +74,16 @@ test('triggerGatewayRestart — 命令成功时 resolve', async () => {
 		assert.deepStrictEqual(args, ['gateway', 'restart']);
 		return { stdout: 'ok' };
 	});
-	await triggerGatewayRestart({ execFileFn });
+	const ok = await triggerGatewayRestart({ execFileFn });
 	assert.equal(called, true);
+	assert.equal(ok, true);
 });
 
-test('triggerGatewayRestart — 命令失败时吞错不抛', async () => {
+test('triggerGatewayRestart — 命令失败时吞错不抛，返回 false', async () => {
 	const execFileFn = createExecFileFn(() => ({ err: new Error('restart boom') }));
-	// 未抛即为通过
-	await triggerGatewayRestart({ execFileFn });
+	// 未抛即为通过；返回 false 供回滚路径记 rollback-restart-failed 事件
+	const ok = await triggerGatewayRestart({ execFileFn });
+	assert.equal(ok, false);
 });
 
 // ============================================================

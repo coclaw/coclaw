@@ -9,9 +9,13 @@ import {
 	appendLog,
 	getLogPath,
 	getStatePath,
+	readInflight,
 	readState,
+	recordUpgradeTerminal,
+	updateInflight,
 	updateLastCheck,
 	updateLastUpgrade,
+	writeInflight,
 	writeState,
 } from './state.js';
 import { setRuntime } from '../runtime.js';
@@ -469,6 +473,261 @@ test('writeState 写入中途崩溃保留原 state 文件（atomic 保护）', a
 		// 修后（atomic）：fs.writeFile(tmp) 抛 → rename 未发生 → 原文件未动
 		const raw = await fs.readFile(statePath, 'utf8');
 		assert.deepEqual(JSON.parse(raw), { a: 1, b: 'keep' });
+	}
+	finally {
+		mock.restoreAll();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+// --- inflight helpers ---
+
+test('writeInflight 写入 inflight 并附 ts；readInflight 读回', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		assert.equal(await readInflight(), null);
+
+		await writeInflight({ from: '1.0.0', to: '1.1.0', verifyTarget: '1.1.0', pluginDir: '/opt/p', phase: 'update' });
+
+		const inflight = await readInflight();
+		assert.equal(inflight.from, '1.0.0');
+		assert.equal(inflight.to, '1.1.0');
+		assert.equal(inflight.verifyTarget, '1.1.0');
+		assert.equal(inflight.pluginDir, '/opt/p');
+		assert.equal(inflight.phase, 'update');
+		assert.match(inflight.ts, /^\d{4}-\d{2}-\d{2}T/);
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('writeInflight 保留 state 其它字段', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await writeState({ lastCheck: '2026-01-01T00:00:00.000Z' });
+		await writeInflight({ from: '1.0.0', to: '1.1.0', verifyTarget: '1.1.0', pluginDir: '/opt/p', phase: 'update' });
+		const state = await readState();
+		assert.equal(state.lastCheck, '2026-01-01T00:00:00.000Z');
+		assert.ok(state.inflight);
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('updateInflight 合并 patch（phase 推进 / verifyTarget 修正）', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '1.1.0', verifyTarget: '1.1.0', pluginDir: '/opt/p', phase: 'update' });
+		await updateInflight({ phase: 'verify', verifyTarget: '1.0.5' });
+
+		const inflight = await readInflight();
+		assert.equal(inflight.phase, 'verify');
+		assert.equal(inflight.verifyTarget, '1.0.5');
+		// 未 patch 字段保留
+		assert.equal(inflight.from, '1.0.0');
+		assert.equal(inflight.pluginDir, '/opt/p');
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('updateInflight 无 inflight 时 no-op（迟到更新不复活账目）', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await writeState({ lastCheck: '2026-01-01T00:00:00.000Z' });
+		await updateInflight({ phase: 'rollback' });
+		const state = await readState();
+		assert.equal(state.inflight, undefined);
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+// --- recordUpgradeTerminal ---
+
+test('recordUpgradeTerminal 一次完成 lastUpgrade + 清 inflight + skipVersion + jsonl', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '1.1.0', verifyTarget: '1.1.0', pluginDir: '/opt/p', phase: 'verify' });
+
+		await recordUpgradeTerminal({
+			from: '1.0.0', to: '1.0.5', result: 'ok', skipVersion: '1.1.0',
+		});
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.from, '1.0.0');
+		assert.equal(state.lastUpgrade.to, '1.0.5');
+		assert.equal(state.lastUpgrade.result, 'ok');
+		assert.match(state.lastUpgrade.ts, /^\d{4}-\d{2}-\d{2}T/);
+		assert.deepEqual(state.skippedVersions, ['1.1.0']);
+		assert.equal(state.inflight, undefined, 'inflight 应在同一次写入中清除');
+
+		const logRaw = await fs.readFile(getLogPath(), 'utf8');
+		const entry = JSON.parse(logRaw.trim());
+		assert.equal(entry.result, 'ok');
+		assert.equal(entry.to, '1.0.5');
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('recordUpgradeTerminal 不带 skipVersion 时不动 skippedVersions；error/phase 进账', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await recordUpgradeTerminal({
+			from: '1.0.0', to: '1.1.0', result: 'interrupted', phase: 'verify', error: 'boom',
+		});
+
+		const state = await readState();
+		assert.equal(state.skippedVersions, undefined);
+		assert.equal(state.lastUpgrade.result, 'interrupted');
+		assert.equal(state.lastUpgrade.phase, 'verify');
+		assert.equal(state.lastUpgrade.error, 'boom');
+
+		const entry = JSON.parse((await fs.readFile(getLogPath(), 'utf8')).trim());
+		assert.equal(entry.phase, 'verify');
+		assert.equal(entry.error, 'boom');
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('recordUpgradeTerminal lastUpgrade.error 截断保尾部，jsonl 保留完整', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		const longErr = `${'x'.repeat(600)}TAIL`;
+		await recordUpgradeTerminal({
+			from: '1.0.0', to: '1.1.0', result: 'rollback', error: longErr,
+		});
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.error.length, 500);
+		assert.ok(state.lastUpgrade.error.endsWith('TAIL'), '截断须保尾部（真因在尾部）');
+
+		const entry = JSON.parse((await fs.readFile(getLogPath(), 'utf8')).trim());
+		assert.equal(entry.error, longErr);
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('recordUpgradeTerminal skipVersion 去重（已在列表时不重复）', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await writeState({ skippedVersions: ['1.1.0'] });
+		await recordUpgradeTerminal({
+			from: '1.0.0', to: '1.1.0', result: 'noop-skip', skipVersion: '1.1.0',
+		});
+		const state = await readState();
+		assert.deepEqual(state.skippedVersions, ['1.1.0']);
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('recordUpgradeTerminal 终态是单次 state 写入（lastUpgrade 与清 inflight 不拆两次写）', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '1.1.0', verifyTarget: '1.1.0', pluginDir: '/opt/p', phase: 'verify' });
+
+		// 拦截底层写函数计数：atomic 写 state 走 fs.writeFile(`${statePath}.<uuid>.tmp`)
+		const statePath = getStatePath();
+		const stateWrites = [];
+		const origWriteFile = fs.writeFile;
+		mock.method(fs, 'writeFile', async (target, data, ...rest) => {
+			if (typeof target === 'string' && target.startsWith(`${statePath}.`)) {
+				stateWrites.push(String(data));
+			}
+			return origWriteFile(target, data, ...rest);
+		});
+
+		await recordUpgradeTerminal({ from: '1.0.0', to: '1.1.0', result: 'ok', skipVersion: '1.1.0' });
+
+		mock.restoreAll();
+
+		// 防回归锚：终态若拆成"先写 lastUpgrade、再清 inflight"两次写，
+		// 中间崩溃会留下"账已记但 inflight 残留"的矛盾态
+		assert.equal(stateWrites.length, 1, '整个终态操作只允许一次 state 文件写入');
+		const written = JSON.parse(stateWrites[0]);
+		assert.equal(written.lastUpgrade.result, 'ok');
+		assert.deepEqual(written.skippedVersions, ['1.1.0']);
+		assert.equal(written.inflight, undefined, '同一次写入须同时含 lastUpgrade 与 inflight 清除');
+	}
+	finally {
+		mock.restoreAll();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('recordUpgradeTerminal jsonl 追加失败不抛（best-effort），终态仍落盘', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		// 在 log 路径处预置目录，使 appendFile 报 EISDIR
+		await fs.mkdir(getLogPath(), { recursive: true });
+
+		await assert.doesNotReject(() => recordUpgradeTerminal({
+			from: '1.0.0', to: '1.1.0', result: 'ok',
+		}));
+
+		const state = await readState();
+		assert.equal(state.lastUpgrade.result, 'ok');
+	}
+	finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('recordUpgradeTerminal 终态写失败时抛出且 inflight 保留（下轮对账可见）', async () => {
+	resetEnv();
+	const dir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = dir;
+	try {
+		await writeInflight({ from: '1.0.0', to: '1.1.0', verifyTarget: '1.1.0', pluginDir: '/opt/p', phase: 'update' });
+
+		const statePath = getStatePath();
+		const origWriteFile = fs.writeFile;
+		mock.method(fs, 'writeFile', async (target, ...rest) => {
+			// 拦截 atomic 写 state 的 tmp 文件
+			if (typeof target === 'string' && target.startsWith(`${statePath}.`)) {
+				throw new Error('disk full');
+			}
+			return origWriteFile(target, ...rest);
+		});
+
+		await assert.rejects(() => recordUpgradeTerminal({ from: '1.0.0', to: '1.1.0', result: 'ok' }));
+
+		mock.restoreAll();
+
+		const inflight = await readInflight();
+		assert.ok(inflight, '终态写失败时 inflight 不得被清');
 	}
 	finally {
 		mock.restoreAll();

@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
 import nodePath from 'node:path';
 
-// 延迟读取 + 缓存：避免模块加载时 package.json 损坏导致插件整体无法注册
+// 延迟读取 + 缓存：避免模块加载时 package.json 损坏导致插件整体无法注册。
+// 仅供 info 类展示；upgradeHealth / inflight 对账的判定禁用本原语，
+// 必须用 src/auto-upgrade/updater.js 的加载时刻快照（getLoadedPluginVersion）。
 let __pluginVersion = null;
 export async function getPluginVersion() {
 	if (__pluginVersion) return __pluginVersion;
