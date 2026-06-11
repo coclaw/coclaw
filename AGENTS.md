@@ -146,6 +146,7 @@
 - 每次 commit 保持单一主题，避免将无关改动混在一起
 - commit message 一律用英语，使用祈使句并包含范围（建议：`feat(server): ...` / `fix(ui): ...` / `refactor(tunnel): ...` / `test(...): ...` / `docs(...): ...`）
 - 禁止提交：临时调试代码、无关格式化噪音、敏感信息、无意义大文件
+- main 历史尽量保持直线：分支合回 main 优先 rebase / cherry-pick 重放（fast-forward），不留 merge commit；改写历史仅限未推送的提交，且须确认无其他终端 / worktree 正基于旧顶端工作。重放后用 `git diff <旧顶端> HEAD` 校验树一致——一致即此前在旧树上跑过的验证原样成立
 
 ## 版本管理（Changesets）
 
