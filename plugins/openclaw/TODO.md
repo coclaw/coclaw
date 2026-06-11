@@ -297,6 +297,8 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **影响**：纯元数据偏差，不影响加载（gateway 读磁盘文件）也不破坏后续升级逻辑——下一轮 checkForUpdate 用磁盘 package.json 判版本，L2 baseline 取陈旧 record 但"record 是否推进"的判定语义仍成立（本机 Run C 实测下一轮升级正常）。主要代价是排障困惑（inspect 显示坏版本"在装"）与 lastUpgrade.from 取磁盘、baseline 取 record 的字符串不一致。与 docs/auto-upgrade.md "rollback=文件态已恢复"语义一致，属已知权衡的具体化，暂不修。
 
+**同族第二形态（2026-06-11 独立验证 S2 观察）**：record 的 `spec` 也会被装坏版时重新钉死为精确版号（实测：S1 解钉后的裸名 spec，经 S2 装 0.26.23 失败回滚后变回 `@coclaw/openclaw-coclaw@0.26.23`）。发现逻辑不受影响（skip 周期用裸名查 latest 实测正常），下次成功升级经裸包名 update 会再次解钉自愈。同根因（restore 不回写上游记录），随本条一起处置。
+
 ## bridge async listener 其他真隐患（C 阶段维度 1）
 
 **发现日期**：2026-05-02
@@ -1553,3 +1555,7 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 ### V5：跨平台形态摸底（systemd system service 探针、macOS/Windows restart 行为）
 
 systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行为未实测——主路径只承诺 user service 推荐形态；macOS / Windows 形态 `openclaw gateway restart` 是否连带杀 detached worker 也未摸底。不阻塞发版：非 systemd 形态不走 scope 分支、行为零改动；探针失败降级=现状 + `upgrade.cgroup-escape-failed` 信号 + inflight 对账兜底。
+
+### lastUpgrade.error 的 500 字符截尾可能截掉真因、只留 stderr 噪音（S4 实测）
+
+**发现日期**：2026-06-11（S4 独立回归实测）。`formatCmdFailure` 拼接顺序是 `message | stdout | stderr`，npm 的 404 真因落在 stdout 段；本机 openclaw CLI 的 stderr 又固定带 proxy-preload / state-migrations 噪音（约 500+ 字符），`truncateErrorTail` 取尾 500 后 lastUpgrade.error 全是噪音、404 行被截掉。远程上报行（`upgrade.result error=...`）用的正是 lastUpgrade.error → 远端看不到真因，只有本地 jsonl 留全文。"真因通常在输出尾部"的设计前提对"stderr 是宿主 CLI 噪音"形态不成立。修向：截尾前按段保留（如各段独立截短再拼）或上报行改引 jsonl 全文的关键行。
