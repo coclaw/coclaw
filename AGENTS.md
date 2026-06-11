@@ -158,9 +158,9 @@
 
 ## 移动端与桌面端
 
-- **移动端（Android / iOS）**：Capacitor——将 `ui` 的 Vite 构建产物打包为原生 App；Android 开发规范与命令见 `capacitor-android` skill
-- **桌面端（Windows / macOS）**：Electron，已落地；壳子代码在 `ui/electron/`，开发与构建规范见 `ui/AGENTS.md`
-- 前端代码与 Web 端完全共用，不维护多套 UI；框架决策详情见 `docs/decisions/adr-mobile-desktop-framework.md`
+- **移动端（Android / iOS）**：Capacitor 壳，运行时直连线上前端（`ui/capacitor.config.ts` 的 `server.url = https://im.coclaw.net`），不使用打进包里的 `dist` 产物；Android 开发规范与命令见 `capacitor-android` skill
+- **桌面端（Windows / macOS）**：Electron，已落地；生产模式同样加载线上前端；壳子代码在 `ui/electron/`，开发与构建规范见 `ui/AGENTS.md`
+- 前端代码与 Web 端完全共用，不维护多套 UI；**UI 改动经 web 部署即对全部客户端生效，无需重发 App / 壳子版本**（重发只为壳子自身改动）；框架决策详情见 `docs/decisions/adr-mobile-desktop-framework.md`
 
 ## 部署执行约定（内部）
 
