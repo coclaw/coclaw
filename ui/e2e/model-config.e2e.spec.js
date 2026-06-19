@@ -64,6 +64,51 @@ async function spaGo(page, path) {
 	}, path);
 }
 
+/**
+ * 让指定 RPC method 直接 reject（用于验证子页"加载失败"分支）。
+ *
+ * 在 setupModelConfigMock 的 wrap 外再套一层：轮询等 mock 的 ClawConnection.__mcWrapped 就绪后，
+ * 把 prototype.request 包成最外层——命中 failMethods 直接 reject（带 code），否则透传给内层 mock。
+ * 必须在 setupModelConfigMock 之后调用；与 mock 同走 addInitScript，对该 page 后续每次页面加载生效。
+ * @param {import('@playwright/test').Page} page
+ * @param {string[]} failMethods
+ */
+function installRpcFailMock(page, failMethods) {
+	return page.addInitScript((methods) => {
+		const apply = (CC) => {
+			// 只有等 mock 先包好（__mcWrapped）才套外层，确保 reject 拦在 mock 合成响应之前
+			if (!CC || !CC.__mcWrapped || CC.__mcFailWrapped) return false;
+			CC.__mcFailWrapped = true;
+			const inner = CC.prototype.request;
+			CC.prototype.request = function (method, params = {}, options = {}) {
+				if (methods.indexOf(method) !== -1) {
+					return Promise.reject(Object.assign(new Error('mock rpc failure'), { code: 'MOCK_FAIL' }));
+				}
+				return inner.call(this, method, params, options);
+			};
+			return true;
+		};
+		window.__mcFailApply = apply;
+		let tries = 0;
+		const tryInstall = () => {
+			import('/src/services/claw-connection.js')
+				.then((m) => { if (!apply(m && m.ClawConnection) && tries++ < 300) setTimeout(tryInstall, 10); })
+				.catch(() => { if (tries++ < 300) setTimeout(tryInstall, 10); });
+		};
+		tryInstall();
+	}, failMethods);
+}
+
+/** 兜底：导航后再确保一次 fail wrap 已生效（幂等，配合 installRpcFailMock 用） */
+async function ensureFailReady(page) {
+	await page.evaluate(async () => {
+		if (typeof window.__mcFailApply === 'function') {
+			const m = await import('/src/services/claw-connection.js');
+			window.__mcFailApply(m && m.ClawConnection);
+		}
+	});
+}
+
 // ================================================================
 // S1：首次接入主路径
 // ================================================================
@@ -533,4 +578,154 @@ test('模型配置 S9：oauth 凭据显示 oauth 徽章且可撤销 @ui', async 
 	await expect(removeButtons).toHaveCount(2);
 	await expect(removeButtons.nth(0)).toBeEnabled();
 	await expect(removeButtons.nth(1)).toBeEnabled();
+});
+
+// ================================================================
+// 公共：进入某台在线 claw 的模型配置子页（仅建连取 id，再 SPA 进子页，保持连接存活）
+// ================================================================
+async function enterModelConfigPage(page) {
+	await gotoClawsCold(page);
+	const clawId = await getOnlineClawId(page);
+	await spaGo(page, `/claws/${clawId}/models`);
+	await page.waitForURL(new RegExp(`/claws/${clawId}/models`), { timeout: 15_000 });
+	await ensureMockReady(page);
+	return clawId;
+}
+
+// ================================================================
+// C5a：加 provider 弹窗——可加目录为空 → 空态渲染
+// ================================================================
+test('模型配置 C5a：加 provider 弹窗——可加目录为空时渲染空态 @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// 空目录（catalog=[] → providerAuth.catalog 返回 providers:[]）→ 弹窗无可加项
+	await setupModelConfigMock(page, { profiles: [], primary: null, catalog: [] });
+	await login(page);
+	await ensureMockReady(page);
+
+	await enterModelConfigPage(page);
+
+	const addBtn = page.getByTestId('btn-add-provider');
+	await expect(addBtn).toBeEnabled({ timeout: 30_000 });
+	await addBtn.click();
+	await expect(page.getByTestId('add-provider-dialog')).toBeVisible({ timeout: 10_000 });
+
+	// 空态占位渲染、且无任何 provider 项
+	const empty = page.getByTestId('add-provider-empty');
+	await expect(empty).toBeVisible({ timeout: 10_000 });
+	await expect(empty).toHaveText(await tr(page, 'modelConfig.providerAuth.add.noProviders'));
+	await expect(page.locator('[data-testid^="add-provider-item-"]')).toHaveCount(0);
+});
+
+// ================================================================
+// C5b：模型配置子页——三核心 RPC（含 catalog）全失败 → "加载失败"重试入口
+// ================================================================
+test('模型配置 C5b：catalog 等核心 RPC 失败 → 渲染加载失败重试入口 @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// 三核心 RPC（providerAuth.list / model.list / providerAuth.catalog）全 reject → fullyFailed
+	// → 子页顶部出 load-failed 重试条（catalog 加载失败的真实外显面；弹窗本身无独立 catalog-error 态）。
+	await setupModelConfigMock(page, { profiles: [], primary: null, catalog: MOCK_CATALOG });
+	await installRpcFailMock(page, [
+		'coclaw.providerAuth.list',
+		'coclaw.model.list',
+		'coclaw.providerAuth.catalog',
+	]);
+	await login(page);
+	await ensureMockReady(page);
+	await ensureFailReady(page);
+
+	await enterModelConfigPage(page);
+	await ensureFailReady(page);
+
+	// 三核心 RPC 全失败 → load-failed 重试条出现（含文案 + 重试按钮）
+	const failBar = page.getByTestId('load-failed');
+	await expect(failBar).toBeVisible({ timeout: 30_000 });
+	await expect(failBar).toContainText(await tr(page, 'modelConfig.providerAuth.loadFailed'));
+	await expect(failBar.getByRole('button')).toBeVisible();
+});
+
+// ================================================================
+// C6：加 provider 弹窗——搜索框过滤收窄列表
+// ================================================================
+test('模型配置 C6：加 provider 弹窗——搜索过滤收窄列表 @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// groq + anthropic 均未配 → 都在可加列表
+	await setupModelConfigMock(page, {
+		profiles: [],
+		primary: null,
+		catalog: MOCK_CATALOG,
+		catalogProviders: [
+			{ provider: 'groq', authMethods: ['api-key'] },
+			{ provider: 'anthropic', authMethods: ['api-key'] },
+		],
+	});
+	await login(page);
+	await ensureMockReady(page);
+
+	await enterModelConfigPage(page);
+
+	const addBtn = page.getByTestId('btn-add-provider');
+	await expect(addBtn).toBeEnabled({ timeout: 30_000 });
+	await addBtn.click();
+	await expect(page.getByTestId('add-provider-dialog')).toBeVisible({ timeout: 10_000 });
+
+	// 过滤前：两个 provider 都在
+	await expect(page.getByTestId('add-provider-item-groq')).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId('add-provider-item-anthropic')).toBeVisible();
+
+	// 搜 "anthropic"：只剩 anthropic，groq 被收窄掉
+	await page.getByTestId('add-provider-search').fill('anthropic');
+	await expect(page.getByTestId('add-provider-item-anthropic')).toBeVisible();
+	await expect(page.getByTestId('add-provider-item-groq')).toHaveCount(0);
+
+	// 搜不匹配关键词：列表清空 → 空态
+	await page.getByTestId('add-provider-search').fill('zzz-no-match');
+	await expect(page.getByTestId('add-provider-empty')).toBeVisible({ timeout: 10_000 });
+	await expect(page.locator('[data-testid^="add-provider-item-"]')).toHaveCount(0);
+});
+
+// ================================================================
+// C7：加 provider 弹窗——oauth-login（浏览器登录）入口在方式选择器中呈现并可返回
+// ================================================================
+test('模型配置 C7：加 provider 弹窗——oauth-login 入口呈现于方式选择器、可返回 @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize(DESKTOP);
+	// gemini 同时支持 api-key + oauth-login（无 device-code）→ 方式选择器列两项。
+	// oauth-login 是浏览器回环登录入口（区别于 S8 的设备码流），当前为"暂不支持"：点击不进子屏、停留选择器。
+	await setupModelConfigMock(page, {
+		profiles: [],
+		primary: null,
+		catalog: MOCK_CATALOG,
+		catalogProviders: [
+			{ provider: 'gemini', authMethods: ['api-key', 'oauth-login'] },
+		],
+	});
+	await login(page);
+	await ensureMockReady(page);
+
+	await enterModelConfigPage(page);
+
+	const addBtn = page.getByTestId('btn-add-provider');
+	await expect(addBtn).toBeEnabled({ timeout: 30_000 });
+	await addBtn.click();
+	await expect(page.getByTestId('add-provider-dialog')).toBeVisible({ timeout: 10_000 });
+
+	// 选 gemini（多方式）→ 进方式选择器
+	await page.getByTestId('add-provider-item-gemini').click();
+	await expect(page.getByTestId('add-method-chooser')).toBeVisible({ timeout: 10_000 });
+	// 两个入口都在：api-key + oauth-login（浏览器登录，区别于设备码）
+	await expect(page.getByTestId('add-method-api-key')).toBeVisible();
+	await expect(page.getByTestId('add-method-oauth-login')).toBeVisible();
+
+	// 点 oauth-login：当前"暂不支持"，不进配置子屏 → 仍停在方式选择器（不渲染 oauth-login-step / key 表单）
+	await page.getByTestId('add-method-oauth-login').click();
+	await expect(page.getByTestId('add-method-chooser')).toBeVisible();
+	await expect(page.getByTestId('oauth-login-step')).toHaveCount(0);
+	await expect(page.getByTestId('add-provider-key-input')).toHaveCount(0);
+
+	// 返回：方式选择器的"返回"回到 provider 选择列表
+	await page.getByTestId('add-method-back').click();
+	await expect(page.getByTestId('add-provider-list')).toBeVisible({ timeout: 10_000 });
 });
