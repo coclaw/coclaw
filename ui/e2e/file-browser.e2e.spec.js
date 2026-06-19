@@ -78,6 +78,27 @@ async function rpcMkdir(page, clawId, agentId, dir) {
 	}, { clawId, agentId, dir });
 }
 
+/**
+ * 轮询 listFiles RPC，直到目录中出现全部目标文件名（即已落盘）。
+ * 上传只断言乐观列表可见即返回，但此时 DC 传输可能仍在途；afterEach 的递归删除会与之竞态：
+ * 删除移走目录后，仍在途的上传在写入前会 `mkdir -p` 重建父目录并把文件写回（plugin
+ * receiveUpload），残留 __e2e_* 目录。等两份文件都落盘（plugin 端 tmp→rename 完成、readdir
+ * 可见即写入已提交）再结束用例，使 afterEach 的删除成为唯一的最终写入者。
+ */
+async function waitFilesCommitted(page, clawId, agentId, dir, names, timeout = 20_000) {
+	await waitConnReady(page, clawId);
+	await expect(async () => {
+		const got = await page.evaluate(async ({ clawId, agentId, dir }) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
+			const { listFiles } = await import('/src/services/file-transfer.js');
+			const conn = useClawConnections().get(clawId);
+			const res = await listFiles(conn, agentId, dir);
+			return res.files.map((f) => f.name);
+		}, { clawId, agentId, dir });
+		for (const n of names) expect(got).toContain(n);
+	}).toPass({ timeout });
+}
+
 /** RPC 清理路径 */
 async function rpcCleanup(page, clawId, agentId, path) {
 	try {
@@ -289,6 +310,10 @@ test.describe('文件浏览器 @file', () => {
 		for (const f of files) {
 			await expect(page.locator('main').getByText(f.name)).toBeVisible({ timeout: 20_000 });
 		}
+		// 等两份文件真正落盘后再结束用例：上方断言仅证乐观列表可见，此刻上传可能仍在途。
+		// 若用例此时结束，afterEach 的递归删除会与在途上传竞态——上传写入前会 mkdir -p 重建
+		// 被删目录并写回 file2，残留 __e2e_multi_<ts>/file2_*.txt。落盘后 afterEach 才是唯一最终写入者。
+		await waitFilesCommitted(page, claw.clawId, claw.agentId, dirName, files.map((f) => f.name));
 		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
