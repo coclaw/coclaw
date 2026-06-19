@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { login, TEST_LOGIN_NAME, TEST_PASSWORD } from './helpers.js';
 
 /**
  * 认证 API 故障 E2E 测试
@@ -83,4 +84,61 @@ test.describe('认证 API 故障 @auth', () => {
 
 		await expect(page).toHaveURL(/\/login/);
 	});
+});
+
+// ================================================================
+// C9: session 中途过期 → 401 弹回 /login（带回跳）→ 重新登录回到原页
+//
+// Round-1 已覆盖「一开始就未登录」的守卫回跳；这里覆盖「登录后会话中途失效」：
+// 正常登录 → 停在受保护页 → 一次受保护 REST 调用返回 401（模拟会话过期）→
+// http.js 拦截器派发 auth:session-expired → AuthedLayout 完整登出 + 跳 /login?redirect=<原页> →
+// 重新登录回到原页。全程用 route-mock 的 401（含 logout 端点），绝不在 server 上真登出，
+// 不打扰其他用例的共享账号。
+// ================================================================
+
+test('会话中途过期：受保护请求 401 → 弹回 /login 带回跳 → 重登回到原页 @auth', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+
+	// 1) 正常登录（真实），落到受保护页 /user —— 即「用户当前所在页」
+	await login(page);
+	await page.goto('/user');
+	await expect(page).toHaveURL(/\/user(\?|$)/, { timeout: 10_000 });
+	await expect(page.getByTestId('session-user')).toBeVisible({ timeout: 10_000 });
+
+	// 2) 装一道受保护 REST 401 闸：expired 期间把所有 /api/v1/*（除登录/注册入口）打成 401。
+	//    覆盖三处：触发端点、登出端点（→ 不在 server 真登出）、/api/v1/user（→ /login 不自动回跳、显登录表单）。
+	let expired = false;
+	await page.route('**/api/v1/**', async (route) => {
+		const path = new URL(route.request().url()).pathname;
+		const isAuthEntry = path === '/api/v1/auth/local/login' || path === '/api/v1/auth/local/register';
+		if (expired && !isAuthEntry) {
+			await route.fulfill({
+				status: 401,
+				contentType: 'application/json',
+				body: JSON.stringify({ message: 'Session expired (e2e)' }),
+			});
+			return;
+		}
+		await route.continue();
+	});
+
+	// 3) 触发真实的受保护 REST 调用（app 真在用的 GET /api/v1/web-agents）→ 401 → 走真实 401 处理链
+	expired = true;
+	await page.evaluate(() =>
+		import('/src/services/web-agents.api.js').then((m) => m.listWebAgents().catch(() => {})));
+
+	// 4) 弹回 /login 且 redirect 精确保留原页 /user
+	await expect(page).toHaveURL(/\/login\?/, { timeout: 15_000 });
+	expect(new URL(page.url()).searchParams.get('redirect')).toBe('/user');
+	await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 10_000 });
+
+	// 5) 解除 401 闸，重新登录 → safeRedirect 回到原页 /user
+	expired = false;
+	await page.getByTestId('login-name').fill(TEST_LOGIN_NAME);
+	await page.getByTestId('login-password').fill(TEST_PASSWORD);
+	await page.getByTestId('btn-login').click();
+
+	await expect(page).toHaveURL(/\/user(\?|$)/, { timeout: 15_000 });
+	await expect(page.getByTestId('session-user')).toBeVisible({ timeout: 10_000 });
 });
