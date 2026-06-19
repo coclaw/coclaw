@@ -16,34 +16,35 @@ import { login, navigateToChat, waitChatReady } from './helpers.js';
 // ================================================================
 
 test.describe('Claw 列表 API 故障 @resilience', () => {
-	test('GET /api/v1/claws 返回 500 → 页面不崩溃，降级为空列表', async ({ page }) => {
+	test('claw 数据源(SSE status-stream)故障 → 页面不崩溃，降级为空列表', async ({ page }) => {
 		test.setTimeout(30_000);
 		await page.setViewportSize({ width: 1280, height: 720 });
 
-		// 先正常登录（确保 session 有效）
-		await login(page);
-
-		// 拦截 claw 列表 API
-		await page.route('**/api/v1/claws', (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 500,
-					contentType: 'application/json',
-					body: JSON.stringify({ message: 'Internal Server Error' }),
-				});
-			}
-			route.continue();
+		// 真正喂养 claw 列表的是 SSE /api/v1/claws/status-stream（→ applySnapshot），
+		// 而非 REST GET /api/v1/claws（listClaws 在生产代码无任何调用方，是死端点）。
+		// 因此必须拦截 status-stream 才能真实触发"数据源故障 → 空列表"降级；拦死 REST 只会假绿。
+		// 须在 login 前安装：SSE 在 AuthedLayout 监听到 user.id 即 start，晚装会漏掉首次连接、claw 照常出网。
+		let statusStreamHit = false;
+		await page.route('**/api/v1/claws/status-stream', (route) => {
+			statusStreamHit = true;
+			return route.abort();
 		});
 
-		// 导航到 topics 页（触发 clawsStore.loadClaws 重新加载）
+		await login(page);
 		await page.goto('/topics');
 
-		// 页面应正常渲染，不白屏
-		await expect(page.locator('main')).toBeVisible({ timeout: 10_000 });
+		// MainList 渲染成功、未崩溃：底部"添加 Claw"入口在 main 实例下恒渲染，是 locale 无关的稳定锚点。
+		await expect(page.getByTestId('bottom-action-add-claw')).toBeVisible({ timeout: 10_000 });
 
-		// 不应出现未处理的 JS 错误导致的空白页面
-		const bodyText = await page.locator('body').textContent();
-		expect(bodyText?.length).toBeGreaterThan(0);
+		// 降级为空列表：claw 数据源被拦截 → byId 为空 → 不渲染任何 agent 会话入口（a[href*="/chat/"]）。
+		// 若降级处理坏掉、claw 漏进列表，这里会 > 0 而失败。
+		await expect(async () => {
+			const agentLinks = await page.locator('main a[href*="/chat/"]').count();
+			expect(agentLinks, 'degraded claw list should render zero agent entries').toBe(0);
+		}).toPass({ timeout: 5000 });
+
+		// 证明拦截真实命中——否则上面的空列表可能只是 SSE 恰好没数据的假绿。
+		expect(statusStreamHit, 'status-stream route should have been intercepted').toBe(true);
 	});
 });
 

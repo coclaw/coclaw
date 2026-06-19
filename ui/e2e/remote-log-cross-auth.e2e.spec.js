@@ -90,8 +90,9 @@ test.describe('@auth remote-log cross login/logout', () => {
 			for (let i = 0; i < 5; i++) mod.remoteLog(`e2e.anon.${i}`);
 			mod.useRemoteLog().flush();
 		});
-		// 给 flush 触发的 POST 留出请求事件触发 + 响应抵达余量（本地链路通常 < 50ms）
-		await page.waitForTimeout(1500);
+		// 轮询等 flush 触发的 POST 请求事件落账：固定 1500ms 睡眠在高负载下可能不够，
+		// flush POST 未到就断言 → 偶发假失败。poll 直接等真实条件（batches 增长）。
+		await expect.poll(() => batches.length, { timeout: 8000 }).toBeGreaterThan(beforeAnon);
 		const anonEnd = batches.length;
 		expect(anonEnd, 'anon phase: at least one batch should be POSTed').toBeGreaterThan(beforeAnon);
 		for (let i = beforeAnon; i < anonEnd; i++) batches[i].phase = 'anon';
@@ -111,7 +112,7 @@ test.describe('@auth remote-log cross login/logout', () => {
 			for (let i = 0; i < 5; i++) mod.remoteLog(`e2e.user.${i}`);
 			mod.useRemoteLog().flush();
 		});
-		await page.waitForTimeout(1500);
+		await expect.poll(() => batches.length, { timeout: 8000 }).toBeGreaterThan(anonEnd);
 		const userEnd = batches.length;
 		expect(userEnd, 'user phase: at least one new batch should be POSTed').toBeGreaterThan(anonEnd);
 		for (let i = anonEnd; i < userEnd; i++) batches[i].phase = 'user';
@@ -129,7 +130,7 @@ test.describe('@auth remote-log cross login/logout', () => {
 			for (let i = 0; i < 5; i++) mod.remoteLog(`e2e.anon2.${i}`);
 			mod.useRemoteLog().flush();
 		});
-		await page.waitForTimeout(1500);
+		await expect.poll(() => batches.length, { timeout: 8000 }).toBeGreaterThan(userEnd);
 		const anon2End = batches.length;
 		expect(anon2End, 'anon2 phase: at least one new batch should be POSTed after logout').toBeGreaterThan(userEnd);
 		for (let i = userEnd; i < anon2End; i++) batches[i].phase = 'anon2';
@@ -138,10 +139,14 @@ test.describe('@auth remote-log cross login/logout', () => {
 
 		// ----- 断言 -----
 
-		// 0) 所有 batch 响应必须 200（否则 endpoint 可能已坏掉，测试不应假阳性）
-		for (const b of batches) {
-			expect(b.status, `batch seq=${b.seq} should have responded 200, got ${b.status}`).toBe(200);
-		}
+		// 0) 所有 batch 响应必须 200（否则 endpoint 可能已坏掉，测试不应假阳性）。
+		//    改用 poll-on-request 后，最后一阶段(anon2)的响应可能仍在飞——用 toPass 等
+		//    response handler 回填 status，避免与响应事件竞争而误报 status=0。
+		await expect(async () => {
+			for (const b of batches) {
+				expect(b.status, `batch seq=${b.seq} should have responded 200, got ${b.status}`).toBe(200);
+			}
+		}).toPass({ timeout: 5000 });
 
 		// 1) uiId 全程一致（设计 §3.1：跨登录态保持不变；唯一重置时机是 UI 实例重建）
 		const uiIds = new Set(batches.map((b) => b.uiId).filter(Boolean));

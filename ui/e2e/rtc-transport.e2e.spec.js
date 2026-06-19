@@ -7,6 +7,9 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 	});
 
 	test('WS 连通后自动建立 RTC DataChannel 传输', async ({ page }) => {
+		// beforeEach 的 login + 下方 30s toPass 都计入默认 30s 单测上限，会在 toPass
+		// 跑满前先触发测试级超时。抬高单测预算让长 toPass 有完整窗口（不松判定）。
+		test.setTimeout(60_000);
 		await page.goto('/topics');
 		// 尽力等待至少一个 claw 的 DC 就绪。dcReady 是 claws store 的"DC 可用"真实信号
 		//（onRtcStateChange('connected') 写入）；UI 已无 WS 传输回退，DataChannel 依附
@@ -76,8 +79,11 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 3000 });
 		await page.getByTestId('btn-send').click();
 
-		// 验证 user 消息出现
-		await expect(page.locator(`text=${testMsg}`)).toBeVisible({ timeout: 5000 });
+		// 验证 user 消息出现。锚定 chat-msg-item 并 filter+first：真实 agent 可能 ECHO
+		// 同一 token，裸 text= 定位会命中多个节点触发 strict-mode 失败。
+		await expect(
+			page.locator('[data-testid="chat-msg-item"]').filter({ hasText: testMsg }).first(),
+		).toBeVisible({ timeout: 5000 });
 
 		// 验证 claw 回复完成（btn-stop 消失）
 		// 发送后输入框清空、canSend=false，btn-send 不渲染，须等 btn-stop 消失

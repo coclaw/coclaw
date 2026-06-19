@@ -3,10 +3,21 @@
  * 需要真实 server + OpenClaw 实例 + 已完成的插件
  */
 import { test, expect } from '@playwright/test';
-import { login, waitChatReady, typeText, evalStore } from './helpers.js';
+import { login, waitChatReady, typeText, evalStore, deleteTopicViaStore } from './helpers.js';
 
 test.describe('Topic management @chat', () => {
 	test.setTimeout(120_000);
+
+	// Test 1 经 UI 真实创建一个 topic，落在共享 main session 里。用 describe 级变量捕获
+	// 其 { clawId, topicId }，由 afterEach 保证清理（仅删本测创建的那个），避免每跑一轮泄漏一个。
+	let createdTopic = null;
+
+	test.afterEach(async ({ page }) => {
+		if (!createdTopic) return;
+		const { clawId, topicId } = createdTopic;
+		createdTopic = null;
+		await deleteTopicViaStore(page, clawId, topicId).catch(() => {});
+	});
 
 	test.beforeEach(async ({ page }) => {
 		// 捕获浏览器 console 日志
@@ -58,6 +69,12 @@ test.describe('Topic management @chat', () => {
 		// 7. 验证路由从 /topics/new 切换为 /topics/<uuid>
 		await expect(page).not.toHaveURL(/\/topics\/new/, { timeout: 20_000 });
 		await expect(page).toHaveURL(/\/topics\/[0-9a-f-]{36}/, { timeout: 5000 });
+
+		// 7b. topic 已真实创建：尽早捕获 { clawId, topicId } 供 afterEach 清理，
+		//     即使后续断言抛错也能保证这条不泄漏。
+		const topicId = page.url().match(/\/topics\/([0-9a-f-]{36})/)?.[1];
+		const clawId = await evalStore(page, 'chat', 'return store.clawId;');
+		if (topicId && clawId) createdTopic = { clawId, topicId };
 
 		// 8. 等待 sending 状态结束（agent 完成处理）
 		//    chat store 是工厂模式，真实 id 为 chat-session:/chat-topic:，须用 evalStore 的 'chat' 简写匹配
@@ -146,14 +163,13 @@ test.describe('Topic management @chat', () => {
 		await topicLink.click();
 		await page.waitForURL(/\/topics\//, { timeout: 5000 });
 
-		// 等待页面稳定
-		await page.waitForTimeout(1000);
-
-		// 检查 agent nav（第2个 nav）中的 active 状态
-		// agent link 使用 class 'bg-accented' 表示高亮
+		// 检查 agent nav（第2个 nav）中的 active 状态：topic 路由下不应高亮任何 agent。
+		// 用 toPass 轮询，等 bg-accented（active）class 在路由切换后稳定落定，
+		// 避免对一帧可能陈旧的 DOM 立即下结论。
 		const agentNav = page.locator('nav').nth(1);
-		const activeAgents = agentNav.locator('a.bg-accented');
-		const activeCount = await activeAgents.count();
-		expect(activeCount).toBe(0);
+		await expect(async () => {
+			const activeCount = await agentNav.locator('a.bg-accented').count();
+			expect(activeCount).toBe(0);
+		}).toPass({ timeout: 5000 });
 	});
 });
