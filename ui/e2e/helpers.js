@@ -193,6 +193,56 @@ export function evalStore(page, storeId, fnBody) {
 	}, [storeId, fnBody]);
 }
 
+// --- Topic 夹具（Create-Test-Delete） ---
+
+/**
+ * 经 topics store 直接创建一个测试 topic（真实 coclaw.topics.create RPC）。
+ *
+ * 供 topic 管理类用例做 Create-Test-Delete 夹具：相比走「新建 topic 路由 + 发消息」，
+ * 这条不触发 agent 真实回复，省 LLM 运行又确定性。必须先进入桌面 chat 页（侧栏 MainList
+ * 已实例化 topics store 并就绪一个连接）。
+ * @param {import('@playwright/test').Page} page
+ * @param {string} clawId
+ * @param {string} [agentId='main']
+ * @returns {Promise<string>} 新建 topic 的 topicId
+ */
+export function createTopicViaStore(page, clawId, agentId = 'main') {
+	return page.evaluate(async ({ clawId, agentId }) => {
+		const { useTopicsStore } = await import('/src/stores/topics.store.js');
+		const { getReadyConn } = await import('/src/stores/get-ready-conn.js');
+		const store = useTopicsStore();
+		// 等就绪连接：连续多测下信令偶发瞬断重连，此刻 createTopic 的 useClawConnections().get
+		// 可能短暂取不到连接（"Claw not connected"）。等连接恢复（≤15s）再建，避免该瞬态致脆断。
+		const deadline = Date.now() + 15_000;
+		while (!getReadyConn(clawId) && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 300));
+		}
+		return store.createTopic(clawId, agentId);
+	}, { clawId, agentId });
+}
+
+/**
+ * 经 topics store 删除 topic（清理夹具）。失败返回 false（吞掉异常），
+ * 调用方据返回值决定是否记 TODO，避免清理失败连累用例主体。
+ * @param {import('@playwright/test').Page} page
+ * @param {string} clawId
+ * @param {string} topicId
+ * @returns {Promise<boolean>}
+ */
+export function deleteTopicViaStore(page, clawId, topicId) {
+	return page.evaluate(async ({ clawId, topicId }) => {
+		try {
+			const { useTopicsStore } = await import('/src/stores/topics.store.js');
+			const store = useTopicsStore();
+			await store.deleteTopic(clawId, topicId);
+			return true;
+		}
+		catch {
+			return false;
+		}
+	}, { clawId, topicId });
+}
+
 // --- 信令 WebSocket 连接状态 ---
 //
 // 信令 WS 已从 ClawConnection 迁移到 per-tab 单例 SignalingConnection
