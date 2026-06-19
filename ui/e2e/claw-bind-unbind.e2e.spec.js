@@ -41,8 +41,11 @@ test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
 	// --- 记录绑定前的 claw 列表 ---
 	await page.goto('/claws');
 	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
-	// 等待 claws store 加载完成
-	await page.waitForTimeout(1000);
+	// 等待 claws store 真正加载完成（fetched=true，首个 snapshot 已落），替代固定 1s 等待
+	await expect(async () => {
+		const fetched = await evalStore(page, 'claws', 'return store.fetched === true');
+		expect(fetched).toBe(true);
+	}).toPass({ timeout: 15_000 });
 	const clawIdsBefore = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
 
 	// shell 命令区域的 pre 元素（BIND 与 REBIND 共用，声明在 try 外）
@@ -86,9 +89,16 @@ test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
 		// 等待页面加载完成
 		await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 
-		// 验证新 claw 出现在列表中
-		await page.waitForTimeout(1000);
-		const clawIdsAfter = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
+		// 验证新 claw 出现在列表中：等 store 已加载（fetched）且新 claw 已进列表，替代固定 1s 等待。
+		// （fetched 此刻通常已 true，故同时校验"新 claw 已出现"才是有效的等待条件。）
+		let clawIdsAfter;
+		await expect(async () => {
+			const snap = await evalStore(page, 'claws', 'return { fetched: store.fetched === true, ids: store.items.map(b => String(b.id)) }');
+			expect(snap.fetched).toBe(true);
+			const fresh = snap.ids.filter((id) => !clawIdsBefore.includes(id));
+			expect(fresh.length).toBeGreaterThanOrEqual(1);
+			clawIdsAfter = snap.ids;
+		}).toPass({ timeout: 15_000 });
 		const newClawIds = clawIdsAfter.filter((id) => !clawIdsBefore.includes(id));
 		expect(newClawIds.length).toBeGreaterThanOrEqual(1);
 		newClawId = newClawIds[0];
@@ -130,51 +140,66 @@ test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
 		await expect(clawCard).not.toBeVisible({ timeout: 5_000 });
 	}
 	finally {
-		// 中途 flake（未走到 UNBIND）时，本测试新建的 claw 可能残留 → 服务端补删（幂等，已删返 404 也吞）。
-		if (newClawId) {
-			await deleteClaw(cookies, newClawId);
+		// ================================================================
+		// REBIND（恢复环境）—— 必须在任何退出路径执行
+		// ================================================================
+		// bind 是换绑语义：原在线 claw 在 BIND（上文 ~L72）时已被解绑，网关现绑到本测试的临时 claw。
+		// 若 try 主体在 UNBIND 前/中抛错（如解绑 modal 断言失败），且不在这里 REBIND，
+		// 网关将无任何在线 claw → 下游所有 @chat/@rtc/@file 用例整片失败。
+		// 顺序：先把全新 claw 绑回（恢复在线），再删本测试的临时 claw；故临时 claw 的 deleteClaw
+		// 放内层 finally——即便下面 REBIND 链抛错，临时 claw 仍会被补删。
+		try {
+			await page.goto('/claws/add');
+			await expect(preTags.last()).toBeVisible({ timeout: 15_000 });
+
+			const rebindShellText = await preTags.last().textContent();
+			const rebindMatch = rebindShellText.match(/bind\s+(\d+)/);
+			expect(rebindMatch).toBeTruthy();
+			const rebindCode = rebindMatch[1];
+			console.log('[e2e] rebinding with code:', rebindCode);
+
+			try {
+				execSync(
+					`openclaw coclaw bind ${rebindCode} --server http://127.0.0.1:3000`,
+					{ timeout: 30_000, encoding: 'utf-8', stdio: 'pipe' },
+				);
+			}
+			catch (err) {
+				console.warn('[e2e] rebind failed (non-critical):', err.stderr || err.message);
+			}
+
+			// 等待重新绑定成功（cold rebind 偏慢，预算 90s）
+			await expect(page).toHaveURL(/\/claws(?:\/)?$/, { timeout: 90_000 });
+			await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
+
+			// 记录 keeper：rebind 后存活的非基线 claw 即本机新的本地绑定（gateway 现绑到它），
+			// teardown 须保留，不能当孤儿误删。基线未抓取时 readBaseline().ids 为空，会把当前全部记为
+			// keeper（无害：此情形 teardown 本就跳过清理）。
+			const survivors = await listClawIds(cookies);
+			const baseIds = readBaseline().ids;
+			for (const id of survivors) {
+				if (!baseIds.has(id)) {
+					addKeeper(id);
+				}
+			}
+
+			// 健壮性：轮询直到 claws store 重新出现 online + dcReady 的 claw，
+			// 保证下游用例拿到就绪 claw（cold DC 上来偏慢，预算 90s）。
+			await expect(async () => {
+				const ready = await evalStore(page, 'claws', 'return store.items.some((c) => c.online && c.dcReady)');
+				expect(ready).toBe(true);
+			}).toPass({ timeout: 90_000 });
+
+			console.log('[e2e] claw bind/unbind flow completed, environment restored');
+		}
+		finally {
+			// 中途 flake（未走到 UNBIND）时，本测试新建的临时 claw 可能残留 → 服务端补删
+			// （幂等，已删返 404 也吞）。放内层 finally：即便上面 REBIND 链抛错也照常执行。
+			if (newClawId) {
+				await deleteClaw(cookies, newClawId);
+			}
 		}
 	}
-
-	// ================================================================
-	// REBIND（恢复环境，避免后续测试因无 claw 而失败）
-	// ================================================================
-
-	await page.goto('/claws/add');
-	await expect(preTags.last()).toBeVisible({ timeout: 15_000 });
-
-	const rebindShellText = await preTags.last().textContent();
-	const rebindMatch = rebindShellText.match(/bind\s+(\d+)/);
-	expect(rebindMatch).toBeTruthy();
-	const rebindCode = rebindMatch[1];
-	console.log('[e2e] rebinding with code:', rebindCode);
-
-	try {
-		execSync(
-			`openclaw coclaw bind ${rebindCode} --server http://127.0.0.1:3000`,
-			{ timeout: 30_000, encoding: 'utf-8', stdio: 'pipe' },
-		);
-	}
-	catch (err) {
-		console.warn('[e2e] rebind failed (non-critical):', err.stderr || err.message);
-	}
-
-	// 等待重新绑定成功
-	await expect(page).toHaveURL(/\/claws(?:\/)?$/, { timeout: 60_000 });
-	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
-
-	// 记录 keeper：rebind 后存活的非基线 claw 即本机新的本地绑定（gateway 现绑到它），
-	// teardown 须保留，不能当孤儿误删。基线未抓取时 readBaseline().ids 为空，会把当前全部记为
-	// keeper（无害：此情形 teardown 本就跳过清理）。
-	const survivors = await listClawIds(cookies);
-	const baseIds = readBaseline().ids;
-	for (const id of survivors) {
-		if (!baseIds.has(id)) {
-			addKeeper(id);
-		}
-	}
-
-	console.log('[e2e] claw bind/unbind flow completed, environment restored');
 });
 
 /**

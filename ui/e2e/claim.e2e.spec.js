@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { login, TEST_LOGIN_NAME, TEST_PASSWORD } from './helpers.js';
-import { loginAndGetCookies, sweepOrphans } from './claw-cleanup.js';
+import { loginAndGetCookies, sweepOrphans, readBaseline } from './claw-cleanup.js';
 
 const SERVER = 'http://127.0.0.1:3000';
 
@@ -28,15 +28,24 @@ async function createClaimCode() {
 }
 
 test.describe('Claim Page @bind', () => {
+	// T5: claim 用例含真实网关绑定的 server 往返，默认 30s 偏紧。
+	test.beforeEach(() => {
+		test.setTimeout(45_000);
+	});
+
 	// 造 claw 的用例（claim 成功 / 登录回跳）本不该留下 claw，结束后删除本轮新建的孤儿。
-	// 容错：afterEach 内异常只 warn，不连累用例结果。
+	// H9: 不再吞掉清理异常——吞掉会让"本测试新建的真实绑定泄漏"悄悄变绿（cascade 下游）。
+	// 先确认基线已抓取：否则 sweepOrphans 会静默跳过、泄漏的绑定无人发觉 → 这里 fail loudly。
+	// 仍然只删"当前 - 基线 - keeper"的差集（sweepOrphans 内部保证），绝不碰测试未创建的 claw。
 	test.afterEach(async () => {
-		try {
-			const cookies = await loginAndGetCookies();
-			await sweepOrphans(cookies);
+		const baseline = readBaseline();
+		if (!baseline.captured) {
+			throw new Error('[e2e-cleanup] claim afterEach: baseline not captured — cannot safely sweep claim-created claws; failing loudly to surface potential bind leak');
 		}
-		catch (err) {
-			console.warn('[e2e-cleanup] claim afterEach sweep failed:', err?.message);
+		const cookies = await loginAndGetCookies();
+		const deleted = await sweepOrphans(cookies);
+		if (deleted.length) {
+			console.log('[e2e-cleanup] claim afterEach swept orphans:', deleted.join(', '));
 		}
 	});
 

@@ -43,6 +43,12 @@ async function tr(page, key) {
 const BINDING_CODES_RE = /\/api\/v1\/claws\/binding-codes(\?.*)?$/;
 
 test.describe('添加 Claw 引导与重命名 @bind', () => {
+	// T8: Tests 1-4 含 login + 拉码 + tr()/route 等待，默认 30s 在负载下偏紧。
+	// 这里统一抬到 45s；重命名用例在自身体内 setTimeout(120_000) 仍会覆盖此值。
+	test.beforeEach(() => {
+		test.setTimeout(45_000);
+	});
+
 	test('AddClawPage 展示对话与终端两种接入引导', async ({ page }) => {
 		await login(page);
 		await page.goto('/claws/add');
@@ -192,7 +198,10 @@ test.describe('添加 Claw 引导与重命名 @bind', () => {
 		const confirmLabel = await tr(page, 'common.confirm');
 		const newName = `e2e-rename-${Date.now()}`;
 
-		// 经三点菜单 → 重命名项 → 弹窗输入 → 确认；成功后弹窗关闭
+		// 经三点菜单 → 重命名项 → 弹窗输入 → 确认；成功后弹窗关闭。
+		// 关键：确认点击 = coclaw.info.patch 可能已落库，点击后立即置 mutated，
+		// 早于下面易碎的 toBeHidden 等待——否则该等待抛错会跳过 revert → 真实 claw 永久改名。
+		let mutated = false;
 		async function doRename(name) {
 			await page.getByTestId(`claw-menu-${target.id}`).click();
 			const renameItem = page.getByTestId(`claw-menu-rename-${target.id}`);
@@ -202,18 +211,20 @@ test.describe('添加 Claw 引导与重命名 @bind', () => {
 			await expect(input).toBeVisible({ timeout: 5000 });
 			await input.fill(name);
 			await page.locator('[role="dialog"]').getByRole('button', { name: confirmLabel, exact: true }).click();
+			mutated = true;
 			await expect(page.locator('[role="dialog"]')).toBeHidden({ timeout: 10_000 });
 		}
 
-		let renamed = false;
 		try {
 			await doRename(newName);
-			renamed = true;
 			await expect(nameHeading).toHaveText(newName, { timeout: 10_000 });
 		}
 		finally {
-			// Modify-Revert：无论中途断言成败，只要改过名就必须改回原名
-			if (renamed) {
+			// Modify-Revert：只要 confirm 点过（patch 可能已生效）就必须改回原名，
+			// 不以"rename 全程成功"为前提。若上次弹窗因 toBeHidden 抛错而残留，先 Esc 关掉
+			// 保证菜单可点，再重新打开重命名弹窗 revert。
+			if (mutated) {
+				await page.keyboard.press('Escape').catch(() => {});
 				const revertName = target.rawName || target.displayed;
 				await doRename(revertName);
 				await expect(nameHeading).toHaveText(target.displayed, { timeout: 10_000 });
