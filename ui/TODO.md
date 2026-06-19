@@ -897,3 +897,12 @@ X4 触及面比 X1 广，需要重新评估：
 
 - `ui/e2e/topic-integration.spec.js` 不符合项目自声明的 `*.e2e.spec.js` 命名约定，靠 playwright `testDir: './e2e'` 默认 match 才被执行；e2e-test skill 已在命名规则处注明此例外。
 - 待决策：改名为 `topic-integration.e2e.spec.js`，或在约定处正式豁免。
+
+## chat-flow E2E 用唯一文案断言消息可能被 agent 回显击穿（脆断风险）
+
+**发现日期**：2026-06-19
+**来源**：补 @chat 历史/草稿/topic 管理 E2E 时实测发现；预存问题，与本次新增用例无关
+
+- `ui/e2e/chat-flow.e2e.spec.js` Test 1 用 `msgItems.filter({ hasText: testMsg }).toBeVisible()` 断言用户消息出现，未加 `.first()`。真实在线 agent 有时会在回复正文里回显含唯一时间戳的原文，此时 `chat-msg-item` 同时命中"用户气泡 + agent 回复"两处 → Playwright strict mode violation 脆断。
+- 复现已在新增的 topic 续聊用例上观测到（已用 `.first()` 规避）。chat-flow 旧用例同模式但取决于 agent 回复内容，故为偶发。
+- 修法：给该断言加 `.first()`（取首个=用户气泡），与新增用例对齐。严重度低（仅测试稳健性，非应用 bug）。
