@@ -72,10 +72,13 @@ test('Session 切换：不同 session 显示各自的消息 @chat', async ({ pag
 		test.skip(true, 'No chat sessions available (claw offline?)');
 	}
 	const links = page.locator('main a[href*="/chat/"]');
-	// 两个 agent（main + tester）→ 两个 chat 链接，由 globalSetup 的 ensureNamedAgents 夹具保证
-	await expect.poll(async () => links.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+	// 两个 agent（main + tester）→ 两个 chat 链接，由 globalSetup 的 ensureNamedAgents 夹具保证。
+	// 预算放宽到 45s：满负载（整套 189 用例、1 worker、背靠背）下 topics 第 2 个 agent 链接
+	// 渲染慢于默认窗口，10s 偶被突破致 flaky；只抬时间预算，不放松数量判定本身。
+	await expect.poll(async () => links.count(), { timeout: 45_000 }).toBeGreaterThanOrEqual(2);
 
-	// 进入第 1 个 session
+	// 进入第 1 个 session（取 href 前显式等链接可见，满负载下吸收渲染抖动）
+	await expect(links.nth(0)).toBeVisible({ timeout: 45_000 });
 	const href1 = await links.nth(0).getAttribute('href');
 	await links.nth(0).click();
 	await page.waitForURL(/\/chat\//, { timeout: 5000 });
@@ -84,9 +87,11 @@ test('Session 切换：不同 session 显示各自的消息 @chat', async ({ pag
 
 	// 返回 topics 页
 	await page.goto('/topics');
-	await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 10_000 });
+	await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 45_000 });
 
-	// 进入第 2 个 session
+	// 进入第 2 个 session（取 href 前显式等第 2 个链接可见——满负载下重渲染后第 2 个
+	// agent 链接慢于默认 30s 隐式窗口，是本用例 flaky 的根因；放宽到 45s 吸收抖动）
+	await expect(links.nth(1)).toBeVisible({ timeout: 45_000 });
 	const href2 = await links.nth(1).getAttribute('href');
 	// 两个链接指向不同 agent 的 session
 	expect(href1).not.toEqual(href2);
@@ -100,7 +105,8 @@ test('Session 切换：不同 session 显示各自的消息 @chat', async ({ pag
 
 	// 再切回第 1 个 session
 	await page.goto('/topics');
-	await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 10_000 });
+	await page.locator('main a[href*="/chat/"]').first().waitFor({ state: 'visible', timeout: 45_000 });
+	await expect(links.nth(0)).toBeVisible({ timeout: 45_000 });
 	await links.nth(0).click();
 	await page.waitForURL(/\/chat\//, { timeout: 5000 });
 	await waitChatReady(page);
