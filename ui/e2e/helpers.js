@@ -89,8 +89,10 @@ export async function waitChatReady(page) {
 export async function waitChatInputStable(page) {
 	const textarea = page.getByTestId('chat-textarea');
 	await expect(textarea).toBeVisible({ timeout: 15_000 });
-	// 解锁 = isLoadingChat 为 false = 首屏消息已加载（也意味着 DC 当时已就绪）
-	await expect(textarea).toBeEnabled({ timeout: 30_000 });
+	// 解锁 = isLoadingChat 为 false = 首屏消息已加载（也意味着 DC 当时已就绪）。
+	// 预算放宽到 45s：冷网关首屏 + history-list RPC 抖动下 30s 偶被突破致 flaky，
+	// 这里只抬高时间预算吸收冷启动抖动，不放松稳定判定本身（仍需等重渲染风暴结束）。
+	await expect(textarea).toBeEnabled({ timeout: 45_000 });
 
 	const probe = () => page.evaluate(() => {
 		const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
@@ -116,7 +118,9 @@ export async function waitChatInputStable(page) {
 		await new Promise((r) => setTimeout(r, 150));
 		const second = await probe();
 		expect(second).toBe(true);
-	}).toPass({ timeout: 30_000, intervals: [100, 200, 300, 500] });
+		// 预算放宽到 45s：冷网关下 history-list RPC 抖动会拖长 __historyListPromise /
+		// rawHistorySessionIds 落定，30s 偶被突破。同上，只加时间预算、不松判定条件。
+	}).toPass({ timeout: 45_000, intervals: [100, 200, 300, 500] });
 }
 
 // --- 输入 ---

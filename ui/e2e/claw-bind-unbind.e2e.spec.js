@@ -184,29 +184,38 @@ test('Claw 绑定与解绑：完整流程 @bind', async ({ page }) => {
  *
  * 修复前的 bug：modal 保持打开，claw 卡片不消失，必须刷新浏览器才能恢复同步。
  *
- * 实现：用 page.route() mock /api/v1/claws/unbind-by-user 返回 404。
- * 后续清理：server 实际未解绑，本地清理后服务端状态仍正常，下次登录走 SSE 自愈。
+ * 全程 mock、零真实副作用——绝不触碰真实在线 claw（它是其它 @chat/@rtc 用例的依赖）：
+ *   - 屏蔽 claw 状态 SSE（/api/v1/claws/status-stream）：真实 claw 根本不进本页 store，
+ *     既不动它，也避免 applySnapshot 把注入的假 claw 反复剔除（snapshot 会 evict 不在
+ *     server 列表里的 claw）。
+ *   - 经 setClaws 测试脚手架注入一个假的"已绑 claw"（offline，绕过生命周期副作用、不建 RTC）。
+ *   - mock /api/v1/claws/unbind-by-user 仅对该假 claw 返 404。
+ * 断言本地自愈剔除 + modal 同步关闭。整条不发任何真实解绑请求、对真实绑定零影响。
  */
 test('Claw 解绑：server 返回 404 时仍本地剔除并关闭 modal @bind', async ({ page }) => {
 	test.setTimeout(60_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
-	await login(page);
 
+	// 屏蔽 claw 状态 SSE：必须在 login 前挂（AuthedLayout 登录后才开 EventSource）。
+	// abort 后 EventSource 进 onerror 重试循环（被持续 abort），永不下发 claw.snapshot。
+	await page.route('**/api/v1/claws/status-stream', (route) => route.abort());
+
+	await login(page);
 	await page.goto('/claws');
 	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
-	await page.waitForTimeout(1000);
 
-	// 需要至少一个已绑定 claw（依赖上一条测试 rebind 后的环境）
-	const clawIds = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
-	if (clawIds.length === 0) {
-		test.skip(true, 'No bound claw to test 404 self-heal; previous bind test must have left one');
-		return;
-	}
-	const targetId = clawIds[0];
-	const targetCard = page.getByTestId('claw-' + targetId);
-	await expect(targetCard).toBeVisible();
+	// 注入假的已绑 claw（offline，避免触发 RTC 连接）。fetched=true 让页面进入"已加载"态。
+	const fakeId = `e2e-fake-404-${Date.now()}`;
+	await evalStore(page, 'claws', `
+		store.fetched = true;
+		store.setClaws([{ id: ${JSON.stringify(fakeId)}, name: 'E2E Fake 404 Self-Heal', online: false }]);
+		return true;
+	`);
 
-	// mock server 返 404 CLAW_NOT_FOUND
+	const fakeCard = page.getByTestId('claw-' + fakeId);
+	await expect(fakeCard).toBeVisible({ timeout: 5_000 });
+
+	// mock server 返 404 CLAW_NOT_FOUND（仅解绑端点）
 	await page.route('**/api/v1/claws/unbind-by-user', async (route) => {
 		await route.fulfill({
 			status: 404,
@@ -215,9 +224,9 @@ test('Claw 解绑：server 返回 404 时仍本地剔除并关闭 modal @bind', 
 		});
 	});
 
-	// 打开三点菜单 → 点"移除"菜单项 → modal 出现（Remove 已收进菜单，popover 内容 teleport 到 body）
-	await targetCard.getByTestId(`claw-menu-${targetId}`).click();
-	await page.getByTestId(`claw-menu-remove-${targetId}`).click();
+	// 打开三点菜单 → 点"移除"菜单项 → modal 出现（popover/modal 内容 teleport 到 body）
+	await fakeCard.getByTestId(`claw-menu-${fakeId}`).click();
+	await page.getByTestId(`claw-menu-remove-${fakeId}`).click();
 	// 用 tr() 取当前 locale 下的真实文案，避免硬编码英文（测试账号持久化 lang=zh-CN）
 	const removeTitle = await tr(page, 'claws.removeConfirmTitle');
 	const confirmLabel = await tr(page, 'common.confirm');
@@ -230,13 +239,13 @@ test('Claw 解绑：server 返回 404 时仍本地剔除并关闭 modal @bind', 
 	// 修复点 A：modal 同步关闭（即便 server 返错）
 	await expect(removeModalTitle).not.toBeVisible({ timeout: 3_000 });
 
-	// 修复点 B：404 self-heal 路径 — 本地仍剔除该 claw
-	await expect(targetCard).not.toBeVisible({ timeout: 5_000 });
+	// 修复点 B：404 self-heal 路径 — 本地仍剔除该假 claw（SSE 已屏蔽，不会被 snapshot 加回）
+	await expect(fakeCard).not.toBeVisible({ timeout: 5_000 });
 	await expect(async () => {
 		const ids = await evalStore(page, 'claws', 'return store.items.map(b => String(b.id))');
-		expect(ids).not.toContain(targetId);
+		expect(ids).not.toContain(fakeId);
 	}).toPass({ timeout: 5_000 });
 
 	await page.unroute('**/api/v1/claws/unbind-by-user');
-	console.log('[e2e] claw 404 self-heal verified; server-side binding untouched');
+	console.log('[e2e] claw 404 self-heal verified via injected fake claw; no real binding touched');
 });

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { login, navigateToChat, waitChatReady } from './helpers.js';
+import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
 import {
 	MOCK_CATALOG,
 	GROQ_PRIMARY,
@@ -95,8 +95,8 @@ test('模型配置 S1：首次接入——橙条引导→配 key→选主模型�
 	await expect(page.getByTestId('add-provider-dialog')).toBeVisible({ timeout: 10_000 });
 	await page.getByTestId('add-provider-item-groq').click();
 	const keyInput = page.getByTestId('add-provider-key-input');
-	await keyInput.click();
-	await keyInput.pressSequentially('sk-test-0000111122223333', { delay: 10 });
+	// typeText 带读回校验+补齐，免疫高负载下逐字输入掉尾字符（key 框为空、单行、无换行，安全）
+	await typeText(keyInput, 'sk-test-0000111122223333');
 	await page.getByTestId('add-provider-submit').click();
 	await expect(page.getByTestId('add-provider-dialog')).not.toBeVisible({ timeout: 15_000 });
 	// 凭据行出现

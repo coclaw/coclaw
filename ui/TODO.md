@@ -890,23 +890,6 @@ X4 触及面比 X1 广，需要重新评估：
 - **chat 输入受控竞态（严重度 LOW）**：`chat-textarea` 是完全受控输入（modelValue ↔ draftStore），冷加载时首条消息渲染触发的重渲染风暴若恰好压在打字窗口上，落后一拍的 draft 回写会覆盖刚敲入的字符（丢尾字符）。e2e 侧已用 `waitChatInputStable` 规避。真实用户手速很难命中亚秒窗口、丢了也会重打，故严重度低；如要根治可考虑输入防抖/非受控+受控同步/输入后校验。
 - **离线发送反馈偏弱**：业务 RPC 走 RTC DataChannel（与信令 WS 独立），断网后 DC 还续命（ICE ~3min 恢复预算），消息缓冲发出后挂起等 accept，最快反馈是 ~180s pre-acceptance 看门狗的"响应超时"——好处是不丢消息、能自动续上，代价是离线时缺即时"现在发不出去"提示，用户可能干等 3 分钟。建议斟酌在离线/信令断期间给轻量"网络不稳，消息将在重连后发出"提示。
 
-## topic-integration.spec.js 命名不符 `*.e2e.spec.js` 约定
-
-**发现日期**：2026-06-10
-**来源**：skills/commands 全面梳理 review 发现；预存问题，与本次梳理任务无关
-
-- `ui/e2e/topic-integration.spec.js` 不符合项目自声明的 `*.e2e.spec.js` 命名约定，靠 playwright `testDir: './e2e'` 默认 match 才被执行；e2e-test skill 已在命名规则处注明此例外。
-- 待决策：改名为 `topic-integration.e2e.spec.js`，或在约定处正式豁免。
-
-## chat-flow E2E 用唯一文案断言消息可能被 agent 回显击穿（脆断风险）
-
-**发现日期**：2026-06-19
-**来源**：补 @chat 历史/草稿/topic 管理 E2E 时实测发现；预存问题，与本次新增用例无关
-
-- `ui/e2e/chat-flow.e2e.spec.js` Test 1 用 `msgItems.filter({ hasText: testMsg }).toBeVisible()` 断言用户消息出现，未加 `.first()`。真实在线 agent 有时会在回复正文里回显含唯一时间戳的原文，此时 `chat-msg-item` 同时命中"用户气泡 + agent 回复"两处 → Playwright strict mode violation 脆断。
-- 复现已在新增的 topic 续聊用例上观测到（已用 `.first()` 规避）。chat-flow 旧用例同模式但取决于 agent 回复内容，故为偶发。
-- 修法：给该断言加 `.first()`（取首个=用户气泡），与新增用例对齐。严重度低（仅测试稳健性，非应用 bug）。
-
 ## @rtc 短断自动重连 + 重连后数据刷新 的 E2E 覆盖缺口
 
 **发现日期**：2026-06-20

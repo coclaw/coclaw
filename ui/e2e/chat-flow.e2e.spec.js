@@ -38,8 +38,10 @@ test('基础聊天：发送消息并收到 claw 回复 @chat', async ({ page }) 
 	await page.getByTestId('btn-send').click();
 
 	// 验证：user 消息出现。乐观消息 pending 态仅显示"发送中"，accepted 后才渲染正文，
-	// 故锁定到消息项并用唯一时间戳精确匹配（避开历史/UI 提示串），放宽超时等 accepted
-	const sentMsg = msgItems.filter({ hasText: testMsg });
+	// 故锁定到消息项并用唯一时间戳精确匹配（避开历史/UI 提示串），放宽超时等 accepted。
+	// .first() 取用户气泡：真实 agent 偶尔在回复正文里回显含时间戳的原文，会同时命中
+	// 用户气泡 + agent 回复两处，不加 .first() 触发 strict-mode 违例脆断。
+	const sentMsg = msgItems.filter({ hasText: testMsg }).first();
 	await expect(sentMsg).toBeVisible({ timeout: 30_000 });
 
 	// 验证：claw 回复完成（streaming 结束后 sending 状态结束、btn-stop 消失）
