@@ -359,3 +359,88 @@ test('附件发送：上传的文件实际存在于 agent workspace @chat @file'
 
 	expect(downloaded).toBe(uniqueContent);
 });
+
+// ================================================================
+// Test 7: 聊天里拖入文件触发上传蒙层
+// ================================================================
+
+test('拖入文件显示上传蒙层 @chat @file', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	const sessionInfo = await navigateToChat(page);
+	test.skip(!sessionInfo, 'No chat session available');
+
+	await waitChatReady(page);
+	// 蒙层为纯本地状态，不依赖 RTC；仅需 chat-root + 非 sending（inputLocked=false）
+
+	// 构造带文件的 DataTransfer（items.add(File) 使 types 含 'Files'），向 chat-root 派发 dragover
+	const dataTransfer = await page.evaluateHandle(() => {
+		const dt = new DataTransfer();
+		dt.items.add(new File(['drag payload'], 'drag-e2e.txt', { type: 'text/plain' }));
+		return dt;
+	});
+	await page.dispatchEvent('[data-testid="chat-root"]', 'dragover', { dataTransfer });
+
+	// 上传蒙层出现（dropHint 文案，双语）
+	await expect(page.getByText(/松开以上传文件|Drop files to upload/)).toBeVisible({ timeout: 5000 });
+
+	// 拖离（relatedTarget=null → 关闭蒙层），保持收尾干净
+	await page.dispatchEvent('[data-testid="chat-root"]', 'dragleave', { relatedTarget: null });
+	await expect(page.getByText(/松开以上传文件|Drop files to upload/)).not.toBeVisible({ timeout: 5000 });
+});
+
+// ================================================================
+// Test 8: 点击聊天图片附件 → 打开图片预览对话框
+// ================================================================
+
+test('点击图片附件打开预览对话框 @chat @file', async ({ page }) => {
+	test.setTimeout(240_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	const sessionInfo = await navigateToChat(page);
+	test.skip(!sessionInfo, 'No chat session available');
+
+	await waitChatReady(page);
+	const rtcInfo = await waitRtcReady(page).catch(() => null);
+	test.skip(!rtcInfo, 'RTC not available');
+
+	const msgText = `e2e_imgpreview_${Date.now()}`;
+	await typeText(page.getByTestId('chat-textarea'), msgText);
+
+	// 注入 1x1 PNG 并发送
+	const pngBuffer = Buffer.from(
+		'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==',
+		'base64',
+	);
+	await page.getByTestId('file-input').setInputFiles({
+		name: `e2e-preview-${Date.now()}.png`,
+		mimeType: 'image/png',
+		buffer: pngBuffer,
+	});
+	await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 3000 });
+	await page.getByTestId('btn-send').click();
+
+	// 我的消息出现（确保已发送）
+	await expect(page.locator(`text=${msgText}`)).toBeVisible({ timeout: 10_000 });
+
+	// 用户侧附件缩略图加载完成（imgLoaded → cursor-pointer），点击最新一张。
+	// 缩略图右上角有下载按钮覆盖层，点中心会被其拦截 → 点左下角区域（避开右上按钮）触发 viewImg。
+	const thumb = page.locator('[data-testid="chat-root"] main .items-end img.cursor-pointer').last();
+	await expect(thumb).toBeVisible({ timeout: 15_000 });
+	await thumb.click({ position: { x: 4, y: 34 } });
+
+	// 图片预览对话框打开（含全图 img）
+	const dialog = page.locator('[role="dialog"]');
+	await expect(dialog).toBeVisible({ timeout: 10_000 });
+	await expect(dialog.locator('img')).toBeVisible();
+
+	// 关闭对话框
+	await page.keyboard.press('Escape');
+	await expect(dialog).not.toBeVisible({ timeout: 5000 });
+
+	// 让本次 agent run 收尾，避免悬挂
+	await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
+});
