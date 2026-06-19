@@ -71,7 +71,10 @@ test('附件发送：文本+文件通过 POST 上传，消息包含附件信息�
 	await page.getByTestId('btn-send').click();
 
 	// 用户消息应出现
-	await expect(page.locator(`text=${msgText}`)).toBeVisible({ timeout: 10_000 });
+	// 作用域限定到消息列表并取首个：agent 常回显 token，裸 text= 会同时命中用户气泡与回显 → strict-mode 报错
+	await expect(
+		page.locator('[data-testid="chat-msg-item"]').filter({ hasText: msgText }).first(),
+	).toBeVisible({ timeout: 10_000 });
 
 	// 附件卡片应出现在用户消息区（非图片文件显示为 ChatFile 卡片，带稳定 testid）
 	await expect(async () => {
@@ -83,19 +86,21 @@ test('附件发送：文本+文件通过 POST 上传，消息包含附件信息�
 	// claw 回复完成（stop 按钮消失 = sending 结束）
 	await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
 
-	// 验证：服务端消息中包含附件信息块
-	// content 可能是 string 或 block 数组（OpenClaw sessions.get 返回 block 格式）
+	// 验证：本次 run 发送的那条 user 消息里包含附件信息块。
+	// content 可能是 string 或 block 数组（OpenClaw sessions.get 返回 block 格式）。
+	// 关键：必须用唯一 msgText 把扫描锁定到“本次”消息，否则共享累积 session 里任意历史附件
+	// 消息都能命中 'coclaw-attachments' → 即便本次上传没嵌入附件块也假绿（中心断言被掏空）。
 	const hasBlock = await evalStore(page, 'chat', `
 		const msgs = store.messages || [];
 		for (const m of msgs) {
 			if (m.message?.role !== 'user') continue;
 			const c = m.message.content;
-			if (typeof c === 'string' && c.includes('coclaw-attachments')) return true;
-			if (Array.isArray(c)) {
-				for (const b of c) {
-					if (b.type === 'text' && b.text?.includes('coclaw-attachments')) return true;
-				}
-			}
+			const texts = typeof c === 'string' ? [c]
+				: Array.isArray(c) ? c.filter(b => b.type === 'text').map(b => b.text || '')
+				: [];
+			// 只认本次 run 发送的消息（含唯一 msgText）；找到即在该条上判定，不外溢到历史消息
+			if (!texts.some(t => t.includes('${msgText}'))) continue;
+			return texts.some(t => t.includes('coclaw-attachments'));
 		}
 		return false;
 	`);
@@ -179,7 +184,10 @@ test('附件发送：图片文件在消息中显示预览 @chat @file', async ({
 	await page.getByTestId('btn-send').click();
 
 	// 用户消息应出现
-	await expect(page.locator(`text=${msgText}`)).toBeVisible({ timeout: 10_000 });
+	// 作用域限定到消息列表并取首个：agent 常回显 token，裸 text= 会同时命中用户气泡与回显 → strict-mode 报错
+	await expect(
+		page.locator('[data-testid="chat-msg-item"]').filter({ hasText: msgText }).first(),
+	).toBeVisible({ timeout: 10_000 });
 
 	// 图片附件应以预览图出现在用户消息区。
 	// 注意：ChatImg 会先取回文件再压缩，渲染出的 <img> src 始终是 blob: URL
@@ -199,7 +207,8 @@ test('附件发送：图片文件在消息中显示预览 @chat @file', async ({
 // ================================================================
 
 test('附件发送：上传期间显示进度 UI @chat @file', async ({ page }) => {
-	test.setTimeout(120_000);
+	// 与其它真实发送用例对齐：180s 回复等待 + 上传 + 登录/导航需大于 120s，避免 per-test cap 先于等待触发
+	test.setTimeout(240_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
@@ -211,8 +220,9 @@ test('附件发送：上传期间显示进度 UI @chat @file', async ({ page }) 
 	const rtcInfo = await waitRtcReady(page).catch(() => null);
 	test.skip(!rtcInfo, 'RTC not available');
 
-	// 注入一个较大的文件以便观察到上传状态
-	const largeBuffer = Buffer.alloc(64 * 1024, 'E2E test data ');
+	// 注入足够大的文件，让 DC 上传跨越多个分片/流控窗口（16KB chunk + 64KB 水位 + 100ms 进度节流），
+	// 使“上传中”进度环存在的时间窗远大于 Playwright 轮询间隔 → 可稳定捕获，不靠瞬态
+	const largeBuffer = Buffer.alloc(16 * 1024 * 1024, 'E2E test data ');
 	const fileInput = page.getByTestId('file-input');
 	await fileInput.setInputFiles({
 		name: 'e2e-large-file.bin',
@@ -225,8 +235,10 @@ test('附件发送：上传期间显示进度 UI @chat @file', async ({ page }) 
 	// 发送
 	await page.getByTestId('btn-send').click();
 
-	// 等待 sending 状态（stop 按钮出现 = 正在发送/上传）
-	await expect(page.getByTestId('btn-stop')).toBeVisible({ timeout: 10_000 });
+	// 真实进度断言：附件预览覆层渲染 ProgressRing（role=progressbar，仅 fileUploadState[id].status
+	// ==='uploading' 时存在）。这是“正在上传”的确定性 UI 信号，区别于“正在发送”（btn-stop 对任何发送都为真）；
+	// 若进度条被移除/损坏，本断言变红，而不是像只看 btn-stop 那样假绿。进度环在 footer 内，定位到 footer 以避免误配。
+	await expect(page.locator('footer').getByRole('progressbar')).toBeVisible({ timeout: 30_000 });
 
 	// 上传完成后 claw 回复，stop 按钮消失
 	await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
@@ -274,7 +286,10 @@ test('附件发送：多个文件同时发送 @chat @file', async ({ page }) => 
 	await page.getByTestId('btn-send').click();
 
 	// 用户消息出现
-	await expect(page.locator(`text=${msgText}`)).toBeVisible({ timeout: 10_000 });
+	// 作用域限定到消息列表并取首个：agent 常回显 token，裸 text= 会同时命中用户气泡与回显 → strict-mode 报错
+	await expect(
+		page.locator('[data-testid="chat-msg-item"]').filter({ hasText: msgText }).first(),
+	).toBeVisible({ timeout: 10_000 });
 
 	// 两个附件卡片出现
 	await expect(async () => {
@@ -424,7 +439,10 @@ test('点击图片附件打开预览对话框 @chat @file', async ({ page }) => 
 	await page.getByTestId('btn-send').click();
 
 	// 我的消息出现（确保已发送）
-	await expect(page.locator(`text=${msgText}`)).toBeVisible({ timeout: 10_000 });
+	// 作用域限定到消息列表并取首个：agent 常回显 token，裸 text= 会同时命中用户气泡与回显 → strict-mode 报错
+	await expect(
+		page.locator('[data-testid="chat-msg-item"]').filter({ hasText: msgText }).first(),
+	).toBeVisible({ timeout: 10_000 });
 
 	// 用户侧附件缩略图加载完成（imgLoaded → cursor-pointer），点击最新一张。
 	// 缩略图右上角有下载按钮覆盖层，点中心会被其拦截 → 点左下角区域（避开右上按钮）触发 viewImg。
