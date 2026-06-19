@@ -75,6 +75,63 @@ async function ensureRpcMock(page) {
 	});
 }
 
+/**
+ * 安装"accepted 后失败"的 agent run mock：合成两阶段 agent RPC——
+ * 先调 onAccepted（status:'accepted'）让 __accepted 翻 true，再以业务级失败终态
+ * （ok=true + status:'error' + error:<msg>）resolve。链路：__onRpcDone → __endRun(runId,'failed')
+ * → runAgent resolve { accepted:true, endReason:'failed', errorMessage } → sendMessage 透出 →
+ * ChatPage.__notifyRunFailed → notify.error(chat.errRunFailed)。其余 RPC（sessions.get /
+ * chatHistory.list 等）原样透传真实链路。与 installRpcMock 同套路（document_start 急切包裹同一份
+ * Vite 缓存模块）。
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string} errMsg - 业务失败的原始错误文案（进 toast description）
+ */
+function installAgentFailMock(page, errMsg) {
+	return page.addInitScript((errMsg) => {
+		const wrap = (CC) => {
+			if (!CC || CC.__agentFailWrapped) return;
+			CC.__agentFailWrapped = true;
+			const orig = CC.prototype.request;
+			CC.prototype.request = function (method, params = {}, options = {}) {
+				if (method === 'agent') {
+					const runId = (params && params.idempotencyKey) || `e2e-run-${Date.now()}`;
+					// 阶段 1：accepted（同步调，抢在终态 resolve 的 .then 之前，确保 registeredRunId 已落）
+					if (options && typeof options.onAccepted === 'function') {
+						options.onAccepted({ runId, status: 'accepted' });
+					}
+					// 阶段 2：业务级失败终态（ok=true + status:'error'），略延迟模拟两阶段间隔
+					return new Promise((resolve) => {
+						setTimeout(() => resolve({ runId, status: 'error', error: errMsg }), 40);
+					});
+				}
+				return orig.call(this, method, params, options);
+			};
+		};
+		window.__agentFailWrap = wrap;
+		let tries = 0;
+		const tryInstall = () => {
+			import('/src/services/claw-connection.js')
+				.then((m) => {
+					if (m && m.ClawConnection) wrap(m.ClawConnection);
+					else if (tries++ < 100) setTimeout(tryInstall, 20);
+				})
+				.catch(() => { if (tries++ < 100) setTimeout(tryInstall, 20); });
+		};
+		tryInstall();
+	}, errMsg);
+}
+
+/** 兜底：导航后再确保一次 agent-fail wrap 生效（幂等） */
+async function ensureAgentFailMock(page) {
+	await page.evaluate(async () => {
+		if (typeof window.__agentFailWrap === 'function') {
+			const m = await import('/src/services/claw-connection.js');
+			if (m && m.ClawConnection) window.__agentFailWrap(m.ClawConnection);
+		}
+	});
+}
+
 // ================================================================
 // Test 1: 未知方法（unknown method）→ 升级 OpenClaw 提示
 // ================================================================
@@ -245,4 +302,104 @@ test('系统块消息：inject / HEARTBEAT_OK / NO_REPLY 渲染为系统块、�
 	// 未报错：页面主体健康，输入可用
 	await expect(page.getByTestId('chat-root')).toBeVisible();
 	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 10_000 });
+});
+
+// ================================================================
+// Test 5: run accepted 后失败（业务级 status='error'）→ 错误 toast + 发送态恢复
+// 覆盖"模型不可用静默失败"这一历史 bug 类：accepted 后失败既不能吞错、也不能卡死发送态。
+// ================================================================
+
+test('run accepted 后失败：弹错误 toast 且发送态恢复（不吞错、不卡死） @chat @resilience', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+
+	// agent RPC 两阶段：accepted → 业务级失败（status='error'）。走真实失败路径而非伪造 toast。
+	await installAgentFailMock(page, 'model unavailable: e2e simulated failure');
+
+	await login(page);
+	await ensureAgentFailMock(page);
+
+	const ctx = await navigateToMainChat(page);
+	test.skip(!ctx, 'No chat session available');
+	await waitChatReady(page);
+	// 等首屏消息加载完成（textarea 解锁），DC 已就绪，可发送
+	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 30_000 });
+
+	const msg = `run-failed e2e ${Date.now()}`;
+	await typeText(page.getByTestId('chat-textarea'), msg);
+	await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 3000 });
+	await page.getByTestId('btn-send').click();
+
+	// (1) 错误 toast 出现（复用 RTC 超时用例的断言机制：exact 避开 aria-live 朗读区）。
+	// 标题为 chat.errRunFailed（locale 无关，用运行时 i18n 值断言）。
+	await expect(page.getByText(await tr(page, 'chat.errRunFailed'), { exact: true })).toBeVisible({ timeout: 10_000 });
+
+	// (2) 发送态恢复：不卡在"发送中"——stop 按钮消失，输入框重新可用。
+	await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 10_000 });
+	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 8000 });
+});
+
+// ================================================================
+// Test 6: assistant steps（思考过程）展开/折叠渲染
+// 注入含 thinking + toolCall + toolResult 三类已实现 step kind 的 botTask，
+// 断言折叠行切换后 step 行的出现/消失。toolCall 仅渲染名称 pill（args/配对未实现，不断言）。
+// ================================================================
+
+test('assistant steps：thinking / toolCall / toolResult 展开折叠渲染 @chat', async ({ page }) => {
+	test.setTimeout(90_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+
+	const ts = Date.now();
+	// 扁平 OC 消息（sessions.get 出参形态）：user + 一段 botTask（中间 assistant 思考/工具调用 →
+	// toolResult → 最终 assistant 文本）。三条 assistant/toolResult 间无 user，归入同一 botTask。
+	const mockMessages = [
+		{ role: 'user', content: `c3-ask-${ts}`, timestamp: ts - 5000 },
+		// 中间 assistant：thinking + tool_use（stopReason=toolUse → 不进 resultText，归入 steps）
+		{ role: 'assistant', model: 'e2e-model', stopReason: 'toolUse', timestamp: ts - 4000, content: [
+			{ type: 'thinking', thinking: `THINK-${ts}` },
+			{ type: 'tool_use', id: 'tu1', name: `readFile-${ts}`, input: { path: '/tmp/x' } },
+		] },
+		// toolResult：成为 toolResult step
+		{ role: 'toolResult', toolCallId: 'tu1', timestamp: ts - 3000, content: [{ type: 'text', text: `RESULT-${ts}` }] },
+		// 最终 assistant：text → resultText（结束本 botTask）
+		{ role: 'assistant', model: 'e2e-model', stopReason: 'endTurn', timestamp: ts - 2000, content: [{ type: 'text', text: `FINAL-${ts}` }] },
+	];
+
+	await installRpcMock(page, [
+		{ method: 'sessions.get', resolve: { messages: mockMessages } },
+		// 历史列表留空，避免真实孤儿历史的 autoFill 干扰断言
+		{ method: 'coclaw.chatHistory.list', resolve: { history: [] } },
+	]);
+
+	await login(page);
+	await ensureRpcMock(page);
+
+	const ctx = await navigateToMainChat(page);
+	test.skip(!ctx, 'No chat session available');
+	await waitChatReady(page);
+
+	// 1 条 user + 1 条 botTask
+	await expect(page.getByTestId('chat-msg-item')).toHaveCount(2, { timeout: 30_000 });
+
+	// botTask 项：用最终结果 FINAL-<ts>（唯一注入数据）锁定，避开 i18n 文案脆断
+	const botItem = page.getByTestId('chat-msg-item').filter({ hasText: `FINAL-${ts}` });
+	await expect(botItem).toBeVisible();
+
+	// 折叠态（默认）：step 行未渲染（stepsExpanded=false → v-if 整块不存在）
+	await expect(page.getByText(`THINK-${ts}`)).toHaveCount(0);
+	await expect(page.getByText(`RESULT-${ts}`)).toHaveCount(0);
+
+	// 折叠行按钮（botTask header 首个 button，无 testid → 取首个 role=button）
+	const toggle = botItem.getByRole('button').first();
+	await toggle.click();
+
+	// 展开态：三类已实现 step 行各自渲染（断言注入的唯一文本，不断言 toolCall 的 args/配对）
+	await expect(botItem.getByText(`THINK-${ts}`)).toBeVisible();
+	await expect(botItem.getByText(`readFile-${ts}`)).toBeVisible(); // toolCall 名称 pill（chat.toolCallLabel）
+	await expect(botItem.getByText(`RESULT-${ts}`)).toBeVisible();
+
+	// 再次点击折叠：step 行消失
+	await toggle.click();
+	await expect(page.getByText(`THINK-${ts}`)).toHaveCount(0);
+	await expect(page.getByText(`RESULT-${ts}`)).toHaveCount(0);
 });

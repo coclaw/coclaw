@@ -110,6 +110,39 @@ test('Claw 离线：ChatPage 横幅显示 warn 级"已离线" @rtc @ui', async (
 	await expect(b).toHaveClass(/text-warning/);
 });
 
+test('连接降级后恢复：warn 横幅出现，连接就绪后横幅消失 @rtc @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	const ctx = await navigateToMainChat(page);
+	test.skip(!ctx, 'No chat session available');
+	await waitChatReady(page);
+	// 等首屏消息加载完成（textarea 解锁 = isLoadingChat=false），此时 DC 已就绪、scrollReady
+	// 已置位（横幅所在 scrollContent 不再被 visibility:hidden 遮挡）。
+	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 30_000 });
+
+	// 降级用 offline（online:false）而非 dcReady/rtcPhase 注入：真实 DC 仍开着，RTC 传输事件
+	// 会在断言间隙把注入的 dcReady=false 抹回 true（claws.store 内 DC 状态回调写 dcReady=true），
+	// 致横幅偶发消失（曾观测：toContainText 通过、toHaveClass 时元素已不在）。online 只由 SSE
+	// claw.status 事件改写，测试窗口内真实 presence 不变 → 无事件回退，offline 横幅稳定（与既有
+	// "Claw 离线"用例同路径，故同样稳）。
+	const ok = await patchClaw(page, ctx.clawId, { online: false });
+	test.skip(!ok, 'claw not present in store');
+
+	const b = connBanner(page);
+	await expect(b).toBeVisible({ timeout: 10_000 });
+	await expect(b).toContainText(await tr(page, 'chat.clawOffline'));
+	await expect(b).toHaveClass(/text-warning/);
+
+	// 恢复：连接就绪（online + dcReady）→ connStatusText 归空 → 横幅整块从 DOM 移除（v-if）。
+	// 这是 RECOVERY 边界：既有用例只验降级、从不验横幅清除。online/dcReady 都回到真实态（在线 + DC
+	// 已开），即便真实事件/快照再触发也维持就绪，横幅不会回弹。
+	const ok2 = await patchClaw(page, ctx.clawId, { online: true, dcReady: true, rtcPhase: 'idle', retryNextAt: 0 });
+	test.skip(!ok2, 'claw not present in store');
+	await expect(connBanner(page)).toHaveCount(0, { timeout: 10_000 });
+});
+
 // ----------------------------------------------------------------
 // Capacitor 头部连接指示：rtc-connecting spinner / rtc-unreachable 重连按钮
 // ----------------------------------------------------------------
