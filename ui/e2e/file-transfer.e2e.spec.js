@@ -24,6 +24,27 @@ async function ensureClawBound() {
 	console.warn('No online claw found. Run: openclaw gateway call coclaw.bind --params \'{"code":"<code>","serverUrl":"http://127.0.0.1:3000"}\' to bind.');
 }
 
+/** RPC 清理路径（force 删整目录/文件）；删已不存在的路径返回 404，已吞掉 */
+async function rpcCleanup(page, clawId, agentId, path) {
+	try {
+		await page.evaluate(async ({ clawId, agentId, path }) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
+			const { deleteFile } = await import('/src/services/file-transfer.js');
+			const conn = useClawConnections().get(clawId);
+			if (conn) await deleteFile(conn, agentId, path, { force: true });
+		}, { clawId, agentId, path });
+	} catch { /* ignore */ }
+}
+
+/**
+ * 已注册的待清理路径——afterEach 保证删除，即使用例 body 中途抛错也不泄漏 __e2e_* 到共享 workspace。
+ * 只删本用例创建的唯一路径。本文件所有用例 agentId 固定为 'main'。
+ */
+const cleanupTargets = [];
+function trackCleanup(claw, path) {
+	cleanupTargets.push({ clawId: claw.clawId, agentId: 'main', path });
+}
+
 /**
  * 文件传输 E2E 测试
  *
@@ -49,6 +70,11 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 			const items = await evalStore(page, 'claws', 'return store.items');
 			expect(items.some((b) => b.online && b.dcReady)).toBe(true);
 		}).toPass({ timeout: 30_000 }).catch(() => {});
+	});
+
+	// 兜底清理：用例无论成功或中途抛错，afterEach 都删掉本用例注册的 __e2e_* 路径
+	test.afterEach(async ({ page }) => {
+		for (const t of cleanupTargets.splice(0)) await rpcCleanup(page, t.clawId, t.agentId, t.path);
 	});
 
 	/** 获取第一个已连接的 clawId 和 RTC 状态 */
@@ -129,6 +155,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 
 		console.log('Upload result:', JSON.stringify(uploadResult));
 		expect(uploadResult).toHaveProperty('bytes');
+		trackCleanup(claw, testFileName); // 兜底：用例尾部已删，afterEach 再删一次为 404 no-op
 
 		// list 验证文件存在
 		const listResult = await page.evaluate(async ({ clawId, fileName }) => {
@@ -196,6 +223,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 		}, { clawId: claw.clawId, dir: testDir });
 
 		console.log('mkdir result:', JSON.stringify(mkdirResult));
+		trackCleanup(claw, testDir); // afterEach force-删整目录（含 testFile），保证不泄漏
 
 		// list 验证目录存在
 		const listResult = await page.evaluate(async ({ clawId, dir }) => {
@@ -247,15 +275,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 
 		expect(dupErr).not.toBeNull();
 		expect(dupErr.code).toBe('ALREADY_EXISTS');
-
-		// 清理：删除文件再删除目录
-		await page.evaluate(async ({ clawId, filePath, dir }) => {
-			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
-			const { deleteFile } = await import('/src/services/file-transfer.js');
-			const conn = useClawConnections().get(clawId);
-			await deleteFile(conn, 'main', filePath);
-			await deleteFile(conn, 'main', dir);
-		}, { clawId: claw.clawId, filePath: testFile, dir: testDir });
+		// 清理由 afterEach 保证（trackCleanup 已注册 testDir，force 删整目录）
 	});
 
 	test('postFile — POST 上传到集合目录', async ({ page }) => {
@@ -281,6 +301,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 
 		console.log('POST result:', JSON.stringify(postResult));
 		expect(postResult).toHaveProperty('bytes');
+		trackCleanup(claw, collectionDir); // afterEach force-删整集合目录（含 POST 落地文件）
 		expect(postResult).toHaveProperty('path');
 		// 返回路径应在集合目录下，且包含原始文件名的 stem
 		expect(postResult.path).toContain(collectionDir);
@@ -298,15 +319,7 @@ test.describe('文件传输（file-transfer infrastructure） @file', () => {
 		}, { clawId: claw.clawId, filePath: postResult.path });
 
 		expect(downloadResult).toBe(content);
-
-		// 清理
-		await page.evaluate(async ({ clawId, filePath, dir }) => {
-			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
-			const { deleteFile } = await import('/src/services/file-transfer.js');
-			const conn = useClawConnections().get(clawId);
-			await deleteFile(conn, 'main', filePath);
-			await deleteFile(conn, 'main', dir);
-		}, { clawId: claw.clawId, filePath: postResult.path, dir: collectionDir });
+		// 清理由 afterEach 保证（trackCleanup 已注册 collectionDir，force 删整目录）
 	});
 
 	test('upload 路径穿越被拒', async ({ page }) => {

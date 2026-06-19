@@ -90,6 +90,15 @@ async function rpcCleanup(page, clawId, agentId, path) {
 	} catch { /* ignore */ }
 }
 
+/**
+ * 已注册的待清理路径——afterEach 保证删除，即使用例 body 中途抛错也不泄漏 __e2e_* 到共享 workspace。
+ * 只删本用例创建的唯一路径；删已不存在的路径返回 404，rpcCleanup 内部已吞掉。
+ */
+const cleanupTargets = [];
+function trackCleanup(claw, path) {
+	cleanupTargets.push({ clawId: claw.clawId, agentId: claw.agentId, path });
+}
+
 /** 点击刷新按钮并等待 */
 async function clickRefresh(page) {
 	await page.getByTestId('btn-refresh').click();
@@ -102,6 +111,11 @@ async function clickRefresh(page) {
 
 test.describe('文件浏览器 @file', () => {
 	test.setTimeout(90_000);
+
+	// 兜底清理：用例无论成功或中途抛错，afterEach 都删掉本用例注册的 __e2e_* 路径
+	test.afterEach(async ({ page }) => {
+		for (const t of cleanupTargets.splice(0)) await rpcCleanup(page, t.clawId, t.agentId, t.path);
+	});
 
 	// ----------------------------------------------------------
 	// 1. 页面基础
@@ -134,6 +148,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// RPC 创建目录
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 
 		// 目录出现在列表中
@@ -179,6 +194,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// RPC 创建嵌套目录
 		await rpcMkdir(page, claw.clawId, claw.agentId, `${dir1}/${dir2}`);
+		trackCleanup(claw, dir1);
 		await clickRefresh(page);
 
 		// 进入 dir1
@@ -194,9 +210,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// 应该看到 sub 目录在列表中
 		await expect(page.locator('main').getByText(dir2, { exact: true })).toBeVisible({ timeout: 5000 });
-
-		// 清理
-		await rpcCleanup(page, claw.clawId, claw.agentId, dir1);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dir1）
 	});
 
 	// ----------------------------------------------------------
@@ -211,6 +225,7 @@ test.describe('文件浏览器 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 
 		// 进入测试目录
@@ -242,9 +257,7 @@ test.describe('文件浏览器 @file', () => {
 			return result.blob.text();
 		}, { clawId: claw.clawId, agentId: claw.agentId, dirName, fileName });
 		expect(downloadedText).toBe(content);
-
-		// 清理
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
 	test('多文件上传', async ({ page }) => {
@@ -257,6 +270,7 @@ test.describe('文件浏览器 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 
 		await page.locator('main').getByText(dirName, { exact: true }).click();
@@ -275,8 +289,7 @@ test.describe('文件浏览器 @file', () => {
 		for (const f of files) {
 			await expect(page.locator('main').getByText(f.name)).toBeVisible({ timeout: 20_000 });
 		}
-
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
 	// ----------------------------------------------------------
@@ -290,6 +303,7 @@ test.describe('文件浏览器 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 
 		// 进入目录
@@ -323,8 +337,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// 文件消失
 		await expect(page.locator('main').getByText(fileName)).not.toBeVisible({ timeout: 10_000 });
-
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
 	test('UI 删除非空目录（需勾选 checkbox）', async ({ page }) => {
@@ -335,6 +348,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// 创建目录并在其中放一个文件
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await page.evaluate(async ({ clawId, agentId, path }) => {
 			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
 			const { createFile } = await import('/src/services/file-transfer.js');
@@ -369,9 +383,7 @@ test.describe('文件浏览器 @file', () => {
 
 		// 目录消失
 		await expect(page.locator('main').getByText(dirName)).not.toBeVisible({ timeout: 10_000 });
-
-		// 兜底清理（UI 删除已生效时为 no-op）
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 兜底清理由 afterEach 保证（trackCleanup 已注册 dirName；UI 删除已生效时为 404 no-op）
 	});
 
 	// ----------------------------------------------------------
@@ -428,11 +440,10 @@ test.describe('文件浏览器 @file', () => {
 		await expect(input).toBeVisible({ timeout: 3000 });
 		await input.fill(dirName);
 		await page.locator('[role="dialog"] button').filter({ hasText: /确认|Confirm/ }).click();
+		// 注册清理（确认提交后即注册，UI 创建落地后由 afterEach 兜底删除）
+		trackCleanup(claw, dirName);
 
 		// 目录出现
 		await expect(page.locator('main').getByText(dirName, { exact: true })).toBeVisible({ timeout: 10_000 });
-
-		// 清理
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 	});
 });

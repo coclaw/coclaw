@@ -100,6 +100,26 @@ async function rpcCleanup(page, clawId, agentId, path) {
 	} catch { /* ignore */ }
 }
 
+/** RPC 列目录文件名（W4：核对取消的上传是否真没落盘） */
+async function rpcListNames(page, clawId, agentId, dir) {
+	return page.evaluate(async ({ clawId, agentId, dir }) => {
+		const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
+		const { listFiles } = await import('/src/services/file-transfer.js');
+		const conn = useClawConnections().get(clawId);
+		const res = await listFiles(conn, agentId, dir);
+		return res.files.map((f) => f.name);
+	}, { clawId, agentId, dir });
+}
+
+/**
+ * 已注册的待清理路径——afterEach 保证删除，即使用例 body 中途抛错也不泄漏 __e2e_* 到共享 workspace。
+ * 只删本用例创建的唯一路径；删已不存在的路径返回 404，rpcCleanup 内部已吞掉。
+ */
+const cleanupTargets = [];
+function trackCleanup(claw, path) {
+	cleanupTargets.push({ clawId: claw.clawId, agentId: claw.agentId, path });
+}
+
 /** 点击刷新按钮并等待 */
 async function clickRefresh(page) {
 	await page.getByTestId('btn-refresh').click();
@@ -153,6 +173,11 @@ function seedFailedTask(page, { type, clawId, agentId, dir, fileName, size = 0, 
 test.describe('文件传输任务 @file', () => {
 	test.setTimeout(120_000);
 
+	// 兜底清理：用例无论成功或中途抛错，afterEach 都删掉本用例注册的 __e2e_* 路径
+	test.afterEach(async ({ page }) => {
+		for (const t of cleanupTargets.splice(0)) await rpcCleanup(page, t.clawId, t.agentId, t.path);
+	});
+
 	// ----------------------------------------------------------
 	// 1. 上传取消（队列中 pending + 进行中 running 都可取消）
 	// ----------------------------------------------------------
@@ -161,17 +186,18 @@ test.describe('文件传输任务 @file', () => {
 		const claw = await setup(page, test);
 		const ts = Date.now();
 		const dirName = `__e2e_upcancel_${ts}`;
-		const bigName = `big_${ts}.bin`; // 24MB → 串行队列里长期 running，给取消留窗口
+		const bigName = `big_${ts}.bin`; // 40MB → 串行队列里长期 running，给 in-flight 取消留足窗口（R4：空载 loopback 上 24MB 可能秒传完）。上限受 Playwright setInputFiles 内联 buffer ≤50MB 约束，故取 40MB
 		const smallName = `small_${ts}.txt`; // 跟在大文件后面，确定性 pending
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 		await enterDir(page, dirName);
 
 		// 注入两个文件：大文件先入队（running），小文件随后（pending）
 		await page.locator('input[type="file"]').setInputFiles([
-			{ name: bigName, mimeType: 'application/octet-stream', buffer: Buffer.alloc(24 * 1024 * 1024) },
+			{ name: bigName, mimeType: 'application/octet-stream', buffer: Buffer.alloc(40 * 1024 * 1024) },
 			{ name: smallName, mimeType: 'text/plain', buffer: Buffer.from(`small ${ts}`) },
 		]);
 
@@ -190,7 +216,13 @@ test.describe('文件传输任务 @file', () => {
 		// 两个上传任务均已取消（无残留上传行）
 		await expect(page.locator('main').getByText(smallName, { exact: true })).not.toBeVisible();
 
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// W4：取消后列目录，断言被取消的上传都没真正落盘。
+		// plugin 上传写临时文件、仅成功时 rename 到正式名；取消会 unlink 临时文件，故正式名应缺席。
+		// smallName 确定性 pending（从未启动），bigName 为 in-flight 取消——任一"取消未真中断传输"都会让此断言失败。
+		const listed = await rpcListNames(page, claw.clawId, claw.agentId, dirName);
+		expect(listed).not.toContain(bigName);
+		expect(listed).not.toContain(smallName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
 	// ----------------------------------------------------------
@@ -206,6 +238,7 @@ test.describe('文件传输任务 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 		await enterDir(page, dirName);
 
@@ -237,8 +270,7 @@ test.describe('文件传输任务 @file', () => {
 			return true;
 		`);
 		expect(noFailed).toBe(true);
-
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
 	// ----------------------------------------------------------
@@ -253,6 +285,7 @@ test.describe('文件传输任务 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		// 准备 24MB 文件，保证下载有可观测窗口
 		await rpcUpload(page, claw.clawId, claw.agentId, `${dirName}/${fileName}`, 24 * 1024 * 1024);
 		await clickRefresh(page);
@@ -275,8 +308,7 @@ test.describe('文件传输任务 @file', () => {
 
 		// 文件仍在（取消下载不删源文件）
 		await expect(page.locator('main').getByText(fileName, { exact: true })).toBeVisible();
-
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
 	// ----------------------------------------------------------
@@ -294,6 +326,7 @@ test.describe('文件传输任务 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await rpcUpload(page, claw.clawId, claw.agentId, `${dirName}/${fileName}`, 64);
 		await clickRefresh(page);
 		await enterDir(page, dirName);
@@ -325,8 +358,7 @@ test.describe('文件传输任务 @file', () => {
 			return true;
 		`);
 		expect(noFailed).toBe(true);
-
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 
 	// ----------------------------------------------------------
@@ -340,6 +372,7 @@ test.describe('文件传输任务 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 		// 目录已加载进列表 + dirCache（作为"缓存列表"）
 		await expect(page.locator('main').getByText(dirName, { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -363,9 +396,8 @@ test.describe('文件传输任务 @file', () => {
 		await expect(page.getByText(/正在连接 Claw|Connecting to Claw/)).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByTestId('btn-mkdir')).toBeDisabled({ timeout: 5000 });
 
-		// 恢复 UI 门控并清理（真实连接一直在，cleanup 直接走 conn）
+		// 恢复 UI 门控（真实连接一直在；目录清理由 afterEach 经 conn 保证，不受 dcReady 门控影响）
 		await evalStore(page, 'claws', `store.byId['${claw.clawId}'].dcReady = true; return true;`);
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
 	});
 
 	// ----------------------------------------------------------
@@ -381,6 +413,7 @@ test.describe('文件传输任务 @file', () => {
 
 		await gotoFiles(page, claw.clawId, claw.agentId);
 		await rpcMkdir(page, claw.clawId, claw.agentId, dirName);
+		trackCleanup(claw, dirName);
 		await clickRefresh(page);
 		await enterDir(page, dirName);
 
@@ -394,7 +427,6 @@ test.describe('文件传输任务 @file', () => {
 			return Boolean(c && c.entries.length === 0);
 		`);
 		expect(emptyEntries).toBe(true);
-
-		await rpcCleanup(page, claw.clawId, claw.agentId, dirName);
+		// 清理由 afterEach 保证（trackCleanup 已注册 dirName）
 	});
 });
