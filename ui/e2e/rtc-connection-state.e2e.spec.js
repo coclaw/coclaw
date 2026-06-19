@@ -35,6 +35,77 @@ function patchClaw(page, clawId, patch) {
 	`);
 }
 
+/**
+ * 把指定 claw 隔离出 live RTC / SSE 生命周期，使注入的"建连中/失败"降级态在断言期间恒定。
+ *
+ * 背景：这两个用例断言的横幅要求 online=true + dcReady=false，但真实在线 claw 的 DC 全程开着，
+ * store 会从多条路径把注入的 dcReady=false 抹回 true（实测 trace 确认）：
+ *  - `onRtcStateChange('connected')`：RTC 传输事件经 conn.rtc.onStateChange 回调回写；
+ *  - `__ensureRtc` 的 connected 早退 / rebuild 成功路径（L1085 直接写，无守卫）；
+ *  - SSE：`applySnapshot` / `updateClawOnline` 见 online 仍 true 但 rtcPhase='failed'（warn 用例
+ *    注入态）→ `__resumeOnline` rescue → `__ensureRtc` 重连；
+ *  - 最隐蔽的一条：**页面加载期那次 __ensureRtc build 可能仍在 `await initRtc` 中飞**。它在冻结
+ *    之后才收尾——DC open 时 `dc.onopen → rtc.onReady → conn.setRtc` 重挂 conn.__rtc，并经
+ *    L1085 / onStateChange 写 dcReady=true，**完全绕过 store 方法 stub**（stub 只换方法引用，拦不
+ *    住已在执行的那次调用）。这是反复偶发 flake 的真凶。
+ *
+ * 隔离手段（纯测试态、不改 src，fresh-page-per-test 无跨用例泄漏）：
+ *  1) 先等 RTC 连续稳定一小段，确保有一条真连接、页面进入稳态再动手；
+ *  2) stub `__ensureRtc` / `applySnapshot` / `updateClawOnline` → no-op：堵住此后一切**新发起**
+ *     的 build 与 SSE rescue；
+ *  3) stub `conn.setRtc` → no-op：DC open 时 rtc.onReady 重挂 conn.__rtc 的唯一通道，置空后任何
+ *     rtc 实例（含 in-flight build 的）都挂不回来；
+ *  4) `closeRtcForClaw(clawId)` 中止仍在飞的那次 build（每 claw 只允许一个 in-flight）：close 让
+ *     其 initRtc settle 'failed'，等它的 __ensureRtc 拿到 'failed' 走失败分支、不再执行只在 'rtc'
+ *     时跑的 L1085 写点；其 dc.onopen 也因已 settled 不再触发 onReady。这一步消除上面那条"绕过
+ *     stub 的 in-flight 直写"；
+ *  5) 切断当前 conn.rtc.onStateChange + 置空 conn.__rtc：兜底断开 onRtcStateChange 回写
+ *     （守卫 conn.rtc?.isReady 恒 false）。
+ * 合上后，注入的 dcReady/rtcPhase 不再被任何 live RTC / SSE 事件改写。
+ */
+async function freezeRtcWriters(page, clawId) {
+	// 步骤 1：等 RTC 连续稳定（≥8 次 ×100ms = 800ms 都 ready），确保有真连接 + 页面稳态。
+	await page.waitForFunction(async (cid) => {
+		const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+		const claw = pinia?._s?.get('claws')?.byId?.[cid];
+		let ready = false;
+		if (claw?.dcReady) {
+			const m = await import('/src/services/claw-connection-manager.js');
+			const rtc = m.useClawConnections().get(cid)?.rtc;
+			ready = !!(rtc && rtc.isReady && rtc.state === 'connected');
+		}
+		window.__rtcReadyStreak = ready ? (window.__rtcReadyStreak || 0) + 1 : 0;
+		return window.__rtcReadyStreak >= 8;
+	}, clawId, { timeout: 25_000, polling: 100 });
+
+	// 步骤 2~5：装上所有隔离闸。
+	const CID = JSON.stringify(clawId);
+	return evalStore(page, 'claws', `
+		return (async () => {
+			// 堵新 build / SSE rescue 的所有入口（后续没人再发起重连）。
+			store.__ensureRtc = () => Promise.resolve();
+			store.applySnapshot = () => {};
+			store.updateClawOnline = () => {};
+			const mgr = await import('/src/services/claw-connection-manager.js');
+			const rtcMod = await import('/src/services/webrtc-connection.js');
+			const conn = mgr.useClawConnections().get(${CID});
+			if (conn) {
+				// setRtc 是 DC open 时 rtc.onReady 重挂 conn.__rtc 的唯一通道（in-flight build 的
+				// dc.onopen 会绕过 __ensureRtc 直接走这里）——置 no-op，任何实例都挂不回来。
+				conn.setRtc = () => {};
+				if (conn.rtc) conn.rtc.onStateChange = null;
+			}
+			// 中止仍在飞的那次 build（每 claw 只允许一个）：close 让其 initRtc settle 'failed'，
+			// 等它的 __ensureRtc 拿到 'failed' 走失败分支、不写 dcReady（L1085 只在 'rtc' 时执行）；
+			// 其 dc.onopen 也因已 settled 而不再触发 onReady→setRtc。这是消除 in-flight build 直接
+			// 写 dcReady=true（绕过所有 stub）的关键一步。
+			rtcMod.closeRtcForClaw(${CID});
+			if (conn) conn.__rtc = null;
+			return true;
+		})();
+	`);
+}
+
 // ----------------------------------------------------------------
 // 连接状态横幅（ChatPage）：severity warn / info
 // ----------------------------------------------------------------
@@ -52,6 +123,9 @@ test('连接建立/恢复中：ChatPage 横幅显示 info 级"建立连接中" @
 	// 轻量，不依赖历史列表 RPC 落定，规避冷网关下其 30s 预算偶发耗尽的共享 helper flake。
 	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 30_000 });
 
+	// 先把该 claw 从 live RTC / SSE 生命周期里隔离出来（详见 freezeRtcWriters），否则真实 DC 的
+	// RTC 传输事件 / SSE rescue 会把下面注入的 dcReady=false 抹回 true，致横幅闪失 / flake。
+	await freezeRtcWriters(page, ctx.clawId);
 	// 强制"建连中"：online 但 DC 未就绪 + rtcPhase=building
 	const ok = await patchClaw(page, ctx.clawId, { online: true, dcReady: false, rtcPhase: 'building', retryNextAt: 0 });
 	test.skip(!ok, 'claw not present in store');
@@ -77,6 +151,9 @@ test('重试耗尽不可达：ChatPage 横幅显示 warn 级"连接失败" @rtc 
 	// 轻量，不依赖历史列表 RPC 落定，规避冷网关下其 30s 预算偶发耗尽的共享 helper flake。
 	await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 30_000 });
 
+	// 先把该 claw 从 live RTC / SSE 生命周期里隔离出来（同 info 用例，详见 freezeRtcWriters），
+	// 保证下面注入的 dcReady=false 在断言期间不被真实 RTC 事件 / SSE rescue 抹回 true。
+	await freezeRtcWriters(page, ctx.clawId);
 	// 强制"退避耗尽不可达"：failed + retryNextAt=0
 	const ok = await patchClaw(page, ctx.clawId, { online: true, dcReady: false, rtcPhase: 'failed', retryNextAt: 0 });
 	test.skip(!ok, 'claw not present in store');
