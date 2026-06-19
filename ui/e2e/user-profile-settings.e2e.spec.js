@@ -263,3 +263,72 @@ test('设置：改密弹窗回车触发提交（不一致警告，不改密码�
 		page.locator('[data-slot="title"]').filter({ hasText: /do not match|不一致/i }),
 	).toBeVisible({ timeout: 5000 });
 });
+
+// ================================================================
+// Test 9: 设置 → 切换语言，界面文案随之切换
+//
+// 这是断言"多语言文案"的唯一例外用例——本用例的断言对象就是"文案随 locale 变化"：
+// 切换 language 后，与所选语言项无关的另一个设置项标签（外观）文本应随 locale 改变，
+// 同时 i18n 当前 locale 也切到目标。Modify-Revert：finally 中按原始 settings.lang 精确还原，
+// 避免污染共享测试账号（lang 经 authStore.updateSettings 持久化到 server）。
+// ================================================================
+
+test('设置：切换语言界面文案随之切换 @ui', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	// 原始持久化 lang（可能为 null=auto），用于 finally 精确还原
+	const origLang = await page.evaluate(() => {
+		const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+		return pinia?._s.get('auth')?.user?.settings?.lang ?? null;
+	});
+
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+	await page.getByTestId('menu-settings').click();
+
+	const dialog = page.locator('[role="dialog"]');
+	await expect(dialog).toBeVisible({ timeout: 5000 });
+	const langContainer = dialog.getByTestId('setting-lang');
+	await expect(langContainer).toBeVisible({ timeout: 3000 });
+
+	const getLocale = () => page.evaluate(async () => (await import('/src/i18n/index.js')).i18n.global.locale.value);
+	const localeBefore = await getLocale();
+	// 语言下拉 v-model = settings.lang ?? 'zh-CN'。目标 locale 须同时 ≠ 当前渲染 locale（否则文案不变）
+	// 且 ≠ 下拉当前值（否则 @update:model-value 不触发保存）。自名标签在所有 locale 下恒定，可稳定点击。
+	const curFormLang = origLang ?? 'zh-CN';
+	const candidates = [
+		{ code: 'en', label: 'English' },
+		{ code: 'zh-CN', label: '简体中文' },
+		{ code: 'ja', label: '日本語' },
+	];
+	const target = candidates.find((c) => c.code !== localeBefore && c.code !== curFormLang);
+
+	// 文案锚点：与所选语言项无关的"外观"设置标签（仅随 locale 变化，不受本次 select 操作耦合）
+	const themeLabel = dialog.getByTestId('setting-theme').locator('span').first();
+	const labelBefore = (await themeLabel.innerText()).trim();
+
+	try {
+		// 打开语言下拉 → 选目标语言项
+		await langContainer.locator('button').first().click();
+		await page.locator('[role="option"]').filter({ hasText: target.label }).first().click();
+
+		// i18n 当前 locale 切到目标
+		await expect(async () => {
+			expect(await getLocale()).toBe(target.code);
+		}).toPass({ timeout: 10_000 });
+
+		// 唯一例外的文案断言：界面文本随 locale 改变
+		const labelAfter = (await themeLabel.innerText()).trim();
+		expect(labelAfter, 'appearance label text should change with locale').not.toBe(labelBefore);
+	}
+	finally {
+		// 精确还原原始 lang（含 null=auto），避免遗留语言变更污染共享测试账号
+		await page.evaluate(async (lang) => {
+			const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+			const auth = pinia?._s.get('auth');
+			if (auth) await auth.updateSettings({ lang });
+		}, origLang);
+	}
+});
