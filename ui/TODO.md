@@ -2,6 +2,16 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## register E2E Test 6 每次运行泄漏一个孤儿账号（无账号删除 API，已接受）
+
+**发现日期**：2026-06-20
+**来源**：round-2 E2E 加固（H7）排查 `register.e2e.spec.js` Test 6 清理缺口
+
+- 现状：`register.e2e.spec.js` Test 6（成功注册后跳转）会在共享 server 上真实创建一个本地账号 `e2e_reg_<ts>`，跑完不清理 → 每次运行泄漏一个孤儿账号。
+- 为何不修：server 端无账号删除 API（auth/user/admin 路由仅 login/register/session/logout/settings/password + admin GET-only，均无 delete；e2e helpers 也无删除账号的 helper），无法在 afterAll 清理。不臆造 server 端删除接口。
+- 缓解：用 `Date.now()` 保证账号名唯一、永不碰撞，账号泄漏不影响其他用例。
+- 接受现状，账号表显著增长时再回头处理（如加管理端清理任务 / 测试账号定期清扫）。
+
 ## 文档引用失效：model-config.md 把根文件的测试原则说成 ui 工作区 CLAUDE.md
 
 **发现日期**：2026-06-10

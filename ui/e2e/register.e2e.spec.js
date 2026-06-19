@@ -108,10 +108,15 @@ test('注册：空字段提交不触发请求 @auth', async ({ page }) => {
 
 // ================================================================
 // Test 6: 成功注册 → 跳转到认证区域
+//
+// 注：本用例会在共享 server 上真实创建一个本地账号，且 server 未提供账号删除 API
+// （auth/user/admin 路由均无 delete），无从清理。用 Date.now() 保证账号名唯一、永不碰撞，
+// 接受「每次运行泄漏一个孤儿账号」这一既知小瑕疵——详见 ui/TODO.md（账号表增长再回头处理）。
 // ================================================================
 
 test('注册：成功注册后跳转 @auth', async ({ page }) => {
 	test.setTimeout(30_000);
+	// Date.now() 保证唯一，避免与历史 run / 其他用例碰撞（无法删除，只能不碰撞）
 	const uniqueName = 'e2e_reg_' + Date.now();
 	await page.goto('/register');
 	await expect(page.getByTestId('register-page')).toBeVisible({ timeout: 10_000 });

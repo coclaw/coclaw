@@ -97,31 +97,35 @@ test('用户页：修改昵称后恢复 @ui', async ({ page }) => {
 	const dialog = page.locator('[role="dialog"]');
 	await expect(dialog).toBeVisible({ timeout: 5000 });
 
-	// 记录原始昵称
+	// 记录原始昵称：取真实可编辑字段 user.name，回退到真实 loginName（auth.local.loginName），
+	// 不再用硬编码字面量 'test' 兜底——读为空就 fail-fast，绝不把无关的猜测名写回真实账号。
 	const originalName = await page.evaluate(() => {
 		const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
-		const authStore = pinia?._s.get('auth');
-		return authStore?.user?.name || authStore?.user?.loginName || 'test';
+		const user = pinia?._s.get('auth')?.user;
+		return user?.name || user?.auth?.local?.loginName || '';
 	});
+	// 变更前断言捕获到非空原始昵称（fail-fast）：捕获失败就在改动前停下，
+	// 避免带空值/猜测名走进 finally 把真实账号污染成错误昵称。
+	expect(originalName, 'captured original display name must be non-empty before mutating').toBeTruthy();
 
-	// 点击编辑按钮（铅笔图标）
-	const editBtn = dialog.getByTestId('btn-edit-name');
-	await editBtn.click();
-
-	// 编辑对话框应出现（嵌套 UModal）
-	const editModal = page.locator('[role="dialog"]').last();
-	await expect(editModal).toBeVisible({ timeout: 5000 });
-
-	// 清空并输入新昵称
-	const nameInput = editModal.locator('input');
-	await nameInput.fill('E2E_TEMP_NAME');
-
-	// 点击保存（组件已加 data-testid="btn-save"，避免 .last() 顺序定位歧义）
-	const saveBtn = page.getByTestId('btn-save');
-	await saveBtn.click();
-
-	// 用 try/finally 保证恢复昵称在任何失败路径下都会执行
+	// 整个「改名 + 断言」都放进 try：任一步抛错，finally 都会把昵称还原（Modify-Revert 必达）。
 	try {
+		// 点击编辑按钮（铅笔图标）
+		const editBtn = dialog.getByTestId('btn-edit-name');
+		await editBtn.click();
+
+		// 编辑对话框应出现（嵌套 UModal）
+		const editModal = page.locator('[role="dialog"]').last();
+		await expect(editModal).toBeVisible({ timeout: 5000 });
+
+		// 清空并输入新昵称
+		const nameInput = editModal.locator('input');
+		await nameInput.fill('E2E_TEMP_NAME');
+
+		// 点击保存（组件已加 data-testid="btn-save"，避免 .last() 顺序定位歧义）
+		const saveBtn = page.getByTestId('btn-save');
+		await saveBtn.click();
+
 		// 等待编辑 modal 关闭：保存成功后 btn-save 随 modal 卸载而消失。
 		// 不用 editModal(=.last()) 判可见——modal 关闭后 .last() 会落到外层 profile dialog 造成误判。
 		await expect(page.getByTestId('btn-save')).not.toBeVisible({ timeout: 10_000 });
@@ -195,34 +199,37 @@ test('用户页：切换主题生效 @ui', async ({ page }) => {
 	// 切换到相反主题
 	const targetTheme = initialTheme === 'dark' ? 'light' : 'dark';
 
-	// 点击主题选择器触发器
+	// 主题选择器触发器（主题经 settings 持久化到 server，翻转后必须还原，避免污染共享账号）
 	const themeContainer = dialog.getByTestId('setting-theme');
 	const themeButton = themeContainer.locator('button').first();
-	await themeButton.click();
 
-	// 选择目标主题选项
-	const option = page.locator('[role="option"]').filter({
-		has: page.locator(`text=/${targetTheme === 'dark' ? 'Dark|深色' : 'Light|浅色'}/i`),
-	});
-	await option.click();
+	try {
+		// 点击触发器 → 选择目标主题选项
+		await themeButton.click();
+		const option = page.locator('[role="option"]').filter({
+			has: page.locator(`text=/${targetTheme === 'dark' ? 'Dark|深色' : 'Light|浅色'}/i`),
+		});
+		await option.click();
 
-	// 验证 HTML 根元素 class 变化
-	await expect(async () => {
-		const isDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
-		expect(isDark).toBe(targetTheme === 'dark');
-	}).toPass({ timeout: 5000 });
+		// 验证 HTML 根元素 class 变化
+		await expect(async () => {
+			const isDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+			expect(isDark).toBe(targetTheme === 'dark');
+		}).toPass({ timeout: 5000 });
+	}
+	finally {
+		// 恢复原始主题（放 finally：即便上面断言抛错，也不把翻转后的主题留在真实账号上）
+		await themeButton.click();
+		const restoreOption = page.locator('[role="option"]').filter({
+			has: page.locator(`text=/${initialTheme === 'dark' ? 'Dark|深色' : 'Light|浅色'}/i`),
+		});
+		await restoreOption.click();
 
-	// 恢复原始主题
-	await themeButton.click();
-	const restoreOption = page.locator('[role="option"]').filter({
-		has: page.locator(`text=/${initialTheme === 'dark' ? 'Dark|深色' : 'Light|浅色'}/i`),
-	});
-	await restoreOption.click();
-
-	await expect(async () => {
-		const isDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
-		expect(isDark).toBe(initialTheme === 'dark');
-	}).toPass({ timeout: 5000 });
+		await expect(async () => {
+			const isDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+			expect(isDark).toBe(initialTheme === 'dark');
+		}).toPass({ timeout: 5000 });
+	}
 });
 
 // ================================================================
@@ -322,6 +329,87 @@ test('设置：切换语言界面文案随之切换 @ui', async ({ page }) => {
 		// 唯一例外的文案断言：界面文本随 locale 改变
 		const labelAfter = (await themeLabel.innerText()).trim();
 		expect(labelAfter, 'appearance label text should change with locale').not.toBe(labelBefore);
+	}
+	finally {
+		// 精确还原原始 lang（含 null=auto），避免遗留语言变更污染共享测试账号
+		await page.evaluate(async (lang) => {
+			const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+			const auth = pinia?._s.get('auth');
+			if (auth) await auth.updateSettings({ lang });
+		}, origLang);
+	}
+});
+
+// ================================================================
+// Test 10 (C8): 切换语言后整页 reload，locale 仍持久化
+//
+// 语言经 authStore.updateSettings → server settings 持久化；reload 后路由守卫
+// refreshSession() 重新拉取 user → applyUserPreferences 重新 setLocale。本用例验证
+// 「切换语言 → page.reload() → reload 后 locale 仍是目标」走的是应用真实持久化路径：
+// 既断言 i18n 当前 locale 仍是目标，也断言界面译文仍为目标语言（locale 测试唯一可断言译文之处）。
+// Modify-Revert：finally 精确还原原始 lang，避免污染共享测试账号。
+// ================================================================
+
+test('设置：切换语言后刷新页面 locale 持久化 @ui', async ({ page }) => {
+	test.setTimeout(60_000);
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await login(page);
+
+	const getLocale = () => page.evaluate(async () => (await import('/src/i18n/index.js')).i18n.global.locale.value);
+
+	// 原始持久化 lang（可能为 null=auto），用于 finally 精确还原
+	const origLang = await page.evaluate(() => {
+		const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+		return pinia?._s.get('auth')?.user?.settings?.lang ?? null;
+	});
+
+	await page.goto('/user');
+	await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+	await page.getByTestId('menu-settings').click();
+
+	const dialog = page.locator('[role="dialog"]');
+	await expect(dialog).toBeVisible({ timeout: 5000 });
+	const langContainer = dialog.getByTestId('setting-lang');
+	await expect(langContainer).toBeVisible({ timeout: 3000 });
+
+	// 目标 locale 须 ≠ 当前渲染 locale（否则译文不变）且 ≠ 下拉当前值（否则不触发保存）
+	const localeBefore = await getLocale();
+	const curFormLang = origLang ?? 'zh-CN';
+	const candidates = [
+		{ code: 'en', label: 'English' },
+		{ code: 'zh-CN', label: '简体中文' },
+		{ code: 'ja', label: '日本語' },
+	];
+	const target = candidates.find((c) => c.code !== localeBefore && c.code !== curFormLang);
+
+	// 文案锚点：与所选语言项无关的"外观"设置标签（仅随 locale 变化，自名标签在所有 locale 下恒定可点）
+	const labelBefore = (await dialog.getByTestId('setting-theme').locator('span').first().innerText()).trim();
+
+	try {
+		// 打开语言下拉 → 选目标语言项（@update:model-value → updateSettings 持久化到 server）
+		await langContainer.locator('button').first().click();
+		await page.locator('[role="option"]').filter({ hasText: target.label }).first().click();
+
+		// reload 前先确认切换已生效
+		await expect(async () => {
+			expect(await getLocale()).toBe(target.code);
+		}).toPass({ timeout: 10_000 });
+
+		// 整页 reload：走 server 持久化 + 路由守卫 refreshSession 重新应用 locale
+		await page.reload();
+
+		// reload 后 i18n 当前 locale 仍是目标（refreshSession 异步，用 toPass 等其落定）
+		await expect(async () => {
+			expect(await getLocale()).toBe(target.code);
+		}).toPass({ timeout: 15_000 });
+
+		// 界面译文也持久化为目标语言：重新打开设置，外观标签文本应不同于切换前的语言
+		await expect(page.getByTestId('menu-settings')).toBeVisible({ timeout: 10_000 });
+		await page.getByTestId('menu-settings').click();
+		const dialogAfter = page.locator('[role="dialog"]');
+		await expect(dialogAfter).toBeVisible({ timeout: 5000 });
+		const labelAfter = (await dialogAfter.getByTestId('setting-theme').locator('span').first().innerText()).trim();
+		expect(labelAfter, 'appearance label should render in the persisted locale after reload').not.toBe(labelBefore);
 	}
 	finally {
 		// 精确还原原始 lang（含 null=auto），避免遗留语言变更污染共享测试账号
