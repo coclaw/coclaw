@@ -906,3 +906,15 @@ X4 触及面比 X1 广，需要重新评估：
 - `ui/e2e/chat-flow.e2e.spec.js` Test 1 用 `msgItems.filter({ hasText: testMsg }).toBeVisible()` 断言用户消息出现，未加 `.first()`。真实在线 agent 有时会在回复正文里回显含唯一时间戳的原文，此时 `chat-msg-item` 同时命中"用户气泡 + agent 回复"两处 → Playwright strict mode violation 脆断。
 - 复现已在新增的 topic 续聊用例上观测到（已用 `.first()` 规避）。chat-flow 旧用例同模式但取决于 agent 回复内容，故为偶发。
 - 修法：给该断言加 `.first()`（取首个=用户气泡），与新增用例对齐。严重度低（仅测试稳健性，非应用 bug）。
+
+## @rtc 短断自动重连 + 重连后数据刷新 的 E2E 覆盖缺口
+
+**发现日期**：2026-06-20
+**来源**：补 @rtc 连接生命周期 UI 覆盖（`e2e/rtc-connection-state.e2e.spec.js`）时，对可选场景 5/6 评估后未强写
+
+- 已覆盖（新增 spec，全绿）：连接横幅 info/warn severity（建连中 / 退避耗尽 / 离线）、Capacitor 头部 `rtc-connecting` spinner 与 `rtc-unreachable` 重连按钮 + 点击触发 manualRetry、发送 RPC 超时的 toast 反馈 + 发送态恢复。
+- **未覆盖（本条）**：
+  1. **短断后自动重连、聊天可继续**（ICE restart / DC 延续路径）。
+  2. **重连恢复后 sessions / topics / dashboard 数据被刷新**（`__refreshIfStale` / `refreshClawResources` 真触发）。
+- 为何不强写：这两条要求**真实**的 RTC 断开→恢复时序，项目已确认极难稳定触发（[[project_rtc_connection_hard_to_break]]：ICE restart 有 3min 恢复预算、DC alive 时 `connReady` watcher 不翻、`dcReady` 几乎不翻）。纯内存态注入只能伪造"某一帧的状态值"，无法忠实驱动"断→恢复→刷新"这条经状态机的真实路径——硬注入等于把状态机重写一遍，断言的是脚手架而非真行为，属假绿。
+- 可行的真实触发探索方向（任一落定后再补，避免假绿）：(a) 在 plugin/coturn 侧提供可控的"掐断 relay / 强制 ICE 失败"测试钩子；(b) 用 CDP `Network.emulateNetworkConditions(offline)` 配合 `forceCloseWs` 制造信令+传输双断后再恢复，观察 `__refreshIfStale` 是否触发对应 store 的 reload RPC；(c) 注入一个带**真实 conn** 的测试 claw 走 `webrtc-connection.js` 的 restart 路径。三者都需要先验证能稳定复现"DC 真断又真恢复"才有意义。
