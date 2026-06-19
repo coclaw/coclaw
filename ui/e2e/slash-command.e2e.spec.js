@@ -11,6 +11,10 @@ import { login, navigateToChat, waitChatReady, evalStore } from './helpers.js';
  */
 
 test.describe('斜杠命令 @chat', () => {
+	// beforeEach 的 login + navigateToChat 链（计入每个 test 的总预算）在高负载下可超 30s 默认上限；
+	// 抬到 60s。个别 test 体内显式 setTimeout(更大值) 仍会覆盖本配置、不被降低。
+	test.describe.configure({ timeout: 60_000 });
+
 	let sessionId;
 
 	test.beforeEach(async ({ page }) => {
@@ -46,9 +50,18 @@ test.describe('斜杠命令 @chat', () => {
 		await page.getByTestId('btn-slash-menu').click();
 		const compactItem = page.locator('.max-w-60 button').filter({ hasText: /compact|压缩/i });
 		await expect(compactItem).toBeVisible({ timeout: 3000 });
+
+		// W8：/compact 跑在共享的 main session 上——其内容不可控（可能本就无可压缩），
+		// 故不断言"摘要消息出现/消息数下降"这类依赖正文的信号（会假阴或假阳），也不追加任何
+		// 额外销毁性命令。改为观测命令真实执行的生命周期：点击后 sending=true 让 STOP 出现
+		// （证明命令确实下发、非"点了没反应"的空操作），随后 sending=false → textarea 解锁
+		// （证明已往返服务端拿到 final）。这把"t=0 即满足"的弱断言换成真往返观测。
 		await compactItem.click();
 
-		// 等待命令完成
+		// 进行中：命令已下发（STOP 出现）
+		await expect(page.getByTestId('btn-stop')).toBeVisible({ timeout: 5000 });
+
+		// 完成：往返结束，textarea 解锁
 		await expect(page.getByTestId('chat-textarea')).toBeEnabled({ timeout: 30_000 });
 
 		// 页面应仍然正常
@@ -59,6 +72,13 @@ test.describe('斜杠命令 @chat', () => {
 		test.setTimeout(120_000);
 		test.skip(!sessionId, 'No chat session available');
 		await waitChatReady(page);
+
+		// W8：捕获重置前的 live sessionId（来自 chat.history 辅助 RPC，需等其落定）。
+		// /new 走 sessions.reset，会让 currentSessionId 翻成新 id——下方断言它真的变了，
+		// 即真的开了新 session。纯观测，不追加任何额外命令。
+		const readSid = () => evalStore(page, 'chat', 'return store.currentSessionId || "";');
+		await expect.poll(readSid, { timeout: 15_000 }).not.toBe('');
+		const beforeSid = await readSid();
 
 		// 打开菜单并点击重置会话
 		await page.getByTestId('btn-slash-menu').click();
@@ -71,6 +91,13 @@ test.describe('斜杠命令 @chat', () => {
 
 		// 页面应仍然正常
 		await expect(page.getByTestId('chat-root')).toBeVisible();
+
+		// W8 核心观测：currentSessionId 变成了一个新的非空 id（loadMessages 在 final 后才异步
+		// 刷新它，故 textarea 解锁后仍需轮询等其落定）。证明 /new 真的重置出新 session、非空操作。
+		await expect.poll(async () => {
+			const sid = await readSid();
+			return !!sid && sid !== beforeSid;
+		}, { timeout: 30_000 }).toBe(true);
 	});
 
 	// 斜杠命令无服务端取消通道：STOP 按钮可见但禁用，避免用户误以为"点了没用"

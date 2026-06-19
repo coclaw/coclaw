@@ -77,7 +77,7 @@ test.describe('下拉刷新 @ui', () => {
 
 		const [, loadEvent] = await Promise.all([
 			cdpPullDown(page, 200, 200, 250),
-			page.waitForEvent('load', { timeout: 5000 }),
+			page.waitForEvent('load', { timeout: 15_000 }), // 整页 reload + bundle 重解析，CPU 争用下 5s 偶被错过
 		]);
 
 		expect(loadEvent).toBeTruthy();
@@ -108,7 +108,7 @@ test.describe('下拉刷新 @ui', () => {
 
 		const [, loadEvent] = await Promise.all([
 			cdpPullDown(page, 200, 200, 250),
-			page.waitForEvent('load', { timeout: 5000 }),
+			page.waitForEvent('load', { timeout: 15_000 }), // 整页 reload + bundle 重解析，CPU 争用下 5s 偶被错过
 		]);
 
 		expect(loadEvent).toBeTruthy();
@@ -124,7 +124,7 @@ test.describe('下拉刷新 @ui', () => {
 
 		const [, loadEvent] = await Promise.all([
 			cdpPullDown(page, 200, 200, 250),
-			page.waitForEvent('load', { timeout: 5000 }),
+			page.waitForEvent('load', { timeout: 15_000 }), // 整页 reload + bundle 重解析，CPU 争用下 5s 偶被错过
 		]);
 
 		expect(loadEvent).toBeTruthy();
@@ -140,7 +140,7 @@ test.describe('下拉刷新 @ui', () => {
 
 		const [, loadEvent] = await Promise.all([
 			cdpPullDown(page, 200, 200, 250),
-			page.waitForEvent('load', { timeout: 5000 }),
+			page.waitForEvent('load', { timeout: 15_000 }), // 整页 reload + bundle 重解析，CPU 争用下 5s 偶被错过
 		]);
 
 		expect(loadEvent).toBeTruthy();

@@ -22,6 +22,17 @@ function injectMessages(page, count = 50) {
 	}, count);
 }
 
+/** 把 main 滚动容器滚到底，返回滚动尺寸（用于 W9：先滚动再断言 header 仍粘顶才有意义） */
+function scrollMainToBottom(page) {
+	return page.evaluate(() => {
+		const main = document.querySelector('[data-testid="chat-root"] main');
+		if (!main) return null;
+		main.scrollTop = main.scrollHeight;
+		main.dispatchEvent(new Event('scroll'));
+		return { scrollTop: main.scrollTop, scrollH: main.scrollHeight, clientH: main.clientHeight };
+	});
+}
+
 function getLayoutMetrics(page) {
 	return page.evaluate(() => {
 		const chatRoot = document.querySelector('[data-testid="chat-root"]');
@@ -48,6 +59,7 @@ function getLayoutMetrics(page) {
 }
 
 test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
+	test.setTimeout(60_000); // login + navigateToChat 链在高负载下可超 30s 默认上限
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 	const claw = await navigateToChat(page);
@@ -56,6 +68,12 @@ test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 	await injectMessages(page, 50);
 	// 等待 chat-root 可见，确保注入消息后 DOM 稳定
 	await expect(page.getByTestId('chat-root')).toBeVisible();
+
+	// W9: 先把 main 滚动容器滚到底再取指标——否则在 scrollTop=0 处断言，
+	// "header 随内容滚走（误嵌进滚动容器）"的回归也会假绿
+	const sc = await scrollMainToBottom(page);
+	expect(sc).not.toBeNull();
+	expect(sc.scrollH).toBeGreaterThan(sc.clientH); // 确认真有可滚距离，header 粘顶断言才有意义
 
 	const m = await getLayoutMetrics(page);
 
@@ -72,6 +90,7 @@ test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 });
 
 test('Mobile: ChatPage layout with many messages @ui', async ({ page }) => {
+	test.setTimeout(60_000); // login + navigateToChat 链在高负载下可超 30s 默认上限
 	await page.setViewportSize({ width: 390, height: 844 });
 	await login(page);
 	const claw = await navigateToChat(page);
@@ -80,6 +99,12 @@ test('Mobile: ChatPage layout with many messages @ui', async ({ page }) => {
 	await injectMessages(page, 50);
 	// 等待 chat-root 可见，确保注入消息后 DOM 稳定
 	await expect(page.getByTestId('chat-root')).toBeVisible();
+
+	// W9: 先把 main 滚动容器滚到底再取指标——否则在 scrollTop=0 处断言，
+	// "header 随内容滚走（误嵌进滚动容器）"的回归也会假绿
+	const sc = await scrollMainToBottom(page);
+	expect(sc).not.toBeNull();
+	expect(sc.scrollH).toBeGreaterThan(sc.clientH); // 确认真有可滚距离，header 粘顶断言才有意义
 
 	const m = await getLayoutMetrics(page);
 

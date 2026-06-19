@@ -37,6 +37,7 @@ function setMainScrollTop(page, top) {
 }
 
 test('回到底部按钮：距底 > 1 屏显示，点击后滚回底部并隐藏 @ui', async ({ page }) => {
+	test.setTimeout(60_000); // login + navigateToChat + waitChatReady 链在高负载下可超 30s 默认上限
 	await login(page);
 	const info = await navigateToChat(page);
 	test.skip(!info, 'No chat session available');
@@ -72,6 +73,7 @@ test('回到底部按钮：距底 > 1 屏显示，点击后滚回底部并隐藏
 // Chromium 无法复现真实惯性吞没，用猴补 scrollTo（首次调用起 500ms 内丢弃）模拟"被吞窗口"，
 // 真浏览器端到端验证循环重试收敛到底 + flag 回置（按钮保持隐藏）。
 test('回到底部按钮：scrollTo 被吞 500ms 仍收敛到底（force 重试循环） @ui', async ({ page }) => {
+	test.setTimeout(60_000); // login + navigateToChat + waitChatReady 链在高负载下可超 30s 默认上限
 	await login(page);
 	const info = await navigateToChat(page);
 	test.skip(!info, 'No chat session available');
@@ -113,6 +115,7 @@ test('回到底部按钮：scrollTo 被吞 500ms 仍收敛到底（force 重试�
 });
 
 test('回到底部按钮：距底 < 1 屏时不显示 @ui', async ({ page }) => {
+	test.setTimeout(60_000); // login + navigateToChat + waitChatReady 链在高负载下可超 30s 默认上限
 	await login(page);
 	const info = await navigateToChat(page);
 	test.skip(!info, 'No chat session available');
