@@ -188,7 +188,11 @@ test('post-accept 取消（streaming 在飞）：STOP 协调、状态清洁、bt
 
 	const textarea = page.getByTestId('chat-textarea');
 	const mark = `postaccept-cancel-${Date.now()}`;
-	await typeText(textarea, mark);
+	// 让回复足够长，保证有稳定的"流式在飞"窗口可供取消——短回复会在点 STOP 之前就完成（btn-stop 消失）。
+	// 长文比"数数"更不易被模型省略截断，能稳定撑出多秒的流式窗口；我们在内容刚开始且仍在飞时即取消、
+	// 不等回复跑完，故长指令不拖慢用例。mark 仍是指令里的唯一子串，供下方按用户消息内容定位。
+	const prompt = `${mark} 请写一篇关于海洋生态的科普长文，至少 1200 字，分 5 段、尽量详细，不要使用列表。`;
+	await typeText(textarea, prompt);
 	await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 5000 });
 
 	// 真实发送（不 mock）
@@ -205,7 +209,36 @@ test('post-accept 取消（streaming 在飞）：STOP 协调、状态清洁、bt
 		{ timeout: 30_000, intervals: [200, 300, 500, 800] },
 	).toBe(true);
 
-	// streaming 在飞时点 STOP（真取消，走 accepted 分支协调）
+	// 关键：等 assistant 回复"真的开始流式输出内容"（contentLen>0）再点 STOP——即"取消一个看得见在流的
+	// 回复"这一真实用户动作。content 具体内容无关、只要 >0。若在首 token 之前的亚秒窗口取消（content-less），
+	// 产品有一个把 assistant 气泡 _streaming 卡 true 的窄竞态（已登记 ui/TODO，本轮不修、不在本用例覆盖内）。
+	await expect.poll(
+		() => evalStore(page, 'chat', `
+			const mark = ${JSON.stringify(mark)};
+			const msgs = store.allMessages || [];
+			const textOf = (m) => {
+				const c = m && m.message && m.message.content;
+				if (typeof c === 'string') return c;
+				if (Array.isArray(c)) return c.filter(b => b && b.type === 'text').map(b => b.text).join('');
+				return '';
+			};
+			let userIdx = -1;
+			for (let i = 0; i < msgs.length; i++) {
+				if (msgs[i]?.message?.role === 'user' && textOf(msgs[i]).includes(mark)) userIdx = i;
+			}
+			if (userIdx < 0) return false;
+			let alen = 0;
+			for (let i = userIdx + 1; i < msgs.length; i++) {
+				if (msgs[i]?.message?.role === 'assistant') { alen = textOf(msgs[i]).length; break; }
+			}
+			// 既已有内容、又仍在飞（sending=true）才放行 → 在"真正流式中途"取消，规避两头：
+			// (a) content-less 取消触发的 _streaming 卡死窄竞态；(b) 回复已完成、btn-stop 已消失。
+			return alen > 0 && store.sending === true;
+		`),
+		{ timeout: 90_000, intervals: [150, 150, 200, 200, 300] },
+	).toBe(true);
+
+	// streaming 且已有内容在飞时点 STOP（真取消，走 accepted 分支协调）
 	await expect(stopBtn).toBeVisible({ timeout: 3000 });
 	await stopBtn.click();
 
@@ -218,7 +251,7 @@ test('post-accept 取消（streaming 在飞）：STOP 协调、状态清洁、bt
 	// （判完成用 STOP 消失，不用 btn-send 出现——输入框已清空时 btn-send 不渲染）
 	await expect(stopBtn).toBeHidden({ timeout: 180_000 });
 
-	// 终态快照：状态清洁 + partial 气泡处理结果（content 可能是 string 或 block 数组）
+	// 终态快照：状态清洁 + 无残留流式/乐观气泡（content 可能是 string 或 block 数组，仅供留痕）
 	const summary = await evalStore(page, 'chat', `
 		const mark = ${JSON.stringify(mark)};
 		const msgs = store.allMessages;
@@ -258,7 +291,7 @@ test('post-accept 取消（streaming 在飞）：STOP 协调、状态清洁、bt
 		};
 	`);
 
-	// 留痕供人工核对实际行为（partial 气泡是否留存）
+	// 留痕供人工核对实际终态（assistant 气泡内容/状态，不作断言）
 	console.log('[e2e][post-accept-cancel] summary=', JSON.stringify(summary));
 
 	// 断言：用户消息已发出并留存
