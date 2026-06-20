@@ -30,7 +30,14 @@ export default defineConfig({
 		// 使用 headed 模式可跨环境兼容；无 GUI 环境通过 xvfb-run 提供虚拟 display（pnpm e2e:ci）。
 		headless: false,
 		// 多屏：把测试浏览器弹到指定显示器，避免遮挡当前终端。位置来源见上方 windowPositionArgs。
-		launchOptions: { args: windowPositionArgs() },
+		// fake media 两参：让 getUserMedia 自动放行并提供假音频设备（语音录制 E2E 用），对其它 spec 零影响。
+		launchOptions: {
+			args: [
+				'--use-fake-device-for-media-stream',
+				'--use-fake-ui-for-media-stream',
+				...windowPositionArgs(),
+			],
+		},
 	},
 	webServer: [
 		{

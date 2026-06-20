@@ -22,7 +22,7 @@
 					@click="previewImg(f)"
 				/>
 				<!-- 语音文件卡片 -->
-				<div v-else-if="f.isVoice" class="flex min-h-14 max-w-60 gap-1 rounded-xl border border-accented py-2 pl-1 pr-3">
+				<div v-else-if="f.isVoice" data-testid="voice-attachment-card" class="flex min-h-14 max-w-60 gap-1 rounded-xl border border-accented py-2 pl-1 pr-3">
 					<UIcon name="i-lucide-mic" class="size-8 shrink-0 self-center text-muted" />
 					<div class="min-w-0 flex flex-1 flex-col justify-evenly text-xs leading-tight">
 						<div class="truncate font-medium">{{ voiceDisplayName(f) }}</div>
@@ -103,10 +103,12 @@
 				<!-- 桌面录音波形 -->
 				<div
 					v-if="isDesktopRecording"
+					data-testid="voice-recording"
 					class="flex items-center gap-2"
 				>
 					<div ref="deskWaveContainer" class="h-10 min-w-0 flex-1 rounded-md bg-elevated" />
 					<UButton
+						data-testid="btn-voice-cancel"
 						class="cc-icon-btn-lg"
 						icon="i-lucide-x"
 						variant="ghost"
@@ -115,6 +117,7 @@
 						@click="onCancelDesktopRecording"
 					/>
 					<UButton
+						data-testid="btn-voice-stop"
 						class="cc-icon-btn-lg"
 						icon="i-lucide-check"
 						variant="soft"
