@@ -1,45 +1,37 @@
 import { expect, test } from '@playwright/test';
-import { login, navigateToChat, waitChatReady, typeText } from './helpers.js';
+import { login, navigateToChat, waitChatReady, typeText, evalStore } from './helpers.js';
 
 /**
- * 弱网环境 E2E 测试
+ * 慢速传输 E2E 测试
  *
- * 通过 CDP Network.emulateNetworkConditions 模拟慢速网络，
- * 验证前端在弱网下的交互状态和容错能力。
+ * 旧版用 CDP Network.emulateNetworkConditions 模拟"弱网"——但业务 RPC 走 loopback P2P
+ * DataChannel，CDP 只能限渲染层 HTTP/WS，碰不到 DC：撤掉限速断言全等（假绿）。这里改为直接在
+ * DC 的 RPC 发送通道注入确定性延迟，真实模拟慢速上行，并以"accept 被延迟"作为非平凡信号验证
+ * 慢传输确实作用在发送路径上。keepalive 探针走原始 dc.send，不受包装影响、不触发 RTC 重建。
  *
- * 前置条件：同 chat-resilience
- *
- * 预设参考（与 Chrome DevTools 一致）：
- * - Slow 3G: latency 2000ms, 400 Kbps 上下行
- * - Slow 4G: latency 170ms, 4 Mbps 下行 / 3 Mbps 上行
+ * 前置条件：同 chat-resilience（test 用户至少一个 online claw + agent:main:main session）
  */
 
-// CDP 网络节流预设（throughput 单位：bytes/s）
-const SLOW_3G = {
-	offline: false,
-	latency: 2000,
-	downloadThroughput: 51200,   // 400 Kbps
-	uploadThroughput: 51200,     // 400 Kbps
-};
+/**
+ * 在 DC 的 RPC 发送通道注入固定延迟（ms）：注入后每次 conn.rtc.send 的请求帧都被推迟 delayMs
+ * 才真正发出。返回是否注入成功（DC 未就绪则 false）。
+ * @param {import('@playwright/test').Page} page
+ * @param {number} delayMs
+ * @returns {Promise<boolean>}
+ */
+function injectDcSendDelay(page, delayMs) {
+	return evalStore(page, 'chat', `
+		const conn = store.__getConnection();
+		if (!conn?.rtc?.isReady) return false;
+		const orig = conn.rtc.send.bind(conn.rtc);
+		conn.rtc.send = (...args) => new Promise((resolve, reject) => {
+			setTimeout(() => orig(...args).then(resolve, reject), ${delayMs});
+		});
+		return true;
+	`);
+}
 
-const SLOW_4G = {
-	offline: false,
-	latency: 170,
-	downloadThroughput: 524288,  // 4 Mbps
-	uploadThroughput: 393216,    // 3 Mbps
-};
-
-const NO_THROTTLE = {
-	offline: false,
-	latency: 0,
-	downloadThroughput: -1,
-	uploadThroughput: -1,
-};
-
-test.describe('弱网环境 @resilience', () => {
-	/** @type {import('playwright-core').CDPSession | null} */
-	let cdp = null;
-
+test.describe('慢速传输 @resilience', () => {
 	test.beforeEach(async ({ page }) => {
 		test.setTimeout(120_000);
 		await page.setViewportSize({ width: 1280, height: 720 });
@@ -49,68 +41,64 @@ test.describe('弱网环境 @resilience', () => {
 		await waitChatReady(page);
 	});
 
-	test.afterEach(async () => {
-		if (cdp) {
-			await cdp.send('Network.emulateNetworkConditions', NO_THROTTLE).catch(() => {});
-			await cdp.detach().catch(() => {});
-			cdp = null;
-		}
+	// ================================================================
+	// Test 1: 慢速上行 — sending 状态持续可见，accept 被传输延迟真实推迟后成功送达
+	// ================================================================
+
+	test('慢速上行：sending 持续可见、accept 被传输延迟推迟后成功送达', async ({ page }) => {
+		const DELAY = 6000;
+		const textarea = page.getByTestId('chat-textarea');
+		const testMsg = 'slow-uplink-' + Date.now();
+
+		const injected = await injectDcSendDelay(page, DELAY);
+		expect(injected).toBe(true);
+
+		await typeText(textarea, testMsg);
+		await page.getByTestId('btn-send').click();
+
+		// 乐观发送：btn-send 立即被 btn-stop 取代（sending 状态可见）
+		await expect(page.getByTestId('btn-stop')).toBeVisible({ timeout: 5000 });
+
+		// 注入延迟真实生效：请求帧被推迟 DELAY 才发出 → agent 在此之前收不到 → __accepted
+		// 在延迟窗口内确定性地保持 false（无延迟时 loopback accept 通常 <1s）。
+		// 这是"慢传输被真实反映"的非平凡信号，而非 CDP 限速那种碰不到 DC 的假绿。
+		await page.waitForTimeout(3000);
+		expect(await evalStore(page, 'chat', 'return store.__accepted')).toBe(false);
+
+		// 延迟过后请求真正送达、agent accept（消息成功送达，慢但不失败）。__accepted===true 即为
+		// 成功信号；不再断言 .text-error「错误 banner」——chat 错误经 toast 暴露、chat-root 内并无该
+		// banner，该 class 反而会误命中红色样式的 btn-stop（发送中即假阳）。
+		await expect
+			.poll(() => evalStore(page, 'chat', 'return store.__accepted'), { timeout: 30_000 })
+			.toBe(true);
 	});
 
 	// ================================================================
-	// Test 1: Slow 3G — sending 状态明显可观察
+	// Test 2: 慢速上行下消息仍能端到端完成（韧性：慢但不失败）
 	// ================================================================
 
-	test('Slow 3G：发送消息时 sending 状态持续可见', async ({ page }) => {
-		cdp = await page.context().newCDPSession(page);
-		await cdp.send('Network.emulateNetworkConditions', SLOW_3G);
-
+	test('慢速上行：消息最终完成、输入框恢复可用', async ({ page }) => {
+		test.setTimeout(300_000);
+		const DELAY = 4000;
 		const textarea = page.getByTestId('chat-textarea');
-		const sendBtn = page.getByTestId('btn-send');
-		const testMsg = 'slow3g-test-' + Date.now();
+		const testMsg = 'slow-complete-' + Date.now();
+
+		const injected = await injectDcSendDelay(page, DELAY);
+		expect(injected).toBe(true);
 
 		await typeText(textarea, testMsg);
-		await sendBtn.click();
+		await page.getByTestId('btn-send').click();
 
-		// 高延迟下 sending 状态应持续足够长，send 按钮消失（被 stop 按钮替换）
-		await expect(sendBtn).not.toBeVisible({ timeout: 5000 });
+		// 注入延迟期间 accept 尚未发生（证明延迟真实作用于发送路径，而非瞬时完成）
+		await page.waitForTimeout(2000);
+		expect(await evalStore(page, 'chat', 'return store.__accepted')).toBe(false);
 
-		// 最终 sending 结束（消息完成或超时），btn-stop 消失
-		// 发送后输入框清空、canSend=false，btn-send 不渲染，须等 btn-stop 消失
-		// 超时设为 90s：Slow 3G 下 WS RPC 往返需 ~4s，agent 响应可能更久
-		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 90_000 });
+		// 慢传输下消息仍最终完成（btn-stop 消失），未卡死
+		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
 
-		// 无错误 banner
-		await expect(
-			page.locator('[data-testid="chat-root"] .text-error'),
-		).not.toBeVisible({ timeout: 3000 });
-	});
-
-	// ================================================================
-	// Test 2: Slow 4G — 消息正常完成
-	// ================================================================
-
-	test('Slow 4G：发送消息可正常完成', async ({ page }) => {
-		cdp = await page.context().newCDPSession(page);
-		await cdp.send('Network.emulateNetworkConditions', SLOW_4G);
-
-		const textarea = page.getByTestId('chat-textarea');
-		const sendBtn = page.getByTestId('btn-send');
-		const testMsg = 'slow4g-test-' + Date.now();
-
-		await typeText(textarea, testMsg);
-		await sendBtn.click();
-
-		// Slow 4G 延迟低（170ms），应在合理时间内完成（btn-stop 消失）
-		// 发送后输入框清空、canSend=false，btn-send 不渲染，须等 btn-stop 消失
-		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 60_000 });
-
-		// textarea 恢复可用
+		// 成功终态：__accepted 为 true（run 被 accept 并跑完），区别于 pre-accept 失败（btn-stop 也会
+		// 消失但 __accepted 仍 false）；textarea 恢复可用
+		expect(await evalStore(page, 'chat', 'return store.__accepted')).toBe(true);
 		await expect(textarea).toBeEnabled({ timeout: 3000 });
-
-		// 无错误 banner
-		await expect(
-			page.locator('[data-testid="chat-root"] .text-error'),
-		).not.toBeVisible({ timeout: 3000 });
 	});
 });
