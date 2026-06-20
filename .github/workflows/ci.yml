@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.0.36
+        env:
+          MYSQL_DATABASE: coclaw
+          MYSQL_USER: coclaw
+          MYSQL_PASSWORD: coclaw_db_2026
+          MYSQL_ROOT_PASSWORD: coclaw_root_2026
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pcoclaw_root_2026 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+          --health-start-period=30s
+    env:
+      DB_URL: mysql://coclaw:coclaw_db_2026@127.0.0.1:3306/coclaw
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 生成 Prisma client（产物 gitignored，全新检出时缺失）；放在 check 之前作为保险，详见 docs/operations/ci.md
+      - run: pnpm --filter @coclaw/server prisma:generate
+      - run: pnpm check
+      - run: pnpm --filter @coclaw/server prisma:migrate:deploy
+      - run: pnpm --filter @coclaw/server test
+      - run: pnpm --filter @coclaw/ui test
+      - run: pnpm --filter @coclaw/openclaw-coclaw test

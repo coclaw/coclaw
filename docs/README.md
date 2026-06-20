@@ -83,6 +83,7 @@ OpenClaw 平台机制研究，用于指导 CoClaw 集成。
 
 ## Operations — 运维
 
+- [CI 门禁](operations/ci.md) — GitHub Actions 三工作区 lint+typecheck+单测门禁、MySQL service 容器、明确不在 CI 范围内的东西
 - [部署操作](operations/deploy-ops.md) — 内部部署手册
 - [本地开发环境](operations/local-dev-setup.md) — pnpm dev 入口、依赖容器、coturn 配置要点
 - [WSL2 网络配置](operations/wsl2-network-setup.md) — WSL2 防火墙配置（WebRTC UDP）
