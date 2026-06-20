@@ -55,6 +55,18 @@ test.describe('网络断开与恢复 @resilience', () => {
 	//   - 断连后还会自动重试一次，retry 仍走 210s 连接等待
 	// 即"断网立即报连接错误"并非产品真实行为：产品是韧性等待，最快 ~180s 才有超时反馈。
 	// 因此本用例验证韧性语义（消息被保留、不快速失败），而非快速失败的错误 toast。
+	//
+	// 【为何还要 stall DC——setOffline 模拟断网并不严密】
+	// context.setOffline(true) 只切断浏览器的 HTTP/WS，切不断环回（loopback）上的 P2P
+	// DataChannel——claw 与 UI 同机时 RTC 走 host candidate，setOffline 拦不到。实测：仅
+	// forceCloseWs + setOffline 后，agent 请求照样经仍 open 的 DC 投递、被在线 agent 正常
+	// accept 并应答，run 正常完成 → sending 在 ~10-15s 内回落 false。这并非"快速失败"，而是
+	// 一次真实成功发送；但它与本用例"韧性等待、消息保持在途"的前提相悖，且完成时刻随机落在
+	// 断言窗口前后 → 此前 load-sensitive flake 的根因（机器负载只是拉长了 click→断言的墙钟
+	// 窗口，让本就临界的完成时刻更易落入窗口内）。
+	// 因此这里额外把 DC 的 RPC 发送通道 stall 掉，airtight 模拟"发得出、收不回"的真实断网：
+	// 请求永挂在连接/响应等待中，sending 确定性地持续 true。keepalive 探针走原始 dc.send
+	// （非此 send() 包装），不受影响，不会触发 RTC 重建 churn。
 
 	test('断网后发消息：进入韧性等待，不快速失败、不回滚、保留气泡', async ({ page, context }) => {
 		const textarea = page.getByTestId('chat-textarea');
@@ -70,6 +82,16 @@ test.describe('网络断开与恢复 @resilience', () => {
 		// 等待信令 WS 断开
 		await waitForWsState(page, 'disconnected');
 
+		// 把当前 claw 的 DC RPC 发送通道 stall 掉：让 agent 请求发出后永不返回（airtight 断网）。
+		// 不关 DC、不改状态机——避免 close 触发 RTC 重建 churn 把乐观气泡刷掉；仅令"收不回响应"。
+		const stalled = await evalStore(page, 'chat', `
+			const conn = store.__getConnection();
+			if (!conn?.rtc?.isReady) return false;
+			conn.rtc.send = () => new Promise(() => {}); // 永挂：发出后无响应
+			return true;
+		`);
+		expect(stalled).toBe(true);
+
 		// 点击发送
 		await page.getByTestId('btn-send').click();
 
@@ -79,7 +101,8 @@ test.describe('网络断开与恢复 @resilience', () => {
 			{ timeout: 8000 },
 		).toBe(true);
 
-		// 2) 再留一段窗口，确认期间确实没有触发任何"快速失败"路径
+		// 2) 再留一段窗口，确认期间确实没有触发任何"快速失败"路径。
+		// DC 已 stall（收不回响应）→ sending 确定性地持续 true，不再依赖"agent 恰好没应答完"的时序。
 		await page.waitForTimeout(5000);
 		const stillSending = await evalStore(page, 'chat', 'return store.sending');
 		expect(stillSending).toBe(true);
@@ -99,12 +122,21 @@ test.describe('网络断开与恢复 @resilience', () => {
 		// 4) 输入框保持为空：消息进入在途，草稿未回滚（与"快速失败回滚"相反）
 		await expect(textarea).toHaveValue('');
 
-		// 5) 用户气泡仍渲染在页面：消息被保留、没有被丢弃
-		// 用 DOM 层断言而非 store 内部标记——气泡可能脱离纯乐观态（_local 消失）
-		// 或 content 变成 block 数组（双格式坑），但只要气泡文本仍可见即证明消息未丢失
-		await expect(
-			page.locator('[data-testid="chat-msg-item"]').filter({ hasText: testMsg }),
-		).toBeVisible();
+		// 5) 消息被保留为"发送中"在途态：未回滚、未丢弃，且确实进入等待而非快速完成/失败。
+		// 真实断网（DC 已 stall，永不 accepted）下乐观气泡始终 _pending → ChatMsgItem 展示
+		// "发送中…"在途指示器而非正文（正文仅在 accepted 后渲染）。这里以 store 断言核验韧性等待
+		// 的完整契约——确定性、且不依赖 ChatPage 的滚动就绪可见性门（__scrollReady 未就绪时整面板
+		// visibility:hidden，使任何 DOM 可见性断言在负载下脆断；正文此时本就不渲染，须查 store）：
+		//   - found：乐观用户消息仍在（_local + 内容未变）→ 未回滚 / 丢弃
+		//   - pending：仍为 _pending → UI 呈现为"发送中"在途态而非快速失败被清掉
+		//   - accepted=false：airtight 断网下确实在等待，而非经仍 open 的环回 DC 被 agent 正常完成
+		const state = await evalStore(page, 'chat', `
+			const m = (store.messages || []).find(
+				x => x._local && x.message?.role === 'user' && x.message?.content === '${testMsg}'
+			);
+			return { found: !!m, pending: !!m?._pending, accepted: store.__accepted };
+		`);
+		expect(state).toEqual({ found: true, pending: true, accepted: false });
 	});
 
 	// ================================================================
