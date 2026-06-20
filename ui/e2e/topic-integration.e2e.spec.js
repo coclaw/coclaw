@@ -31,6 +31,11 @@ test.describe('Topic management @chat', () => {
 	});
 
 	test('从 agent main session 创建新 topic 并发送消息', async ({ page }) => {
+		// 本测含 login + nav + 创建 topic + 等 agent 完成（sending toPass 90s），
+		// 整体 ≈140s 超出 describe 级 120s 默认上限 → 单独抬到 180s 给足预算；
+		// 其余轻量用例仍沿用 describe 的 120s 较紧的护栏。
+		test.setTimeout(180_000);
+
 		// 1. 进入 topics 列表页，等待 agent 列表加载
 		await page.goto('/topics');
 		const agentLink = page.locator('nav a[href*="/chat/"]').first();
@@ -66,15 +71,18 @@ test.describe('Topic management @chat', () => {
 		const sendBtn = page.getByTestId('btn-send');
 		await sendBtn.click();
 
-		// 7. 验证路由从 /topics/new 切换为 /topics/<uuid>
-		await expect(page).not.toHaveURL(/\/topics\/new/, { timeout: 20_000 });
-		await expect(page).toHaveURL(/\/topics\/[0-9a-f-]{36}/, { timeout: 5000 });
-
-		// 7b. topic 已真实创建：尽早捕获 { clawId, topicId } 供 afterEach 清理，
-		//     即使后续断言抛错也能保证这条不泄漏。
+		// 7. step 6 的 send 会真实创建 topic 并把路由切到 /topics/<uuid>。
+		//    用 waitForURL 等这次切换——它在 URL 一匹配的瞬间 resolve，于是能在
+		//    任何可抛断言之前立刻捕获 { clawId, topicId } 给 afterEach 清理。
+		//    若改用 expect().toHaveURL 断言、再在其后捕获，则 topic 创建成功后该断言
+		//    一旦超时（偶发抖动），createdTopic 仍是 null → afterEach 空转 → 泄漏一个 topic。
+		await page.waitForURL(/\/topics\/[0-9a-f-]{36}/, { timeout: 25_000 });
 		const topicId = page.url().match(/\/topics\/([0-9a-f-]{36})/)?.[1];
 		const clawId = await evalStore(page, 'chat', 'return store.clawId;');
 		if (topicId && clawId) createdTopic = { clawId, topicId };
+
+		// 7b. 捕获后再断言确实已离开 /topics/new（此刻 URL 已是 uuid，断言即时通过）
+		await expect(page).not.toHaveURL(/\/topics\/new/);
 
 		// 8. 等待 sending 状态结束（agent 完成处理）
 		//    chat store 是工厂模式，真实 id 为 chat-session:/chat-topic:，须用 evalStore 的 'chat' 简写匹配

@@ -4,6 +4,7 @@ import {
 	navigateToMainChat,
 	waitChatReady,
 	typeText,
+	evalStore,
 	createTopicViaStore,
 	deleteTopicViaStore,
 } from './helpers.js';
@@ -195,5 +196,111 @@ test('历史 topic 续聊：重新进入已有内容的 topic 再续一条 @chat
 			const ok = await deleteTopicViaStore(page, clawId, topicId);
 			if (!ok) console.warn(`[topic-mgmt] cleanup failed for resumed topic ${topicId}`);
 		}
+	}
+});
+
+// ================================================================
+// Test 4: 删除"当前正在查看"的 topic → 被路由推离该 topic
+// ================================================================
+//
+// 现有删除用例都是在列表里删一个"未打开"的 topic。这里覆盖边角：用户正打开
+// /topics/<id> 时删它，应被路由推走（TopicItemActions.onConfirmDelete 在
+// route.name==='topics-chat' && params.sessionId===topicId 时 router.replace('/')）。
+
+test('Topic 删除：删除当前打开的 topic → 路由离开该 topic @chat @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	const clawId = await enterMainChat(page);
+	test.skip(!clawId, 'No chat session available (no claw online)');
+
+	const topicId = await createTopicViaStore(page, clawId, 'main');
+	expect(topicId).toBeTruthy();
+	let removedViaUi = false;
+
+	try {
+		// 经侧栏进入这个 topic（空 topic 也会停在 /topics/<id>：__validateRoute 对
+		// "已在 store 的 topic + 其 claw 在线"不会推走，NOT_FOUND 只是正文为空、不改路由）
+		const row = topicRow(page, topicId);
+		await expect(row).toBeVisible({ timeout: 10_000 });
+		await page.locator(`aside a[href$="/topics/${topicId}"]`).click();
+		await page.waitForURL(new RegExp(`/topics/${topicId}$`), { timeout: 10_000 });
+
+		// 从行内菜单删除"当前打开"的这个 topic
+		await row.hover();
+		await row.getByRole('button').click();
+		const menu = page.locator('.max-w-60');
+		await menu.getByRole('button').filter({ hasText: /Delete|删除/ }).click();
+		const deleteDialog = page.getByRole('dialog').filter({ hasText: /Delete topic|删除话题/ });
+		await expect(deleteDialog).toBeVisible({ timeout: 5000 });
+		await deleteDialog.getByRole('button', { name: /^(Confirm|确认)$/ }).click();
+
+		// 核心断言：删除当前打开的 topic 后，用户被路由推离 /topics/<topicId>
+		await page.waitForURL((url) => !url.pathname.endsWith(`/topics/${topicId}`), { timeout: 10_000 });
+		await expect(page).not.toHaveURL(new RegExp(`/topics/${topicId}$`));
+
+		// 确认确实是被删除（store 里已没有该 topic），而非仅仅路由跳走
+		const stillExists = await evalStore(page, 'topics', `return store.findTopic('${topicId}') != null;`);
+		expect(stillExists).toBe(false);
+		removedViaUi = true;
+	}
+	finally {
+		// 已删则兜底删一个不存在的 topic 返回 false，无副作用
+		if (!removedViaUi) {
+			const ok = await deleteTopicViaStore(page, clawId, topicId);
+			if (!ok) console.warn(`[topic-mgmt] fallback cleanup failed for open-topic ${topicId}`);
+		}
+	}
+});
+
+// ================================================================
+// Test 5: 空白/纯空格重命名被拒、原标题不变
+// ================================================================
+//
+// 重命名弹窗的确认钮 :disabled="!renameValue.trim()"，且 onConfirmRename 对空标题
+// early-return：纯空格输入既无法点确认、也不会发 RPC。这里验"被拒 + 标题不变"。
+
+test('Topic 重命名：纯空格标题被拒、原标题不变 @chat @ui', async ({ page }) => {
+	test.setTimeout(120_000);
+	const clawId = await enterMainChat(page);
+	test.skip(!clawId, 'No chat session available (no claw online)');
+
+	const topicId = await createTopicViaStore(page, clawId, 'main');
+	expect(topicId).toBeTruthy();
+
+	try {
+		// 先给 topic 一个真实标题作基线，使"标题不变"的断言有意义（避免 null→null 空转）
+		const baseTitle = `e2e-base-${Date.now()}`;
+		await page.evaluate(async ({ clawId, topicId, title }) => {
+			const { useTopicsStore } = await import('/src/stores/topics.store.js');
+			await useTopicsStore().updateTopic(clawId, topicId, { title });
+		}, { clawId, topicId, title: baseTitle });
+
+		const row = topicRow(page, topicId);
+		await expect(row).toContainText(baseTitle, { timeout: 10_000 });
+
+		// 打开重命名弹窗
+		await row.hover();
+		await row.getByRole('button').click();
+		const menu = page.locator('.max-w-60');
+		await menu.getByRole('button').filter({ hasText: /Rename|重命名/ }).click();
+
+		const renameDialog = page.getByRole('dialog');
+		const input = renameDialog.getByRole('textbox');
+		await expect(input).toBeVisible({ timeout: 5000 });
+
+		// 输入纯空格（rename 框是 UInput，允许 fill）→ 确认钮被禁用 = 被拒
+		await input.fill('   ');
+		await expect(input).toHaveValue('   ', { timeout: 3000 });
+		const confirmBtn = renameDialog.getByRole('button', { name: /^(Confirm|确认)$/ });
+		await expect(confirmBtn).toBeDisabled();
+
+		// 取消关闭弹窗，标题应保持基线值（store + 列表行均未变）
+		await renameDialog.getByRole('button', { name: /^(Cancel|取消)$/ }).click();
+		const titleAfter = await evalStore(page, 'topics', `return store.findTopic('${topicId}')?.title ?? null;`);
+		expect(titleAfter).toBe(baseTitle);
+		await expect(row).toContainText(baseTitle, { timeout: 5000 });
+	}
+	finally {
+		const ok = await deleteTopicViaStore(page, clawId, topicId);
+		if (!ok) console.warn(`[topic-mgmt] cleanup failed for blank-rename topic ${topicId}`);
 	}
 });
