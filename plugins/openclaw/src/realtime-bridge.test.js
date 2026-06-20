@@ -10,10 +10,22 @@ import { readConfig, writeConfig } from './config.js';
 import { getRuntime, setRuntime } from './runtime.js';
 import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
 
+// 钉住事件循环：本文件多处用例（如 __gatewayAgentRpc 的 timeout / accept_timeout 路径）
+// await 的结果只能靠产品侧 .unref() 的超时定时器兜底 resolve（unref 是生产正确行为，
+// 让网关能干净退出）。测试把网关的 WebSocket / 心跳等常驻 ref 句柄都 mock 掉了，事件循环
+// 缺少 production 里的环境 ref 句柄；当某用例只剩 unref 定时器挂起时，Node 22 的 node:test
+// 会在 beforeExit 把它判为 "Promise resolution is still pending but the event loop has
+// already resolved" 并级联 cancel(cancelledByParent) 其后全部用例——被取消的用例覆盖率归零，
+// 拖垮 100% 行门禁。（Node 22 必现、Node 24 已改此行为不复现；CI 跑 Node 22、本地 mac 多为
+// Node 24，故本地不复现。）用一个 ref 的空转 interval 还原这份环境存活性，让 unref 定时器
+// 确定性触发、用例确定性地跑；after() 里 clear 让进程正常退出。
+const keepEventLoopAlive = setInterval(() => {}, 60_000);
+
 // singleton 测试会调用真实 preloadNdc → initLogger 注册 native TSFN，
 // 阻止进程退出。finally 中的 stop 不带 forceCleanup，cleanup ref 已丢失，
 // 需直接调 ndc cleanup 兜底释放 TSFN。
 after(async () => {
+	clearInterval(keepEventLoopAlive);
 	try { await stopRealtimeBridge({ forceCleanup: true }); } catch { /* best-effort */ }
 	try {
 		const ndc = await import('node-datachannel');
