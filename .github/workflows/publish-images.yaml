@@ -1,0 +1,71 @@
+name: Publish Images
+
+# 发布镜像构建（CD 上半部分）：把 server 与 ui 多架构镜像建好并推到 GHCR。
+# 真正的生产部署（CD 下半部分）仍手动跑 scripts/deploy-*.sh，详见 docs/operations/ci.md。
+on:
+  # 发布流程 push 的 v* tag 触发（/release 模式 A/B 的 git push origin v<root>）
+  push:
+    tags: ['v*']
+  # 手动触发：覆盖「只动 server/plugin、root 版本不变、不产生 tag」的盲区
+  # 终端用 `gh workflow run publish-images.yaml` 即可补建镜像
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write # 推 GHCR 必需
+
+concurrency:
+  # 按 ref 分组；不取消进行中的构建（镜像构建不该被后续触发打断）
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # arm64 走 QEMU 模拟较慢，首版保守给足，待首跑校准
+    timeout-minutes: 60
+    env:
+      # ui build 的 pnpm install 会拉 electron devDep，跳过其二进制下载（对齐 ci.yaml）
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # build-ui.sh 在 host 端跑 `pnpm --filter @coclaw/ui build` 出 dist，需要 node + pnpm + 依赖
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22 对齐部署与 ci.yaml
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # 注册 arm64 模拟，多架构构建必需
+      - uses: docker/setup-qemu-action@v3
+      # 不加 setup-buildx-action：build-server.sh / build-ui.sh 自建并 --use 名为 coclaw-builder
+      # 的 docker-container builder（支持多架构 + --push），额外建 builder 会与脚本重复
+
+      # 脚本不含 docker login，CI 必须补；GITHUB_TOKEN 推 GHCR
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 各脚本内部读对应 package.json 的 version 打 tag（:<version> + :latest），零改动复用
+      - name: Build & push server image
+        run: bash scripts/build-server.sh
+      - name: Build & push ui image
+        run: bash scripts/build-ui.sh
+
+      - name: Summary
+        run: |
+          SERVER_VERSION=$(node -p "require('./server/package.json').version")
+          UI_VERSION=$(node -p "require('./ui/package.json').version")
+          {
+            echo "## Publish Images"
+            echo ""
+            echo "| Service | Image | Version |"
+            echo "|---------|-------|---------|"
+            echo "| server | ghcr.io/coclaw/server | $SERVER_VERSION |"
+            echo "| ui | ghcr.io/coclaw/ui | $UI_VERSION |"
+          } >> "$GITHUB_STEP_SUMMARY"

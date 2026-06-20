@@ -54,13 +54,39 @@ server 的 `test` 脚本本身开头也会先 `prisma generate`，所以单看�
 - 各工作区单测：`pnpm --filter <pkg> test`。
 - server 单测需先备好 MySQL：起本地 dev MySQL → `pnpm --filter @coclaw/server prisma:migrate:deploy` → `export DB_URL=...` 后再跑 test（`node --test` 不读 `.env`）。细节见 [`local-dev-setup.md`](local-dev-setup.md) 与 `server/CLAUDE.md` 的「跑单测前置」。
 
+## 发布镜像构建（CD 上半部分）
+
+> 工作流定义：[`.github/workflows/publish-images.yaml`](../../.github/workflows/publish-images.yaml)
+
+这是与 CI 门禁分开的另一条流水线，负责把 `server` 与 `ui` 的多架构镜像建好并推到 GHCR（`ghcr.io/coclaw/server`、`ghcr.io/coclaw/ui`）。它**只消费已 push 的 tag，绝不 bump 版本 / 打 tag / 改 Changesets**。
+
+- **触发**：push `v*` tag（`/release` 模式 A/B 推 `v<root>` 时自动触发），或 `workflow_dispatch` 手动触发。
+- **每次全建**：不算 prev-tag、不做 diff，每次触发把 server 和 ui 都建一遍。
+- **怎么建**：复用 `scripts/build-server.sh` 与 `scripts/build-ui.sh`（脚本零改动）。两脚本自建名为 `coclaw-builder` 的 buildx builder 并各自读对应 `package.json` 的 version 打 `:<version>` + `:latest`。workflow 只补脚本缺的 host 端前置：node 22 + pnpm + `pnpm install`（`build-ui.sh` 在 host 跑 `vite build` 出 dist 需要）、`docker/setup-qemu-action`（arm64 模拟）、`docker/login-action` 登录 GHCR（脚本不含 login）。不加 `setup-buildx-action`（脚本自建 builder，避免重复）。
+- **权限**：`packages: write` + `GITHUB_TOKEN`（`github.actor` 登录 GHCR）。
+
+### 触发盲区与终端兜底
+
+`v*` tag 只在**根版本号变化**时才产生。若某次发布只动了 server 或 plugin、而 ui 仍是最高版本（根版本号取所有工作区最高，见 `docs/versioning.md`），则根版本不变 → 无新 `v*` tag → 自动构建**不触发**。此时在终端手动补建：
+
+```bash
+gh workflow run publish-images.yaml
+```
+
+（无需去 GitHub 网页点按钮。）
+
+### 首次启用前置：GHCR 写权限
+
+`ghcr.io/coclaw/server`、`ghcr.io/coclaw/ui` 这两个 package 是早期本地手动 `push` 创建的，本仓库 Actions 的 `GITHUB_TOKEN` 默认可能对它们**没有写权限，首跑可能 403**。首次启用前需到这两个 package 的 **settings → Manage Actions access**，把本仓库加为 **write**。这是运维前置，不是代码能修的。
+
 ## 明确不在 CI 范围内的东西
 
 以下都**有意**排除在阻塞门禁之外，各有原因：
 
 1. **E2E 进 CI** — E2E 的 global-setup 会把本机真实 OpenClaw 网关抢去绑到测试服，且 `@chat` / `@rtc` / `@file` 类用例需要一个真实在线的 claw 端、否则 skip；还强制带界面跑。近期一串提交都在修它的偶发失败，放进阻塞门禁会反复误红。**E2E 继续本地手动跑**（见 `e2e-test` skill）。
-2. **CD（构建推镜像 + 部署生产）** — 单台生产机，现用 `scripts/deploy-*.sh` + SSH 手动部署。自动化真部署要往 CI 塞生产 SSH / 镜像仓库密钥，维护期单人场景成本大于收益。**继续手动部署**（见 [`deploy-ops.md`](deploy-ops.md)）。
+2. **CD 下半部分（真部署到生产）** — 单台生产机，现用 `scripts/deploy-*.sh` + SSH 手动部署。自动化真部署要往 CI 塞生产 SSH / 镜像仓库密钥，维护期单人场景成本大于收益。**继续手动部署**（见 [`deploy-ops.md`](deploy-ops.md)）。
+   > CD **上半部分（tag 触发构建并推 GHCR 镜像）已纳入 CI**，见上方「发布镜像构建」一节。
 3. **发版自动化（Changesets workflow）** — **继续手动跑 `/release`**。
 4. **桌面 / 移动原生打包（Electron / Capacitor / iOS / macOS）** — 需 macOS / Windows runner + 签名证书，Linux CI 跑不了。**范围外**。
 
-将来真有多人协作 / 高频发布需求时，再补 CD 与发版自动化。
+将来真有多人协作 / 高频发布需求时，再补 CD 下半部分（真部署）与发版自动化。

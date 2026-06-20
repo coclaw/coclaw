@@ -78,6 +78,8 @@ git tag -l "v<root-version>" || git tag v<root-version>
 git push origin v<root-version>
 ```
 
+> **镜像构建**：push 新 `v*` tag 会自动触发 `publish-images.yaml` 建 GHCR 镜像。若本次未 bump 根版本（无新 `v*` tag，仅动 server/plugin 而 ui 仍最高），自动构建不触发，需手动补：`gh workflow run publish-images.yaml`。
+
 ### 7A. Release 判断
 
 按"GitHub Release 判断规则"执行（见下方）。
