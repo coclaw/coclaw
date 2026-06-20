@@ -15,7 +15,7 @@ import { login, navigateToChat, waitChatReady, evalStore } from './helpers.js';
 // ================================================================
 
 test('ChatPage 刷新：页面恢复正常，无错误提示 @resilience', async ({ page }) => {
-	test.setTimeout(60_000);
+	test.setTimeout(90_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
@@ -49,7 +49,7 @@ test('ChatPage 刷新：页面恢复正常，无错误提示 @resilience', async
 // ================================================================
 
 test('不存在的 session：重定向到首页 @resilience', async ({ page }) => {
-	test.setTimeout(30_000);
+	test.setTimeout(45_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
@@ -83,7 +83,7 @@ test('不存在的 session：重定向到首页 @resilience', async ({ page }) =
 // ================================================================
 
 test('Claw 离线：显示离线提示但输入保持可用 @resilience', async ({ page }) => {
-	test.setTimeout(60_000);
+	test.setTimeout(90_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 

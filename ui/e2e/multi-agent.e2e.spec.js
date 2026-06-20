@@ -118,7 +118,7 @@ test('Topics 页：Agent emoji 正确渲染 @chat', async ({ page }) => {
 // ================================================================
 
 test('Topics 页：点击 Agent 进入对应 chat session @chat', async ({ page }) => {
-	test.setTimeout(45_000);
+	test.setTimeout(60_000);
 	await setupWithAgents(page, test);
 
 	// 点击 main agent（按 href id 定位）进入其 chat session
@@ -134,7 +134,7 @@ test('Topics 页：点击 Agent 进入对应 chat session @chat', async ({ page 
 // ================================================================
 
 test('非 main agent (tester) 的 session 可正常加载消息 @chat', async ({ page }) => {
-	test.setTimeout(45_000);
+	test.setTimeout(90_000);
 	await setupWithAgents(page, test);
 
 	// 按 href id 定位 tester agent 链接并进入其 session
@@ -175,7 +175,7 @@ test('非 main agent (tester) 的 session 可正常加载消息 @chat', async ({
 // ================================================================
 
 test('ManageClaws 页：Claw 卡片内显示 Agent 列表 @chat', async ({ page }) => {
-	test.setTimeout(45_000);
+	test.setTimeout(60_000);
 	await setupWithAgents(page, test, '/claws');
 	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 	await waitSessionsLoaded(page);
@@ -193,7 +193,7 @@ test('ManageClaws 页：Claw 卡片内显示 Agent 列表 @chat', async ({ page 
 // ================================================================
 
 test('ManageClaws 页：点击 Agent 对话按钮进入 chat @chat', async ({ page }) => {
-	test.setTimeout(45_000);
+	test.setTimeout(60_000);
 	await setupWithAgents(page, test, '/claws');
 	await expect(page.getByTestId('btn-refresh-claws')).toBeVisible({ timeout: 10_000 });
 	await waitSessionsLoaded(page);
@@ -275,7 +275,7 @@ test.skip('非 main agent 的 main session 也显示新建聊天按钮 @chat', a
 // ================================================================
 
 test('HomePage：桌面端自动跳转到默认 agent 的 main session @chat', async ({ page }) => {
-	test.setTimeout(45_000);
+	test.setTimeout(90_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 

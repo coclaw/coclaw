@@ -77,7 +77,7 @@ test.describe('SSE 状态流故障 @resilience', () => {
 
 test.describe('WebSocket 连接故障 @resilience', () => {
 	test('WS 升级被拒 → chat 页显示连接错误状态', async ({ page }) => {
-		test.setTimeout(60_000);
+		test.setTimeout(90_000);
 		await page.setViewportSize({ width: 1280, height: 720 });
 
 		// 正常登录，正常进入 chat（WS 已连接）

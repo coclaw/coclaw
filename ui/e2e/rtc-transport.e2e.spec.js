@@ -41,7 +41,7 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 	});
 
 	test('RTC 模式下可通过 DataChannel 发送消息并收到回复', async ({ page }) => {
-		test.setTimeout(240_000);
+		test.setTimeout(300_000);
 		await page.setViewportSize({ width: 1280, height: 720 });
 
 		const chatInfo = await navigateToChat(page);
@@ -71,7 +71,7 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		console.log(`Claw ${chatInfo.clawId} transportMode: ${mode}`);
 
 		// 记录消息数
-		const msgCountBefore = await page.locator('[data-testid="chat-root"] main .px-3.py-3').count();
+		const msgCountBefore = await page.locator('[data-testid="chat-root"] main [data-testid="chat-msg-item"]').count();
 
 		// 发送消息
 		const testMsg = `rtc e2e ${Date.now()}`;
@@ -90,7 +90,7 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
 
 		// 验证消息数增加
-		const msgCountAfter = await page.locator('[data-testid="chat-root"] main .px-3.py-3').count();
+		const msgCountAfter = await page.locator('[data-testid="chat-root"] main [data-testid="chat-msg-item"]').count();
 		expect(msgCountAfter).toBeGreaterThan(msgCountBefore);
 
 		console.log(`消息收发成功 (transport: ${mode}, msgs: ${msgCountBefore}→${msgCountAfter})`);

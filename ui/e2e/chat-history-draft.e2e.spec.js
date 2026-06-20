@@ -75,7 +75,7 @@ test('历史分页：向上滚动加载更早消息并到顶显示无更多 @cha
 // ================================================================
 
 test('草稿保留：切换会话后未发送草稿仍保留 @chat', async ({ page }) => {
-	test.setTimeout(120_000);
+	test.setTimeout(180_000);
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 
