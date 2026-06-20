@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { login, navigateToChat } from './helpers.js';
+import { login, navigateToChat, waitChatReady } from './helpers.js';
 
 /**
  * ChatPage 布局回归测试
@@ -65,6 +65,9 @@ test('Desktop: ChatPage layout with many messages @ui', async ({ page }) => {
 	const claw = await navigateToChat(page);
 	test.skip(!claw, 'No chat session available (no claw connected)');
 
+	// inject 前等聊天就绪：navigateToChat 返回时 Vue 可能仍在渲染，injectMessages 的 innerHTML 注入
+	// 会被随后的重渲抹掉致脆断；等就绪后注入才稳定
+	await waitChatReady(page);
 	await injectMessages(page, 50);
 	// 等待 chat-root 可见，确保注入消息后 DOM 稳定
 	await expect(page.getByTestId('chat-root')).toBeVisible();
@@ -96,6 +99,9 @@ test('Mobile: ChatPage layout with many messages @ui', async ({ page }) => {
 	const claw = await navigateToChat(page);
 	test.skip(!claw, 'No chat session available (no claw connected)');
 
+	// inject 前等聊天就绪：navigateToChat 返回时 Vue 可能仍在渲染，injectMessages 的 innerHTML 注入
+	// 会被随后的重渲抹掉致脆断；等就绪后注入才稳定
+	await waitChatReady(page);
 	await injectMessages(page, 50);
 	// 等待 chat-root 可见，确保注入消息后 DOM 稳定
 	await expect(page.getByTestId('chat-root')).toBeVisible();

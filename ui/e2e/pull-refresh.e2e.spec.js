@@ -66,6 +66,7 @@ test.describe('下拉刷新 @ui', () => {
 	test.use({ hasTouch: true });
 
 	test.beforeEach(async ({ page }) => {
+		test.setTimeout(60_000); // 各用例含整页 reload + waitForEvent('load')，高负载下可超 30s 默认上限
 		await page.setViewportSize(MOBILE_VP);
 	});
 

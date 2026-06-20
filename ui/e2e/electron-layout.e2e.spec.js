@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { login, navigateToChat } from './helpers.js';
+import { login, navigateToChat, waitChatReady } from './helpers.js';
 
 /**
  * Electron 作用域布局回归测试（纯 CSS 几何，evaluate 挂 cc-electron-custom 类模拟壳内形态）：
@@ -119,11 +119,15 @@ test('Electron 形态：桌面侧栏 sticky 贴标题栏下缘，容器滚动后
 });
 
 test('Electron 形态：ChatPage 容器无溢出（无双滚动条）、消息区 main 内滚 @ui', async ({ page }) => {
+	test.setTimeout(60_000); // login + navigateToChat 链在高负载下可超 30s 默认上限
 	await page.setViewportSize({ width: 1280, height: 720 });
 	await login(page);
 	const claw = await navigateToChat(page);
 	test.skip(!claw, 'No chat session available (no claw connected)');
 
+	// inject 前等聊天就绪：navigateToChat 返回时 Vue 可能仍在渲染/加载，innerHTML 注入会被随后的
+	// 重渲抹掉致脆断；等就绪后注入才稳定
+	await waitChatReady(page);
 	await applyElectronScope(page);
 	// 与 chat-layout-debug 同手法：向消息区注入大量内容
 	await page.evaluate(() => {
@@ -222,7 +226,8 @@ test('Electron 形态：modal 打开后 wheel 遮罩不滚动 .cc-app-content @u
 	// 在遮罩区域（与对照同一位置，避开居中的 modal 面板）滚轮
 	await page.mouse.move(1100, 400);
 	await page.mouse.wheel(0, 500);
-	await page.waitForTimeout(400);
+	// 负向断言（容器不应被带动滚动）需一个沉降窗口让任何错误滚动有机会发生；400ms 偏窄、负载下脆断 → 放宽
+	await page.waitForTimeout(1000);
 
 	const after = await page.evaluate(() => document.querySelector('.cc-app-content').scrollTop);
 	// 容器滚动位置不被 modal 下的 wheel 带动

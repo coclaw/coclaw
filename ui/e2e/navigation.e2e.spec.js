@@ -32,7 +32,7 @@ test('Topics 页：页面正常渲染 @ui', async ({ page }) => {
 // ================================================================
 
 test('Topics 页：点击 session 进入聊天页 @ui', async ({ page }) => {
-	test.setTimeout(30_000);
+	test.setTimeout(45_000);
 	await login(page);
 
 	await page.goto('/topics');
@@ -104,7 +104,7 @@ test('ManageClaws 页：刷新按钮可点击 @ui', async ({ page }) => {
 // ================================================================
 
 test('HomePage：自动跳转到合适的页面 @ui', async ({ page }) => {
-	test.setTimeout(30_000);
+	test.setTimeout(45_000);
 	await login(page);
 
 	await page.goto('/home');

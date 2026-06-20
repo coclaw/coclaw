@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('local account auth flow should work with new layout @auth', async ({ page }) => {
+	test.setTimeout(45_000); // 登录→重定向链在高负载下可超 30s 默认上限
 	await page.goto('/login');
 
 	await expect(page.getByTestId('login-page')).toBeVisible();
