@@ -11,6 +11,7 @@
 - 不确定性：无法确认是**真实产品风险**（极端时序下 `__scrollReady` 卡 false → 聊天面板短暂空白）还是**仅测试渲染时序**。该次 chat 早已加载、`__scrollReady` 理应为 true，故严重度看着低；但未坐实。E2E 侧已用 store 级断言绕开（不再依赖该可视门），未掩盖问题本身。
 - 修复方向（若要查）：核 `__scrollReady` / `scrollToBottom(force)` 的置位时序——是否存在"force 路径没走到 → __scrollReady 永不翻 true → 容器永久 hidden"的窗口；若有给兜底（非 force 路径内容就绪后也翻 true，或超时强制显示）。
 - 范围：仅 UI（`ChatPage.vue`）。先登记追踪，未确认前不动业务码。
+- **更新（2026-06-21，round-3 E2E）**：new-topic 首发实例已**确认为真实产品风险**并修复——`__handleNewTopicSend`（`ChatPage.vue` L878）的 `scrollToBottom()` 改为 force（`71711e4d`），并加 ChatPage 组件回归测试（mutation 验证：还原成非 force 即 RED）。established-chat 的 `onSendMessage`（~L766）刻意保持非 force：其 `__scrollReady` 在初始加载的 force-scroll 时已打开、无此窗口，强制反会把它拖进 force 重试循环 + in-flight 历史分页边角。本条已知的真实触发点至此闭合。
 
 ## register E2E Test 6 每次运行泄漏一个孤儿账号（无账号删除 API，已接受）
 
@@ -230,6 +231,26 @@
    - 触发条件：要求两个 sessions.get 阶段的 RPC 乱序到秒级以上（同条信令通道、同时段、回程顺序倒置）——实际几乎不可能。最坏后果是临时 vanish，下次任意 `loadMessages` 自愈。
    - 修复方向：给 force load 加 `__forceSeq` 序号，写 `this.messages` 前检查"自己是不是最新"——被 superseded 的不写 messages 但仍 fire 自身 hook（保 dropRun 不漏）。第三轮没加是因为权衡后认为"加了引入的状态机比解决的问题更复杂"。如果未来线上观察到该症状再加。
    - **第五轮 review 补**：`loadOlderMessages`（向上翻历史）也是同类竞争者，写 `this.messages = [...wrapped, ...localMsgs]` 与 force 路径写不互斥。触发条件比 #3 主项还窄（用户必须正在翻历史 + run 终态恰好同时落地），且实际后果比 stale-A vanish 更轻（`loadOlderMessages` 拉的是更长的最新 N 条，本来就含本 run 终态消息）。如果未来 #3 主项实施 `__forceSeq` 防覆盖，应把 `loadOlderMessages` 写 `this.messages` 也纳入同套保护。
+
+## Round-3 E2E 加固收尾登记（2026-06-21）
+
+**来源**：round-3 E2E 加固（隐患修真 + 新场景覆盖 + C4 语音 + `__scrollReady` 修复）过程中核实到的预存问题。均非本轮引入、非阻塞，单独登记。
+
+1. **run 终态 `loadMessages`→`dropRun` 抢跑持久化致回复短暂消失**（与上文「chat.store loadMessages 周边的预存问题」#3 同族，不另立修复）
+   - round-3 chat-flow 多轮对话 E2E（`abe1bd7e`）复现：run 终态的 `loadMessages` 若早于服务端持久化完成，刚落地的回复会从 live view 短暂消失、且无自动重拉，直到下次 `loadMessages`/导航/reload 自愈（消息已持久化、非数据丢失）。E2E 侧已用 `page.reload()` 确定性重拉绕开。修复方向见该族条目。
+
+2. **topic 首发前置 `loadTopicMessages` 必报 `transcript not found` 噪音日志**
+   - 现状：topic 模式首次 send 时，UI 在第一条消息持久化前就尝试 `loadTopicMessages(<topicId>)`，必然 NOT_FOUND（来源：round-3 topic E2E `e4d59ccc` 观测）。随后的 load 成功（count=2），功能无影响，但 happy path 上每个新 topic 首发都留一行错误日志。
+   - 修复方向：新 topic 首发前跳过/守卫这次注定失败的 pre-persist load，或把该 NOT_FOUND 降级为 debug。仅 UI。
+
+3. **E2E 调用文档失真：`pnpm e2e:ci -- --grep` 在 macOS 不工作**
+   - 现状：`pnpm` 注入的 `--` 经 `e2e/run.js` 透传给 Playwright，使 `--grep <title>` 被当作位置式文件过滤 → "No tests found"（exit 1、零用例）。可用形式：`npx playwright test --grep "<title>"`（globalSetup/webServer 仍经 config 加载）或单文件 `pnpm e2e:ci -- e2e/<file>.e2e.spec.js`；整套 `pnpm e2e:ci` 不受影响。
+   - 影响：`e2e-test` skill 与 `ui/docs/e2e-troubleshooting.md` 疑似仍记录失效的 `--grep` 形式，需后续一轮订正。
+   - 可能的根因修法（需各自验证不破坏可用的 `-- e2e/<file>` 形式）：让 `run.js` 剥掉转发参数里的前导 `--`。本轮按指示不动 `run.js`。
+
+4. **rtc-transport 消息计数 `after > before` 在 50 条渲染上限处脆弱**（预存，非本轮引入）
+   - round-3 把该计数选择器从 CSS `.px-3.py-3` 换成 `[data-testid="chat-msg-item"]`（`2f9b7db2`）。计数增量断言本身在主会话达到 50 条渲染上限时会脆断（新消息把旧消息挤出、计数不增）。当前主会话较小（实测 0→7 通过）；同回合的收发已由「用户消息可见 + btn-stop 消失」独立证明，计数增量属冗余弱校验。
+   - 修复方向：若未来观测到脆断，改为按发送的唯一消息存在性 / 助手回复存在性断言，去掉对计数增量的依赖。
 
 ## ProgressRing 后续优化
 
