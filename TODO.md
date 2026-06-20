@@ -41,3 +41,20 @@
 
 - `docs/README.md:74-82` "Product — 产品文档"段列出 7 个 `docs/product/*.md`，但 `docs/product/` 目录不存在，整段为坏指针。
 - 修复方向：查 git 史确认这些文档去向（恢复目录或更新路径），否则删除该段。
+
+## publish-images.yaml 每次全建两个镜像，待加选择性构建（2026-06-21，CD 上半部分落地时有意简化，待优化）
+
+> 背景：`publish-images.yaml`（commit `887b3515`）首版有意走"全建"——只要推 `v*` tag（根版本 bump）就把 server 和 ui 双架构镜像都建一遍，不判断各服务是否真改动。这是为首跑去风险的简化，非缺陷。
+
+- 优化方向：按 `git diff <prev-tag> HEAD` 判定各服务是否真改（排除其 `package.json`/`CHANGELOG.md` 的版本号行），跳过未改的服务。未改服务的 `:<version>`/`:latest` 本就指向正确 digest，跳过=啥都不做，不需要 re-tag。
+- 价值：UI 改得勤、server 没动时省掉慢的 server arm64 模拟重建；维护期发版不频繁，收益有限故不急。
+- 待验证边界：prev-tag 计算在"首个 tag（无 prev）/ tag 不在 main tip"时的退化行为（首个 tag 应退化为全建）。
+- 触发时机：**等首次真实发布把端到端（arm64 构建、timeout、真多架构 push）验通后再做**，避免和基础管线同时调试。
+
+## CD（publish-images）未对 CI 通过设硬门禁（2026-06-21，CD 上半部分落地时有意取舍，潜在加固）
+
+> 背景：CI（`ci.yaml`，push main + PR 触发）与 CD（`publish-images.yaml`，push `v*` tag 触发）是两条独立 workflow，tag 非 branch 故同一事件不互相双触发，各自钉死自己的 SHA、无拿错代码竞态。但 CD **不等 CI 通过**——同一发布 commit 若 CI 挂，CD 仍会把镜像推出去。
+
+- 现状为何可接受：`/release` 先推 main 再推 tag，且从已绿的 main 切发布、发布 commit 通常只是版本号 bump，风险低；与 `docs/operations/ci.md`"维护期单人场景、自动化成本大于收益先不做"的取舍一致。
+- 加固方向（用户认为有潜在价值）：让 CD 对该 SHA 的 CI 结果设硬门禁——如 CD 改 `workflow_run`（接在 CI 之后、仅 CI 成功才跑），或 CD 内加一步查该 commit 的 CI status 再 gate。代价是额外复杂度 + `workflow_run` 自身的触发语义（只在默认分支定义、从默认分支跑）需吃透。
+- 触发时机：待首跑验通后、或多人协作/高频发布出现时再评估实施。
