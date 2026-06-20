@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { login, evalStore } from './helpers.js';
+import { login, evalStore, waitChatReady, typeText } from './helpers.js';
 
 /**
  * 文件浏览器 UI E2E 测试
@@ -470,5 +470,70 @@ test.describe('文件浏览器 @file', () => {
 
 		// 目录出现
 		await expect(page.locator('main').getByText(dirName, { exact: true })).toBeVisible({ timeout: 10_000 });
+	});
+
+	// ----------------------------------------------------------
+	// 7. chat ↔ 文件管理器往返：让 agent 写文件，再回文件管理器验证
+	// ----------------------------------------------------------
+
+	test('文件往返：agent 写文件 → 文件管理器可见且可下载 @file @chat', async ({ page }) => {
+		// 登录+导航(~45s) + 真实回复(≤180s) + 文件轮询(≤90s)，给足总预算
+		test.setTimeout(300_000);
+		const claw = await setup(page, test);
+
+		const ts = Date.now();
+		const fileName = `e2e-roundtrip-${ts}.txt`;
+		const content = 'roundtrip-ok';
+
+		// 1) 进入该 agent 的对话页（与文件管理器同一 claw/agent，保证往返同源）
+		await page.goto(`/chat/${claw.clawId}/${claw.agentId}`);
+		await waitChatReady(page);
+		// 发送走 DC，确保连接就绪后再发
+		await waitConnReady(page, claw.clawId);
+
+		// 2) 明确指令让 agent 写一个唯一文件名、固定内容的文件（指令写死避免歧义）
+		const prompt = 'Create a text file in your current working directory. '
+			+ `The file name must be exactly \`${fileName}\` and its content must be exactly \`${content}\` `
+			+ '(no extra text, no markdown). Use a relative path. Reply DONE when finished.';
+		await typeText(page.getByTestId('chat-textarea'), prompt);
+		await expect(page.getByTestId('btn-send')).toBeEnabled({ timeout: 5000 });
+		await page.getByTestId('btn-send').click();
+		// 即刻注册清理：即便后续断言失败，afterEach 也会递归 force 删除（不存在则 404 no-op）
+		trackCleanup(claw, fileName);
+
+		// 用户消息已落地 = 确实发出（防 btn-stop 从未出现致 not.toBeVisible 假绿）
+		await expect(
+			page.locator('[data-testid="chat-msg-item"]').filter({ hasText: fileName }).first(),
+		).toBeVisible({ timeout: 15_000 });
+
+		// 3) 等回复完成：btn-stop 消失（红线判定，agent 真实回复慢）
+		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
+
+		// 4) 打开该 agent 的文件管理器，轮询刷新直到文件出现（agent 非确定性，给足 90s）
+		await gotoFiles(page, claw.clawId, claw.agentId);
+		await waitConnReady(page, claw.clawId);
+		const fileRow = page.locator('main').getByText(fileName, { exact: true });
+		await expect(async () => {
+			await page.getByTestId('btn-refresh').click();
+			await page.waitForTimeout(1000);
+			await expect(fileRow).toBeVisible();
+		}).toPass({ timeout: 90_000 });
+
+		// 5) 可下载：点击文件行触发 UI 下载（文件行即下载控件），等进度环消失
+		await fileRow.click();
+		await expect(page.locator('[role="progressbar"]')).not.toBeVisible({ timeout: 15_000 });
+
+		// 6) 经 file-transfer service 直接下载校验内容（DC 传输，非 HTTP，page.route 拦不到）
+		const downloadedText = await page.evaluate(async ({ clawId, agentId, fileName }) => {
+			const { useClawConnections } = await import('/src/services/claw-connection-manager.js');
+			const { downloadFile } = await import('/src/services/file-transfer.js');
+			const conn = useClawConnections().get(clawId);
+			const handle = downloadFile(conn, agentId, fileName);
+			const result = await handle.promise;
+			return result.blob.text();
+		}, { clawId: claw.clawId, agentId: claw.agentId, fileName });
+		// agent 可能尾随换行，用 contains 容错（content 是文件内容、非 UI 文案，断言安全）
+		expect(downloadedText).toContain(content);
+		// 清理由 afterEach 保证（trackCleanup 已注册 fileName）
 	});
 });
