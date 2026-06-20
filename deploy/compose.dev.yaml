@@ -21,6 +21,9 @@ services:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - coclaw_mysql_data:/var/lib/mysql
+      # 数据卷首次初始化时执行：授予 dev 用户对 Prisma 临时 shadow 库
+      # （prisma_migrate_shadow_db_*）的建/删权限，使任意机器 clone 后 migrate dev 开箱即用。
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
       interval: 10s

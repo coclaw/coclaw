@@ -104,10 +104,23 @@ server/
 | 变量 | 说明 |
 |------|------|
 | `DB_URL` | MySQL 连接字符串 |
-| `SHADOW_DB_URL` | Prisma 迁移 Shadow DB |
 | `SESSION_SECRET` | Session 签名密钥 (生产必填) |
 | `TURN_SECRET` | coturn HMAC 共享密钥 |
 | `APP_DOMAIN` | 应用域名 |
 | `ALLOWED_ORIGINS` | CORS 允许的 origin (逗号分隔) |
 | `BINDING_CODE_EXPIRE_MINUTES` | 绑定码有效期 (默认 30 分钟) |
 | `PORT` | 监听端口 (默认 3000) |
+
+## 迁移与 shadow 库
+
+修改 `prisma/schema.prisma` 后用 `pnpm prisma:migrate`（= `prisma migrate dev`）生成迁移文件并提交；生产/CI 用 `pnpm prisma:migrate:deploy` 回放已提交的迁移。
+
+- **shadow 库**：仅 `migrate dev` 用来做 schema diff，由 Prisma 自动以随机名 `prisma_migrate_shadow_db_<uuid>` 创建并删除，用完即弃——无需配置 `SHADOW_DB_URL`，也无需预建任何库。
+- **dev 环境授权**：`deploy/compose.dev.yaml` 的初始化脚本（`deploy/mysql-init/01-shadow-grant.sql`）在 MySQL 数据卷首次初始化时，授予 dev 用户对 `prisma_migrate_shadow_db_*` 前缀库的建/删权限，新机器 clone 后开箱即用。
+- **既有数据卷需手动补授权一次**（初始化脚本不对已存在的卷重跑），对运行中的 dev MySQL 容器执行（root 密码取自 `deploy/compose.dev.yaml`）：
+  ```bash
+  docker exec -i coclaw-mysql mysql -uroot -pcoclaw_root_2026 <<'SQL'
+  GRANT ALL PRIVILEGES ON `prisma\_migrate\_shadow\_db\_%`.* TO 'coclaw'@'%';
+  SQL
+  ```
+- 生产/CI 只跑 `migrate deploy`，不创建 shadow 库，因此不需要任何相关授权。

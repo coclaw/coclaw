@@ -133,7 +133,7 @@ Required tightening checklist:
 - `PORT=3000` (container-internal)
 - `SESSION_SECRET=<strong-random-secret>`
 - `DB_URL=mysql://<user>:<pass>@mysql:3306/coclaw` (assembled by compose from individual MySQL vars)
-- `SHADOW_DB_URL` is not required in production runtime
+- No shadow database is needed: production runs `prisma migrate deploy` (replays committed migrations only); the shadow DB is used solely by local `migrate dev`
 
 ### ui
 

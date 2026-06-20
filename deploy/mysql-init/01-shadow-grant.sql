@@ -1,0 +1,12 @@
+-- Prisma `migrate dev` 需要一个临时 shadow 库来做 schema diff（用完即删）。
+-- 项目不显式配置 shadowDatabaseUrl，改由 Prisma 自动以随机名
+-- prisma_migrate_shadow_db_<uuid> 创建并删除该库，因此无需预建任何命名 shadow 库。
+-- 这里只把"建/删 shadow 前缀库"的权限授予 dev 用户，范围收在该前缀内，不影响其它库。
+--
+-- 仅在 MySQL 数据卷【首次初始化】时由 docker-entrypoint-initdb.d 执行。
+-- 既有数据卷不会重跑本脚本，需手动补授权（见 server/README.md「迁移与 shadow 库」）。
+--
+-- 两处耦合，改动时需同步：
+--   1. 库名前缀 prisma_migrate_shadow_db_ 是 Prisma 约定，跨 major 升级时复核是否变更（当前 ^6.19.0 已核）。
+--   2. 用户名 'coclaw' 须与 compose.dev.yaml 的 MYSQL_USER 一致，否则容器初始化授权报错。
+GRANT ALL PRIVILEGES ON `prisma\_migrate\_shadow\_db\_%`.* TO 'coclaw'@'%';

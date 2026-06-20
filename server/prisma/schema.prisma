@@ -6,7 +6,8 @@ generator client {
 datasource db {
   provider = "mysql"
   url = env("DB_URL")
-  shadowDatabaseUrl = env("SHADOW_DB_URL")
+  // 不显式配 shadowDatabaseUrl：migrate dev 由 Prisma 自动创建/删除随机命名的临时 shadow 库
+  // （prisma_migrate_shadow_db_<uuid>），用完即弃。dev MySQL 已对该前缀授予建/删权限。
 }
 
 // --- 各表内部的排版要纵向对其，便于开发者阅读。在修改本文件时不要调整原有的排版对齐布局 ---
