@@ -2,6 +2,16 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## 疑似：ChatPage `__scrollReady` 可视性门在高负载下可能短暂遮屏（未确认，低优）
+
+**发现日期**：2026-06-20
+**来源**：round-2 E2E "断网发消息" flake 深挖（`553fd514`）时的旁支观察；未确认是产品风险还是测试渲染时序
+
+- 现状：`ChatPage.vue`（约 L1160/1171）用 `visibility:hidden` 把整个滚动容器盖住，直到 `__scrollReady` 翻 true——而 `__scrollReady` 只在 force-scroll（`scrollToBottom(force)`）路径里置位。深挖时撞到一次瞬态：乐观气泡已在 store 内（`_pending`、内容完整），但 `toBeVisible()` 失败，疑似该可视性门未及时打开。
+- 不确定性：无法确认是**真实产品风险**（极端时序下 `__scrollReady` 卡 false → 聊天面板短暂空白）还是**仅测试渲染时序**。该次 chat 早已加载、`__scrollReady` 理应为 true，故严重度看着低；但未坐实。E2E 侧已用 store 级断言绕开（不再依赖该可视门），未掩盖问题本身。
+- 修复方向（若要查）：核 `__scrollReady` / `scrollToBottom(force)` 的置位时序——是否存在"force 路径没走到 → __scrollReady 永不翻 true → 容器永久 hidden"的窗口；若有给兜底（非 force 路径内容就绪后也翻 true，或超时强制显示）。
+- 范围：仅 UI（`ChatPage.vue`）。先登记追踪，未确认前不动业务码。
+
 ## register E2E Test 6 每次运行泄漏一个孤儿账号（无账号删除 API，已接受）
 
 **发现日期**：2026-06-20
