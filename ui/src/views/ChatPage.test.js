@@ -1203,6 +1203,77 @@ describe('ChatPage new topic', () => {
 		expect(replaceIdx).toBeLessThan(disposeIdx);
 	});
 
+	// B8 回归守卫：new-topic 首发必须走 force=true 滚动来打开 __scrollReady 可见门。
+	// 背景：new-topic 路由下 connReady 恒 false（computed），__onConnReady / 初始 loadMessages
+	// 不会触发 → __scrollReady 起始 false；一旦乐观气泡注入令 chatMessages 非空，模板会把整个
+	// 消息面板 visibility:hidden（防闪顶）。修复让 __handleNewTopicSend 用 scrollToBottom(true)，
+	// force 路径在气泡注入后立即点亮 __scrollReady 开门。非 force 的 scrollToBottom() 永不点亮
+	// __scrollReady —— 把 L883 改回非 force 时，下面的 __scrollReady===true 断言即变红（mutation 验证）。
+	// harness 适配：$router.replace 是 no-op（路由不变）→ chatStore computed 始终指向入口
+	// new-topic store，故用该 store 的 messages 表达"乐观气泡已注入"；并 no-op dispose 让该 store
+	// 在 promote commit 后仍可读（dispose 与本测的滚动门逻辑无关）。
+	test('new-topic 首发走 force 滚动 → __scrollReady 开门，首条消息不再被 visibility:hidden 藏住', async () => {
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const wrapper = createWrapper({
+			routeName: 'topics-chat', sessionId: 'new',
+			query: { claw: 'bot-1', agent: 'main' },
+		});
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		const topicsStore = useTopicsStore();
+		vi.spyOn(topicsStore, 'createTopic').mockResolvedValue('new-topic-uuid');
+		mockRouter.replace.mockImplementation(() => Promise.resolve());
+		// 保留入口 store 便于断言可见门（dispose 与滚动门逻辑无关）
+		vi.spyOn(chatStoreManager, 'dispose').mockImplementation(() => {});
+		await flushPromises();
+
+		// jsdom 无 Element.prototype.scrollTo：必须 mock，否则 force 路径在 L1157 early-return、不点亮门。
+		// 撑出非零距底（仿既有 force 循环用例），让 force 循环真发 scrollTo。
+		const scrollContainer = wrapper.vm.$refs.scrollContainer;
+		const scrollToSpy = vi.fn();
+		scrollContainer.scrollTo = scrollToSpy;
+		Object.defineProperties(scrollContainer, {
+			scrollHeight: { value: 1500, configurable: true },
+			scrollTop: { value: 0, configurable: true, writable: true },
+			clientHeight: { value: 500, configurable: true },
+		});
+
+		// 乐观气泡：让可见 chatStore 非空 → 命中模板的 visibility:hidden 门
+		const visibleStore = wrapper.vm.chatStore;
+		visibleStore.messages = [
+			{ type: 'message', id: 'optimistic-1', message: { role: 'user', content: 'hi' } },
+		];
+		await wrapper.vm.$nextTick();
+
+		// 入口快照：门此刻是关着的（chatMessages 非空但 __scrollReady 仍 false = 防闪顶的"藏住"态）
+		expect(wrapper.vm.chatMessages.length).toBeGreaterThan(0);
+		expect(wrapper.vm.$data.__scrollReady).toBe(false);
+
+		// new-topic store 的 sendMessage 在 promote 后于新 topic store 上发起
+		const origGet = chatStoreManager.get.bind(chatStoreManager);
+		vi.spyOn(chatStoreManager, 'get').mockImplementation((key, opts) => {
+			const s = origGet(key, opts);
+			if (key === 'topic:new-topic-uuid') {
+				vi.spyOn(s, 'sendMessage').mockResolvedValue({ accepted: true });
+			}
+			return s;
+		});
+
+		scrollToSpy.mockClear();
+		const input = wrapper.findComponent({ name: 'ChatInput' });
+		input.vm.$emit('send', { text: 'hi', files: [] });
+		await flushPromises();
+		await wrapper.vm.$nextTick();
+
+		// force 路径执行：循环发出 scrollTo，且 __scrollReady 点亮 → 门打开，首条消息可见
+		expect(scrollToSpy).toHaveBeenCalled();
+		expect(wrapper.vm.chatMessages.length).toBeGreaterThan(0);
+		expect(wrapper.vm.$data.__scrollReady).toBe(true); // ← mutation（L883 改非 force）时此处变红
+
+		// force 循环用真实 rAF，scrollTo mock 不动 scrollTop → 会空转到 deadline，unmount 强停防泄漏
+		wrapper.unmount();
+	});
+
 	test('new-topic 重入防护：__creatingTopic=true 时再次触发 onSendMessage 直接 no-op（防双击双发）', async () => {
 		const { useTopicsStore } = await import('../stores/topics.store.js');
 		const wrapper = createWrapper({

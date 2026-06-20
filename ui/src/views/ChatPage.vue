@@ -875,7 +875,12 @@ export default {
 				newDraftKey = this.draftKey;
 				this.userScrolledUp = false;
 				this.farFromBottom = false;
-				this.scrollToBottom();
+				// force=true：new-topic 首发时初始 loadMessages 可能仍 pending，__scrollReady 未就绪会让
+				// 整个消息面板 visibility:hidden（防闪顶）；非 force 的 scrollToBottom 在面板隐藏/无内容时
+				// 不会打开可见门，首条消息会短暂不可见直到初始加载完成。force 走重试路径，气泡注入后开门。
+				// established-chat 的 onSendMessage(~L766) 保持非 force——避免被拖进 force 重试循环（含
+				// in-flight 历史分页边角），new-topic 无此风险。
+				this.scrollToBottom(true);
 				const result = await targetStore.sendMessage(text, files, {
 					onFileUploaded: (f) => targetStore.removeFileById(f.id),
 				});
