@@ -40,6 +40,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
+          # Node 22 对齐部署：server 镜像 node:22-slim、OpenClaw 运行时要求 ≥22.19、ui 工具链要求 ≥22.12
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile

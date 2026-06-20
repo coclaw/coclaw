@@ -1,6 +1,6 @@
 # CI 门禁
 
-> 工作流定义：[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
+> 工作流定义：[`.github/workflows/ci.yaml`](../../.github/workflows/ci.yaml)
 
 ## 这个 CI 做什么
 
