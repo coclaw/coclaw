@@ -16,27 +16,27 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      mysql:
-        image: mysql:8.0.36
-        env:
-          MYSQL_DATABASE: coclaw
-          MYSQL_USER: coclaw
-          MYSQL_PASSWORD: coclaw_db_2026
-          MYSQL_ROOT_PASSWORD: coclaw_root_2026
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pcoclaw_root_2026 --silent"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=20
-          --health-start-period=30s
     env:
       DB_URL: mysql://coclaw:coclaw_db_2026@127.0.0.1:3306/coclaw
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
+      # 早起 MySQL，让它在装依赖期间完成初始化；mysqld 设置严格对齐生产/dev compose
+      # （deploy/compose.yaml）的数据库契约，原因详见 docs/operations/ci.md。
+      - name: Start MySQL (prod-matched config)
+        run: |
+          docker run -d --name mysql \
+            -e MYSQL_DATABASE=coclaw \
+            -e MYSQL_USER=coclaw \
+            -e MYSQL_PASSWORD=coclaw_db_2026 \
+            -e MYSQL_ROOT_PASSWORD=coclaw_root_2026 \
+            -e TZ=Asia/Shanghai \
+            -p 3306:3306 \
+            mysql:8.0.36 \
+            --character-set-server=utf8mb4 \
+            --collation-server=utf8mb4_unicode_ci \
+            --lower_case_table_names=1 \
+            --default-time-zone=+08:00
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -46,6 +46,15 @@ jobs:
       # 生成 Prisma client（产物 gitignored，全新检出时缺失）；放在 check 之前作为保险，详见 docs/operations/ci.md
       - run: pnpm --filter @coclaw/server prisma:generate
       - run: pnpm check
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 60); do
+            if docker exec mysql mysql -h 127.0.0.1 -ucoclaw -pcoclaw_db_2026 coclaw -e 'SELECT 1' >/dev/null 2>&1; then
+              echo "MySQL ready"; exit 0
+            fi
+            echo "waiting for MySQL ($i)..."; sleep 2
+          done
+          echo "MySQL did not become ready"; docker logs mysql; exit 1
       - run: pnpm --filter @coclaw/server prisma:migrate:deploy
       - run: pnpm --filter @coclaw/server test
       - run: pnpm --filter @coclaw/ui test

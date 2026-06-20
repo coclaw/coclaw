@@ -20,11 +20,23 @@
 
 ## MySQL 怎么来的
 
-server 单测真连 MySQL。CI 用一个一次性 service 容器满足：
+server 单测真连 MySQL。CI 用一个一次性 MySQL 容器满足，**mysqld 配置严格对齐生产**（原因见下一节）：
 
-- 镜像 `mysql:8.0.36`，与项目 dev compose 同版本、同账密。
-- workflow 起一个 `prisma:migrate:deploy`（`prisma migrate deploy`）步骤把表建好，再跑 server 单测。
-- 账密（`coclaw` / `coclaw_db_2026` 等）是**非密钥的一次性测试值**，与 dev 环境一致，明文写在 workflow 里是有意为之，**不是泄密**——容器随 job 销毁，不接触任何生产凭据。
+- 用 `docker run` 手动起 `mysql:8.0.36`，带齐与生产 / dev compose（`deploy/compose.yaml`、`deploy/compose.dev.yaml`）一致的设置：
+  - `--lower_case_table_names=1` — 表名大小写不敏感
+  - `--collation-server=utf8mb4_unicode_ci`、`--character-set-server=utf8mb4` — 排序规则 / 字符集
+  - `--default-time-zone=+08:00` — 时区
+- 容器起好（一段就绪等待确认能以 app 用户连上）后，跑 `prisma:migrate:deploy`（`prisma migrate deploy`）建表，再跑 server 单测。
+- 账密（`coclaw` / `coclaw_db_2026` 等）是**非密钥的一次性测试值**，与 dev 一致，明文写在 workflow 里是有意为之，**不是泄密**——容器随 job 销毁，不接触任何生产凭据。
+
+### 为什么对齐这些设置、为什么不用 `services:` 块
+
+CI 的 MySQL 必须忠实复刻生产的数据库契约，否则 CI 与生产两头不一致、误报漏报都可能。dev 与生产 compose 都给 MySQL 钉了一组**非默认**设置，CI 不能用原版 `mysql:8.0.36`（吃默认值）糊弄：
+
+- **`lower_case_table_names`**：生产钉 `1`（大小写不敏感），而 Linux 上 MySQL 默认 `0`（敏感）。早期迁移把表建成 `Device`、后续迁移又引用小写 `device`——在默认敏感的库上从空库 clean 重放会直接报「表不存在」。这正是 CI 首跑暴露、而 dev / 生产因钉了 `=1` 一直没事的预存问题。**此项只能在数据目录首次初始化时定、事后改不了**，所以必须容器一起来就带上。
+- **`collation-server`**：生产钉 `utf8mb4_unicode_ci`，而 MySQL 8.0 默认是 `utf8mb4_0900_ai_ci`——两者排序、以及「哪些字符串算相等」（唯一约束碰撞）的语义不同。不对齐会让大小写 / 重音相关的行为在 CI 与生产表现不一致。
+
+GitHub Actions 的 `services:` 容器只能传 docker 层参数、传不进 mysqld 的命令行 flag，所以改用手动 `docker run mysql:8.0.36 <flags>` + 就绪等待——与 dev / 生产 compose 用的是同一个机制。
 
 ## 为什么单列 Prisma generate
 
