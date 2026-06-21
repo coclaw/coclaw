@@ -118,6 +118,11 @@ export async function incrementClick({ userId, webAgentId, now = new Date() }, d
  * @returns 受影响的行数（0 表示该用户从未点击过此 Agent）
  */
 export async function setHiddenNow({ userId, webAgentId, now = new Date() }, db = prisma) {
+	// 防 undefined userId 触发 updateMany 跨用户写：prisma 会把 undefined 过滤条件丢弃，
+	// 进而把该 agent 下全体用户的 click 行误标隐藏。缺失即按"未影响"安全早返回
+	if (typeof userId !== 'bigint') {
+		return 0;
+	}
 	const result = await db.webAgentClick.updateMany({
 		where: { userId, webAgentId },
 		data: { hiddenAt: now },

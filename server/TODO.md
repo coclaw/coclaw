@@ -10,20 +10,13 @@
 
 ## Web Agent — review 中发现的预存问题（2026-05-10 deep review 发现）
 
-1. **`docs/designs/web-agents.md` 第六章 `recordClick` 示例签名漂移（预存）**
-    - 现状：示例代码用旧签名 `recordClick(userId, webAgentId)`，但实际实现已是 `recordClick({ userId, webAgentId }, deps = {})`；同章新加的 `hide` 示例已用新签名，新旧并存读起来困惑
-    - 修法：把 click 的代码示例改成对象签名 + 可选 deps，与 `hide` 保持一致
-
-2. **`docs/designs/web-agents.md` 第十一章 click 测试要点错位（预存）**
-    - 现状："POST `/click` 首次 → create 记录、clickCount=1" 与 "POST `/click` 重复 → increment 计数 + 刷新 lastClickedAt" 列在 route 测试要点下，但这两条实际是 repo 层 `incrementClick` 的测试（`web-agent.repo.test.js`）
-    - 修法：移到 repo 测试要点；如有需要，在 route 要点下补"401/400/404/204 + service throw → next(err)"等真实存在的 route 测试
-
-3. **passport 反序列化 invariant 假设：所有 route handler 仅 truthy 检查 `req.user`，未校验 `req.user.id` 非空**
-    - 现状：`requireSession` 仅 `req.isAuthenticated() && req.user`；若 user 对象存在但 id 为 undefined，`updateMany where: { userId: undefined }` 会被 prisma 视为"不过滤"，理论上扩散更新所有用户
-    - 实际触发条件：passport `deserializeUser` 失败但仍返回非 null user 对象——生产上 `user.repo.findById` 返回 null 时 deserializeUser 直接返 null，user 对象不会缺 id；但 invariant 应显式收紧
-    - 修法：`requireSession` 加 `req.user.id != null` 检查（全 server 路由共享）
-
-4. **`hide` updateMany 同毫秒重复调用的 affected count 行为依赖 mysql2 / prisma 的 CLIENT_FOUND_ROWS 设置**
+1. **`hide` updateMany 同毫秒重复调用的 affected count 行为依赖 mysql2 / prisma 的 CLIENT_FOUND_ROWS 设置**
     - 现状：单元测试用不同 timestamp 验证幂等；同毫秒重复 hide 在某些 driver 配置下可能返 changed_rows=0 → svc false → route 404
     - 实际触发：UI 上 hide 后该 item 立即从 recently 列表消失，二次 hide 在前端不可达——产品场景不会触发
     - 修法（如真要硬化）：repo 层显式 `findFirst` → `update` 替代 `updateMany`，把"已存在 click 行"判定从 affected count 改为 select；或用对 `now` 加几毫秒防同时间冲突
+
+2. **`req.user.id` 防护仅落在 `setHiddenNow` 单点，未在 `requireSession` 统一收口（2026-06-21 deep review 发现）**
+    - 现状：跨用户写真因（undefined userId 让 prisma 丢 updateMany 过滤）已由 `setHiddenNow` 守卫封死；但项目偏好"过滤/路由守卫抽共享 helper 给所有写入口"，当前是逐函数单点守卫
+    - 触发条件：`req.user` 存在但 `req.user.id` 为空——生产不可达（passport `deserializeUser` 要么给 bigint id、要么不返 `req.user`），属纵深防御
+    - 当前唯一 userId-keyed 批量写 sink 即 `setHiddenNow`（已守卫）；其余 updateMany/deleteMany 均非请求 userId 驱动
+    - 修法（如要统一）：`requireSession` 加 `req.user.id != null`，新增同型写路径自动受保护

@@ -594,6 +594,21 @@ test('setHiddenNow: 重复隐藏 → 每次刷成最新时间，幂等', async (
 	assert.equal(state.clicks[0].hiddenAt.getTime(), t2.getTime());
 });
 
+test('setHiddenNow: userId 非 bigint（undefined）时安全早返回 0，不执行跨用户 updateMany', async () => {
+	// 守卫：undefined userId 若进 updateMany，prisma 会丢弃该过滤条件 → 把该 agent 下全体用户的 click 行误标隐藏
+	const { db, state, trace } = makeFakeDb();
+	seedClick(state, { userId: 100n, webAgentId: 1 });
+	seedClick(state, { userId: 200n, webAgentId: 1 });
+
+	const affected = await setHiddenNow({ userId: undefined, webAgentId: 1 }, db);
+
+	assert.equal(affected, 0);
+	// 守卫生效：updateMany 根本没被调用，别人的行没被写穿
+	assert.equal(trace.calls.filter(c => c.method === 'webAgentClick.updateMany').length, 0);
+	assert.equal(state.clicks.find(c => c.userId === 100n).hiddenAt, null);
+	assert.equal(state.clicks.find(c => c.userId === 200n).hiddenAt, null);
+});
+
 test('setHiddenNow: where 仅命中当前 (userId, webAgentId) 一行，不殃及别人或别的 Agent', async () => {
 	const { db, state } = makeFakeDb();
 	seedClick(state, { userId: 100n, webAgentId: 1 });

@@ -375,25 +375,10 @@ UI 侧分两种用法：
 ```js
 // server/src/services/web-agent.svc.js
 // 返回 true = 记录成功；返回 false = 不可见（让 route handler 决定 404）
-export async function recordClick(userId, webAgentId) {
-	const agent = await prisma.webAgent.findFirst({
-		where: {
-			id: webAgentId,
-			OR: [
-				{ userId: null },  // 系统预置（syncPresets 双向同步，DB 中 userId=NULL 的条目即"当前活跃预置"）
-				{ userId },        // 当前用户自建
-			],
-		},
-		select: { id: true },
-	});
-	if (!agent) return false;
-
-	// 注意：update 分支显式将 hiddenAt 置为 null —— "再点取消隐藏"的实现位置
-	await prisma.webAgentClick.upsert({
-		where: { userId_webAgentId: { userId, webAgentId } },
-		update: { clickCount: { increment: 1 }, lastClickedAt: new Date(), hiddenAt: null },
-		create: { userId, webAgentId, clickCount: 1 },
-	});
+export async function recordClick({ userId, webAgentId }) {
+	const id = await findVisibleAgentId({ userId, webAgentId });
+	if (id == null) return false;
+	await incrementClick({ userId, webAgentId });
 	return true;
 }
 ```
@@ -416,8 +401,36 @@ export async function hide({ userId, webAgentId }) {
 }
 
 // server/src/repos/web-agent.repo.js
+// 校验可见性：命中返回 id，否则 null
+export async function findVisibleAgentId({ userId, webAgentId }) {
+	const agent = await prisma.webAgent.findFirst({
+		where: {
+			id: webAgentId,
+			OR: [
+				{ userId: null },  // 系统预置：userId = null 的条目对所有用户可见（预置双向同步语义）
+				{ userId },        // 当前用户自建
+			],
+		},
+		select: { id: true },
+	});
+	return agent?.id ?? null;
+}
+
+// server/src/repos/web-agent.repo.js
+// update 分支显式把 hiddenAt 置回 null —— "再点取消隐藏"的实现落点
+export async function incrementClick({ userId, webAgentId, now = new Date() }) {
+	return prisma.webAgentClick.upsert({
+		where: { userId_webAgentId: { userId, webAgentId } },
+		update: { clickCount: { increment: 1 }, lastClickedAt: now, hiddenAt: null },
+		create: { userId, webAgentId, clickCount: 1, lastClickedAt: now },
+	});
+}
+
+// server/src/repos/web-agent.repo.js
 // updateMany：命中 0 行不会凭空 INSERT，由 svc 转 false → route 转 404
 export async function setHiddenNow({ userId, webAgentId, now = new Date() }) {
+	// 防 undefined userId 让 prisma 丢弃过滤 → updateMany 误隐藏全体用户；缺失即按"未影响"早返回
+	if (typeof userId !== 'bigint') return 0;
 	const result = await prisma.webAgentClick.updateMany({
 		where: { userId, webAgentId },
 		data: { hiddenAt: now },
@@ -747,9 +760,12 @@ app.use('/api/v1/web-agents', webAgentRouter);
 - syncPresets 不会误删 `userId IS NOT NULL` 的用户自建条目
 - `findAllForUser` 返回当前用户的预置 + 自建，含 lastClickedAt（点过/未点过两种 case）
 - `findAllForUser` 返回值含 hiddenAt（没点过 / 点过未藏 / 点过已藏 三态）
+- `incrementClick` 首次点击 → create 记录、clickCount=1
+- `incrementClick` 重复点击 → increment 计数 + 刷新 lastClickedAt
 - `incrementClick` 对已隐藏的行清空 hiddenAt（"再点取消隐藏"回归测试）
 - `setHiddenNow` 命中现有 click 行刷 hiddenAt 并返回 1；不存在的 click 行返回 0 且不凭空 INSERT；重复隐藏幂等
 - `setHiddenNow` where 仅命中当前 (userId, webAgentId) 一行，不殃及别人或别的 Agent
+- `setHiddenNow` userId 非 bigint（如 undefined）→ 安全早返回 0、不调 updateMany，不跨用户写穿
 
 `server/src/services/web-agent.svc.test.js`：
 
@@ -764,8 +780,10 @@ app.use('/api/v1/web-agents', webAgentRouter);
 - GET 登录后正常返回 items
 - POST `/click` 未登录 → 401
 - POST `/click` 不可见 ID（不存在 / 别人的自建条目）→ 404
-- POST `/click` 首次 → create 记录、clickCount=1
-- POST `/click` 重复 → increment 计数 + 刷新 lastClickedAt
+- POST `/click` id 非法 / id=0 / params 缺失 → 400 INVALID_INPUT
+- POST `/click` 可见 → 204 No Content
+- POST `/click` 401/400/404 错误响应均含非空 code + message
+- POST `/click` service 抛错 → next(err)
 - POST `/hide` 未登录 → 401；id 非法/缺失 → 400；不可见或从未点击 → 404；成功 → 204；幂等再调一次仍 204
 
 覆盖率门槛：≥90%。
