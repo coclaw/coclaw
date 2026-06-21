@@ -1,23 +1,5 @@
 # Plugin TODO
 
-## plugin-sdk 研究文档的 overrides 指引过时：仍写"根 package.json 的 pnpm.overrides"
-
-**发现日期**：2026-06-10（文档小修批次中发现；预存过时描述，非本次造成）
-
-- `docs/openclaw-research/plugin-sdk-and-runtime.md` 的「2026-06-02 更新」段写"用根 `package.json` 的 `pnpm.overrides.openclaw → tools/openclaw-peer-stub`"，与现状不符——overrides 已收口到根 `pnpm-workspace.yaml`（根 package.json 已无 overrides）。
-- 本工作区 AGENTS.md 本体已改对，但其指向的这份研究文档未同步，需修订该段。
-
----
-
-## 文档引用失效两处：docs 指向 CLAUDE.md/AGENTS.md 的章节不存在或名称已变
-
-**发现日期**：2026-06-10（CLAUDE.md 全面梳理 review 发现；预存断链，非本次梳理造成）
-
-- `docs/rpc-dc-file-queue.md:259` 引"根 CLAUDE.md「OPENCLAW 状态目录」约束"——根文件无此节，该约束实际在本工作区 AGENTS.md「State / sessions 路径解析」。
-- `docs/node-datachannel-notes.md:82` 引旧章节名「Hook 与 Gateway Method 的模块实例隔离」——现名「Hook / RPC 双实例陷阱（`--link` 安装模式）」。
-
----
-
 ## worktree 重构建并跑时主网关偶发被 SIGTERM 重启（隔离网关基础设施落地时发现）
 
 **发现日期**：2026-05-31（worktree 插件验证基础设施 `scripts/worktree-gateway.sh` 落地实测时发现）
@@ -656,12 +638,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：在 plugin runtime 拿 agent 配置（如 `runtime.config.loadConfig()?.agents?.[agentId]?.store`），传给 helper。需先核对 OpenClaw 暴露 agent 配置的稳定 API。
 
-### chat-history-manager:39 c8 ignore 注释不准（PRE-EXISTING）
-
-**锚点**：`plugins/openclaw/src/chat-history-manager/manager.js:39`
-
-**问题**：注释说"测试始终注入"，实际测试不注入 `readFile` / `writeJsonFile`，走默认路径。当前 ignore 实际掩盖的是"truthy-LHS 那侧分支没有覆盖"。要么补一个注入 mock 的测试覆盖 LHS 分支，要么删掉 readFile/writeJsonFile 这两个 DI 注入点（生产+测试都不用）。
-
 ### setHomedir 测试 mock 大量变成"死 mock"（PRE-EXISTING 噪音）
 
 **锚点**：`plugins/openclaw/src/realtime-bridge.test.js`、`src/common/claw-binding.test.js`、`src/plugin-mode.test.js`（共上百处 setHomedir 调用）
@@ -1063,20 +1039,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 - 改 mock 给 `rebound: true` 让 fixture 跟测试名对齐
 - 或重命名测试名为 `bind CLI should show previousClawId when given` 描述 previousClawId 处理本身（不绑定 rebind 语义）
-
----
-
-## cli-registrar.test.js 没覆盖 JSON-shape gateway error 输出（已核实不存在）
-
-**发现日期**：2026-05-16（Phase B 去 wrap 改造 deep-review codex-rescue B 实例识别）
-**关联**：`plugins/openclaw/src/cli-registrar.test.js:26-29` `createRpcSpawn` error 路径
-
-**结论**（2026-05-16 Phase C 核实关闭）：
-经查阅上游 `openclaw-repo/src/cli/gateway-cli/register.ts:416-431` 的 `gateway call` 实现 + `runGatewayCommand` catch 链 + `defaultRuntime` (`openclaw-repo/src/runtime.ts:88`)：
-- 成功路径：`defaultRuntime.writeJson(result)` → `JSON.stringify(result, null, 2)` 写 stdout
-- 失败路径：`runGatewayCommand` catch → `defaultRuntime.error('${label}: ${message}')` → **console.error / stderr** + `exit(1)`
-
-stdout 不会出现 JSON-shape 错误对象，C3 原始担心的形态不存在。无需补 fixture。
 
 ---
 
@@ -1507,14 +1469,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 备份只覆盖插件目录本身；托管布局下依赖树可能由 npm 在插件目录之外统一管理，mv 回旧代码后依赖仍是新版安装时改写的状态，形成"新依赖+旧代码"混搭。同族限制：布局迁移场景（老布局升级 → record 指新托管路径）回滚不完美——备份的是旧实体、record 已指新处（`worker-verify.js` 头注释已有记述）。
 
-### engines.node >=18 名存实亡
-
-源码 4 处 `import.meta.dirname` 需 Node ≥20.11；minHostVersion 对应宿主实际要求 Node ≥22.16。`package.json` engines 声明应抬高到与事实一致（patch 级，待下次代码批次顺手改）。
-
-### worker-backup.js 头注释过时
-
-头注释的 `.bak` 命名约束论证基于旧 `extensions/` 目录扫描机制（"gateway 启动时扫描 extensions/ 下所有子目录"）；新 npm 托管布局经安装记录加载、不靠目录扫描。约束本身无害可保留，rationale 需对齐现状。
-
 ### 稳定 mismatch 态 upgrade.available 信号每周期重发无去重
 
 稳定 mismatch 态（有新版、L1 放行、但升级始终未完成且未 skip）下 `upgrade.available` 每周期重发一条 remoteLog——预存模式。修向：并入既有 `__gateSignalOnce` (原因, toVersion) 去重。（同模式的 `upgrade.skipped` 已随 2026-06-11 升级链修复并入去重销账。）
@@ -1523,17 +1477,9 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 `updater-spawn.js` 经 `state.js` `resolveStateDir()`（runtime → env → `~/.openclaw` 三级）取值传 `OPENCLAW_STATE_DIR` 给 worker；runtime 不可用时兜底值可能与上游真实 state-dir（profile / CLI flag 派生）分叉，worker 的 state 文件写错位置。理论场景——scheduler 正常运行时 runtime 必在。
 
-### _lib.sh symlink 泄漏核对的 find|head 管线在 pipefail 下有 SIGPIPE 提前打断风险
-
-`ensure_stage` 核对段 `find ... | while ... | head -1`：head 读满一行即退出，上游收 SIGPIPE（exit 141）；调用方脚本均 `set -euo pipefail`，理论上可把"找到一个泄漏"或正常核对误变成脚本中断。预存写法（本次改造未触碰），修向：改用 `awk 'NR==1{print;exit}'` 或先收集再取首行。
-
 ### updater-spawn↔worker 的 argv flag 字面量契约无共享锚
 
 6 个 flag（`--pluginDir/--fromVersion/--toVersion/--baselineVersion/--pluginId/--pkgName`）在 `updater-spawn.js` 拼 args 与 `worker.js` parseArgs options 各写一份字面量，两侧测试各测各的——一侧改名另一侧测试不红（strict parseArgs 会让 worker 启动即报错，但只有线上能发现）。修向：共享常量模块或加一条跨侧契约测试。
-
-### worker.test.js chmod 注入故障法以 root 跑测时失效
-
-多处用 `fs.chmod(0o444/0o555)` 制造写失败注入故障；root（CAP_DAC_OVERRIDE）下权限不生效，故障分支不触发 → 用例断言失败或假绿。环境依赖性失败源——CI/容器以 root 跑测会撞。修向：用例前置探测 root 时 skip，或换不依赖权限的注入法（mock fs）。
 
 ## 2026-06-11 auto-upgrade 升级链修复 follow-up（不阻塞发版）
 

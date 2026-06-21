@@ -242,7 +242,8 @@ test('runUpgrade — 装上的版本比 toVersion 更新时，state/log 记录�
 // 1b. 成功升级但 removeBackup 失败（non-fatal）
 // ============================================================
 
-test('runUpgrade — 成功升级但备份清理失败时仍正常完成', async () => {
+test('runUpgrade — 成功升级但备份清理失败时仍正常完成', async (t) => {
+	if (process.getuid?.() === 0) { t.skip('chmod-based error injection bypassed by root (CAP_DAC_OVERRIDE)'); return; }
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
@@ -488,7 +489,8 @@ test('runUpgrade — 备份恢复失败时使用兜底 npm install', async () =>
 // 4b. 备份恢复抛异常（fs 操作失败）→ 兜底 npm install
 // ============================================================
 
-test('runUpgrade — restoreFromBackup 抛异常时仍走兜底安装并记录状态', async () => {
+test('runUpgrade — restoreFromBackup 抛异常时仍走兜底安装并记录状态', async (t) => {
+	if (process.getuid?.() === 0) { t.skip('chmod-based error injection bypassed by root (CAP_DAC_OVERRIDE)'); return; }
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;
@@ -1409,7 +1411,8 @@ test('L2 — exit 0 + record 未推进 → no-op：不重启不回滚、删 .bak
 	}
 });
 
-test('L2 — no-op 分支删 .bak 失败时不阻断 skipVersion 与状态记录', async () => {
+test('L2 — no-op 分支删 .bak 失败时不阻断 skipVersion 与状态记录', async (t) => {
+	if (process.getuid?.() === 0) { t.skip('chmod-based error injection bypassed by root (CAP_DAC_OVERRIDE)'); return; }
 	const { base, pluginDir, stateDir } = await createTmpEnv();
 	const origEnv = process.env.OPENCLAW_STATE_DIR;
 	process.env.OPENCLAW_STATE_DIR = stateDir;

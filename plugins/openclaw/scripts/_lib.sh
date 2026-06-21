@@ -245,7 +245,8 @@ build_stage() {
 		if [[ -n "$tgt" && "$tgt" != "$STAGE_DIR"/* ]]; then
 			echo "$l → $tgt"
 		fi
-	done | head -1)
+	done)
+	leak=${leak%%$'\n'*}
 	if [[ -n "$leak" ]]; then
 		echo "[ERROR] stage 仍存在外指 symlink：$leak" >&2
 		echo "[HINT] 请上报该 symlink，可能是新的 pnpm 布局变更" >&2

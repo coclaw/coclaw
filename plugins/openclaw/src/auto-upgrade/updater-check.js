@@ -107,7 +107,7 @@ export async function inspectPluginInstall(pluginId, opts) {
  */
 export function isNewerVersion(a, b) {
 	// 先比较 major.minor.patch（去掉 pre-release 后缀）
-	const parse = (v) => v.replace(/-.*$/, '').split('.').map(Number);
+	const parse = (v) => v.split('+')[0].replace(/-.*$/, '').split('.').map(Number);
 	const pa = parse(a);
 	const pb = parse(b);
 	for (let i = 0; i < 3; i++) {

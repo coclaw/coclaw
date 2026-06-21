@@ -116,6 +116,7 @@ function hasInlineKey(cfg, provider, deps) {
 	const providers = cfg?.models?.providers;
 	if (!providers || typeof providers !== 'object') return false;
 	const targetId = deps.resolveProviderIdForAuth(provider);
+	if (!targetId) return false;
 	for (const [nodeId, entry] of Object.entries(providers)) {
 		if (!entry || !deps.hasConfiguredSecretInput(entry.apiKey)) continue;
 		if (deps.resolveProviderIdForAuth(nodeId) === targetId) return true;

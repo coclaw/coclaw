@@ -418,6 +418,17 @@ test('computeProviderUsableByName: 查询 provider 归一为空串 → 账本路
 	assert.equal(computeProviderUsableByName('  ', {}, deps), false);
 });
 
+test('computeProviderUsableByName: 查询 provider 归一为空串 → 内联路不误命中（empty-id 守卫，对齐账本路）', () => {
+	// resolveProviderIdForAuth 把 whitespace-only provider 归一到 ''；
+	// 即便内联节点 id 同样归一到 '' 且配了 key，empty-id 守卫也不该误判 usable
+	const cfg = { models: { providers: { '   ': { apiKey: 'sk-inline' } } } };
+	const deps = makeCredDeps({
+		resolveProviderIdForAuth: (p) => (p.trim() === '' ? '' : p),
+		hasConfiguredSecretInput: (v) => v === 'sk-inline',
+	});
+	assert.equal(computeProviderUsableByName('  ', cfg, deps), false);
+});
+
 // computeProviderUsable 委托 ByName（取 provider 段）
 test('computeProviderUsable: 委托 ByName —— 含斜杠取段后判定', () => {
 	const deps = makeCredDeps({ isProviderApiKeyConfigured: ({ provider }) => provider === 'volcengine-plan' });

@@ -231,6 +231,19 @@ test('isNewerVersion - 更高版本 pre-release > 低版本 release', () => {
 	assert.equal(isNewerVersion('2.0.0-beta.1', '1.9.0'), true);
 });
 
+// build metadata（`+` 后缀）：先剥 `+` 再剥 `-`，core 段参与比较
+test('isNewerVersion - a 带 build metadata 时仍按 core 段判更大', () => {
+	assert.equal(isNewerVersion('1.0.1+b', '1.0.0'), true);
+});
+
+test('isNewerVersion - b 带 build metadata 时 a 更小', () => {
+	assert.equal(isNewerVersion('1.0.0', '1.0.1+b'), false);
+});
+
+test('isNewerVersion - core 段相同、仅 build metadata 不同视为相等', () => {
+	assert.equal(isNewerVersion('1.0.0+b', '1.0.0'), false);
+});
+
 // --- checkForUpdate ---
 
 test('checkForUpdate - 无更新（latest <= current）', async () => {

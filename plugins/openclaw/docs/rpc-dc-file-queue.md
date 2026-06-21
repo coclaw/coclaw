@@ -256,7 +256,7 @@ mem 与 disk 阈值都以 payload 字节数（disk-cap 含 `\n` 分隔字节）�
 
 - 走 `resolveStateDir() + CHANNEL_ID + 子目录` 约定，与 `bindings.json` 同根
 - 复数命名 `rpc-queues/`，与既有 `chat-files/` / `topic-files/` 风格一致
-- 一条 rpc DC 对应一个文件，**默认部署**下路径形如 `~/.openclaw/coclaw/rpc-queues/{connId}-{ts}-{uuid8}.jsonl`；state-dir 可经 `OPENCLAW_STATE_DIR` 等 OpenClaw 机制覆盖到任意位置（详见根 CLAUDE.md "OPENCLAW 状态目录"约束）
+- 一条 rpc DC 对应一个文件，**默认部署**下路径形如 `~/.openclaw/coclaw/rpc-queues/{connId}-{ts}-{uuid8}.jsonl`；state-dir 可经 `OPENCLAW_STATE_DIR` 等 OpenClaw 机制覆盖到任意位置（详见本工作区 CLAUDE.md「State / sessions 路径解析」约束）
 
 不再多套一层 `queues/rpc/`——眼下只有一种队列，YAGNI。
 

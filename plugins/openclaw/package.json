@@ -20,7 +20,7 @@
     "webchat"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.11.0"
   },
   "publishConfig": {
     "access": "public",

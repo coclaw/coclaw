@@ -79,7 +79,7 @@ TSFN 队列中的 N 个消息在同一个事件循环 turn 中同步执行所有
 
 ### 6. ESM 模块实例隔离
 
-`--link` 安装模式下，symlink 导致 ESM 模块缓存命中不同 URL，`api.on()` 注册的 hook 回调和 RPC handler 可能运行在不同模块实例中。需要跨 hook/RPC 共享的状态必须通过磁盘文件中转。详见 `plugins/openclaw/CLAUDE.md` 的"Hook 与 Gateway Method 的模块实例隔离"章节。
+`--link` 安装模式下，symlink 导致 ESM 模块缓存命中不同 URL，`api.on()` 注册的 hook 回调和 RPC handler 可能运行在不同模块实例中。需要跨 hook/RPC 共享的状态必须通过磁盘文件中转。详见 `plugins/openclaw/CLAUDE.md` 的"Hook / RPC 双实例陷阱（`--link` 安装模式）"章节。
 
 ## initLogger 诊断能力评估
 
