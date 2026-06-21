@@ -22,8 +22,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # arm64 走 QEMU 模拟较慢，首版保守给足，待首跑校准
-    timeout-minutes: 60
+    # arm64 走 QEMU 模拟较慢；首跑 v0.32.6 实测 ~3.5min（server arm64 占大头、ui ~15s），25min 留足余量又能在真卡死时早暴露
+    timeout-minutes: 25
     env:
       # ui build 的 pnpm install 会拉 electron devDep，跳过其二进制下载（对齐 ci.yaml）
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
