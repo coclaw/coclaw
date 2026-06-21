@@ -73,8 +73,8 @@ git commit -m "..."
 ```bash
 git push origin main
 
-# 若 tag 不存在
-git tag -l "v<root-version>" || git tag v<root-version>
+# 若 tag 不存在才建（`git tag -l` 无匹配也退 0，不能用作存在性判断）
+git rev-parse -q --verify "refs/tags/v<root-version>" >/dev/null || git tag v<root-version>
 git push origin v<root-version>
 ```
 
