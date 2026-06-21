@@ -29,6 +29,50 @@ jobs:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 选择性构建用 `git diff <prev-tag> HEAD` 判定谁真改了，需完整历史 + 全部 tag
+          fetch-depth: 0
+
+      # 判定本次 server / ui 各自是否真有改动，决定跳过哪个镜像构建。
+      # 取不到 prev-tag 的所有边界（首个 tag、HEAD 无父、手动 dispatch）一律退化为全建兜底。
+      - name: Decide which images to build
+        id: decide
+        run: |
+          set -euo pipefail
+          full_build() {
+            echo "reason: $1 -> full build"
+            echo "build_server=true" >> "$GITHUB_OUTPUT"
+            echo "build_ui=true" >> "$GITHUB_OUTPUT"
+          }
+          # 手动触发拿不到当前发布 tag 的语义 -> 全建
+          if [ "${{ github.event_name }}" != "push" ]; then
+            full_build "manual dispatch"
+            exit 0
+          fi
+          # prev-tag = HEAD 之前最近的 v* tag（沿祖先链，与是否在 main tip 无关）
+          if ! BASE=$(git describe --tags --match 'v*' --abbrev=0 'HEAD^' 2>/dev/null); then
+            full_build "no previous v* tag"
+            exit 0
+          fi
+          echo "prev tag: $BASE"
+          # 根级镜像输入变更 -> 两个都建。这些是落在 server/ ui/ 目录之外、但确实进镜像/改构建上下文的输入：
+          #   - pnpm-lock.yaml / pnpm-workspace.yaml：server 镜像 COPY 根 lock/workspace，ui dist 也随锁文件依赖变化
+          #   - .dockerignore：两个 build 脚本的构建上下文都是仓库根，它决定哪些文件进上下文/被 COPY，改了即影响镜像内容
+          #   - 根 package.json：同样被 server 镜像 COPY；但每次发布都 bump version 字段、version 不影响任何产物，
+          #     故对它只认「非 version 行」的实质改动（依赖 / pnpm overrides 等），否则选择性构建会被版本号 churn 整体打回全建、失去意义
+          root_pkg_real=$(git diff "$BASE" HEAD -- package.json | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true)
+          if [ -n "$(git diff --name-only "$BASE" HEAD -- pnpm-lock.yaml pnpm-workspace.yaml .dockerignore)" ] || [ -n "$root_pkg_real" ]; then
+            echo "root image inputs changed -> full build"
+            full_build "root image inputs changed"
+            exit 0
+          fi
+          # 各服务信号 = 服务目录 diff（含 package.json：版本 bump 的服务必重建以产出新版本 tag）
+          # + 对应 build 脚本 diff（改了构建脚本的平台/tag/annotation 行为，对应服务必须重建）
+          server_changed=$([ -n "$(git diff --name-only "$BASE" HEAD -- server/ scripts/build-server.sh)" ] && echo true || echo false)
+          ui_changed=$([ -n "$(git diff --name-only "$BASE" HEAD -- ui/ scripts/build-ui.sh)" ] && echo true || echo false)
+          echo "server_changed=$server_changed ui_changed=$ui_changed"
+          echo "build_server=$server_changed" >> "$GITHUB_OUTPUT"
+          echo "build_ui=$ui_changed" >> "$GITHUB_OUTPUT"
 
       # build-ui.sh 在 host 端跑 `pnpm --filter @coclaw/ui build` 出 dist，需要 node + pnpm + 依赖
       - uses: pnpm/action-setup@v4
@@ -37,7 +81,10 @@ jobs:
           # Node 22 对齐部署与 ci.yaml
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      # 仅 ui 构建需要 host 端 pnpm 依赖（build-ui.sh 跑 pnpm --filter build）；
+      # 只建 server 时跳过省一次 install（server 构建全在 docker 内，host 只用 node 读版本号）
+      - if: steps.decide.outputs.build_ui == 'true'
+        run: pnpm install --frozen-lockfile
 
       # 注册 arm64 模拟，多架构构建必需
       - uses: docker/setup-qemu-action@v3
@@ -53,19 +100,24 @@ jobs:
 
       # 各脚本内部读对应 package.json 的 version 打 tag（:<version> + :latest），零改动复用
       - name: Build & push server image
+        if: steps.decide.outputs.build_server == 'true'
         run: bash scripts/build-server.sh
       - name: Build & push ui image
+        if: steps.decide.outputs.build_ui == 'true'
         run: bash scripts/build-ui.sh
 
       - name: Summary
+        if: always()
         run: |
           SERVER_VERSION=$(node -p "require('./server/package.json').version")
           UI_VERSION=$(node -p "require('./ui/package.json').version")
+          server_status='${{ steps.decide.outputs.build_server == 'true' && 'built' || 'skipped (unchanged)' }}'
+          ui_status='${{ steps.decide.outputs.build_ui == 'true' && 'built' || 'skipped (unchanged)' }}'
           {
             echo "## Publish Images"
             echo ""
-            echo "| Service | Image | Version |"
-            echo "|---------|-------|---------|"
-            echo "| server | ghcr.io/coclaw/server | $SERVER_VERSION |"
-            echo "| ui | ghcr.io/coclaw/ui | $UI_VERSION |"
+            echo "| Service | Image | Version | Status |"
+            echo "|---------|-------|---------|--------|"
+            echo "| server | ghcr.io/coclaw/server | $SERVER_VERSION | $server_status |"
+            echo "| ui | ghcr.io/coclaw/ui | $UI_VERSION | $ui_status |"
           } >> "$GITHUB_STEP_SUMMARY"

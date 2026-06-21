@@ -61,7 +61,12 @@ server 的 `test` 脚本本身开头也会先 `prisma generate`，所以单看�
 这是与 CI 门禁分开的另一条流水线，负责把 `server` 与 `ui` 的多架构镜像建好并推到 GHCR（`ghcr.io/coclaw/server`、`ghcr.io/coclaw/ui`）。它**只消费已 push 的 tag，绝不 bump 版本 / 打 tag / 改 Changesets**。
 
 - **触发**：push `v*` tag（`/release` 模式 A/B 推 `v<root>` 时自动触发），或 `workflow_dispatch` 手动触发。
-- **每次全建**：不算 prev-tag、不做 diff，每次触发把 server 和 ui 都建一遍。
+- **按需选择性构建**：tag 触发时先用 `git diff <上一个 v* tag> <本 tag>` 判定 server / ui 各自是否真有改动，**只重建改了的那个**，跳过没改的（最常见的省时场景：只 bump 了 ui、server 没动时，跳过最慢的 server arm64 模拟构建）。跳过 = 啥都不做：未改服务的版本号没变，其 `:<version>` / `:latest` 本就指向正确 digest，无需 re-tag。判定细则与兜底：
+  - **根级镜像输入变更 → 强制两个都建**：判定不只看 `server/` `ui/` 目录——凡是落在这两个目录之外、却真进镜像或改构建上下文的输入变了，就两个都建：`pnpm-lock.yaml`、`pnpm-workspace.yaml`、根 `.dockerignore`（构建上下文是仓库根，它决定哪些文件进上下文/被 COPY），或根 `package.json` 出现**非 `version` 行**的实质改动（依赖 / pnpm overrides 等）。（根 `package.json` 的 `version` 每次发布都 bump 但不影响镜像产物，故被有意忽略，否则选择性构建会被版本号 churn 整体打回全建。）
+  - **build 脚本变更 → 对应服务重建**：`scripts/build-server.sh` 变更纳入 server 信号、`scripts/build-ui.sh` 纳入 ui 信号（改了平台/tag/annotation 等构建行为，对应镜像必须重建，哪怕服务源码没动）。
+  - **算不出 prev-tag 一律退化为全建**：首个 `v*` tag、HEAD 无父提交、以及 `workflow_dispatch` 手动触发（没有"本次发布 tag"语义）——这些都保守地把 server 和 ui 都建一遍，绝不因取不到基线而误跳。故手动补建（下方盲区兜底）总是全建。
+  - checkout 用 `fetch-depth: 0` 拉全历史 + tag，否则 `git diff <prev-tag>` 无从计算。
+  - **前提假设（不设守卫，靠流程保证）**：选择性构建假定 `v*` tag 由 `/release` 在 **main tip** 切。`prev-tag` 取 HEAD 的最近祖先 tag，与 tag 是否在 main tip 无关、能正确算出 diff 基线；但若有人**手动给非 main tip / 旧提交打 `v*` tag**（越界操作），被跳过的服务 `:latest` 可能与该 tag 不符。这类情形用 `gh workflow run publish-images.yaml`（始终全建）兜底，不在判定逻辑里加祖先链守卫（既无法区分正常 main tag 与旧提交 tag，又脆弱）。
 - **怎么建**：复用 `scripts/build-server.sh` 与 `scripts/build-ui.sh`（脚本零改动）。两脚本自建名为 `coclaw-builder` 的 buildx builder 并各自读对应 `package.json` 的 version 打 `:<version>` + `:latest`。workflow 只补脚本缺的 host 端前置：node 22 + pnpm + `pnpm install`（`build-ui.sh` 在 host 跑 `vite build` 出 dist 需要）、`docker/setup-qemu-action`（arm64 模拟）、`docker/login-action` 登录 GHCR（脚本不含 login）。不加 `setup-buildx-action`（脚本自建 builder，避免重复）。
 - **权限**：`packages: write` + `GITHUB_TOKEN`（`github.actor` 登录 GHCR）。
 
