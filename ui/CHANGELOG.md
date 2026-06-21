@@ -1,5 +1,11 @@
 # @coclaw/ui
 
+## 0.32.6
+
+### Patch Changes
+
+- 82720f0: Fix new-topic first message briefly hidden until initial load completes
+
 ## 0.32.5
 
 ### Patch Changes
