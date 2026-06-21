@@ -490,8 +490,15 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const onEnd = run.__watcher?.onEnd;
 			const errorMessage = run.__endError ?? null;
 			if (run.__watcher) run.__watcher.onEnd = null;
+			// 终态即关流式遮罩：清掉本 run 流式占位的 _streaming/_pending（克隆、保留内容、
+			// 不删条目）。拆除遮罩不再寄生于"一次成功的 loadMessages 把 entry drop 掉"——dropRun
+			// 仍按原路径真正释放 entry，这里只保证终态瞬间转圈必停（修 content-less 取消卡死 +
+			// sessions.get 失败 orphan 转圈）。仅在 ended 时清，cancelled-but-not-ended 不动（守 P0）。
+			const cleared = run.streamingMsgs.map((m) =>
+				(m._streaming || m._pending) ? { ...m, _streaming: false, _pending: false } : m
+			);
 			// 触发响应式更新（让 isRunning getter 通知 UI）
-			this.runs[runId] = { ...run };
+			this.runs[runId] = { ...run, streamingMsgs: cleared };
 			if (onEnd) {
 				try { onEnd(reason, errorMessage); }
 				catch (e) { console.error('[agentRuns] onEnd hook err:', e); }

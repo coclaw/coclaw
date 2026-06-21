@@ -2514,6 +2514,63 @@ describe('useChatStore', () => {
 			expect(remoteLogCalls.find((t) => t.includes('persist-stale'))).toBeFalsy();
 		});
 
+		// B 自愈（commit 3ecd5e94 "clear orphan streaming placeholder after loadMessages success"）：
+		// 上一条只断言"sessions.get 失败那一次不 drop"。本条补"下次成功 reload 即自愈"——
+		// silent reload 成功后走 loadMessages 末尾的孤儿清理分支 `if (orphanRun?.ended) dropRun`，
+		// 把已 ended 的 orphan run drop 掉、streamingMsgs 释放（非永久 orphan）。
+		test('endReason=wait + 首次 silent loadMessages 失败 → 下次成功 reload 经孤儿清理分支 drop 已 ended 的 orphan（B 自愈）', async () => {
+			vi.useFakeTimers();
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			let sessGetFail = true;
+			const conn = mockConn();
+			conn.request.mockImplementation((method, params, options) => {
+				if (method === 'agent') {
+					options?.onAccepted?.({ runId: 'run-heal' });
+					return new Promise(() => {}); // RPC pending；终态走 wait grace
+				}
+				if (method === 'sessions.get') {
+					if (sessGetFail) return Promise.reject(new Error('network down'));
+					return Promise.resolve({ messages: [] });
+				}
+				if (method === 'chat.history') return Promise.resolve({ sessionId: 'sess-1' });
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = useChatStore();
+			store.sessionId = 'sess-1';
+			store.clawId = '1';
+			store.chatSessionKey = 'agent:main:main';
+
+			const runsStore = useAgentRunsStore();
+			const dropSpy = vi.spyOn(runsStore, 'dropRun');
+
+			const sendPromise = store.sendMessage('hello');
+			await vi.advanceTimersByTimeAsync(0);
+			// wait 终态：挂 grace → grace 满 → endRun('wait') → __awaitPersistAndDrop 的 force load（首次失败）
+			runsStore.__schedulePendingEnd('run-heal', 'wait');
+			await vi.advanceTimersByTimeAsync(2000); // RPC_GRACE_MS
+			await sendPromise;
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(0);
+
+			// 首次 sessions.get 失败 → 不 drop；run 已 ended 但 streamingMsgs 仍 orphan（终态已擦 _streaming，
+			// 但 entry 还在，要靠下次成功 reload 真正释放）
+			expect(dropSpy).not.toHaveBeenCalled();
+			const orphan = runsStore.getActiveRun(store.runKey);
+			expect(orphan).not.toBeNull();
+			expect(orphan.ended).toBe(true);
+
+			// 下次成功的 silent reload（模拟重连 / activate 重入）→ 孤儿清理分支把已 ended 的 orphan drop
+			sessGetFail = false;
+			await store.loadMessages({ silent: true });
+
+			expect(dropSpy).toHaveBeenCalledWith(store.runKey, 'run-heal');
+			expect(runsStore.getActiveRun(store.runKey)).toBeNull();
+		});
+
 		// 双气泡 bug 回归：DC 抖动时 chat.history（取 currentSessionId 的辅助 RPC）失败，
 		// 不应反向阻挡 sessions.get 已经成功拉到的服务端消息覆盖 + dropRun 释放
 		// streamingMsgs。否则 streamingMsgs 与 server 持久化消息会同时被合并，

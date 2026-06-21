@@ -486,6 +486,22 @@ describe('useAgentRunsStore', () => {
 			expect(run.lastEventAt).toBeGreaterThan(0);
 		});
 
+		// P0 守卫：__endRun 终态擦 _streaming 的修法只对 ended 生效；settleWithTransitionByKey
+		// 只标 cancelled、不走 __endRun，故流式占位的 _streaming 必须保持 true（watcher 仍跑、
+		// 用户仍看转圈直到真终态）。这道断言钉死终态擦标记不会误伤"取消但尚未终结"的 run。
+		test('P0 守卫：cancelled-but-not-ended 不清流式占位 → _streaming 保持 true', () => {
+			const store = useAgentRunsStore();
+			registerRun(store);
+
+			store.settleWithTransitionByKey('1::agent:main:main');
+
+			const run = store.runs['run-1'];
+			expect(run.cancelled).toBe(true);
+			expect(run.ended).toBe(false);
+			const bot = run.streamingMsgs.find((m) => m.message.role === 'assistant');
+			expect(bot._streaming).toBe(true);
+		});
+
 		test('不存在 / 已 ended / 已 cancelled 时 no-op', () => {
 			const store = useAgentRunsStore();
 
@@ -565,6 +581,40 @@ describe('useAgentRunsStore', () => {
 
 			expect(store.runs['run-1']).toBeUndefined();
 			expect(store.runKeyIndex['1::agent:main:main']).toBeUndefined();
+		});
+	});
+
+	// =====================================================================
+	// __endRun 终态即关流式占位（content-less 取消转圈卡死修复）
+	// =====================================================================
+
+	describe('__endRun 终态清流式占位标记', () => {
+		// 修 content-less 取消卡死：在首 token 之前取消（assistant 占位还是空内容、_streaming:true），
+		// run 进终态时若不擦标记，那条空占位的转圈会一直挂着——因为拆除遮罩原本只寄生在"一次
+		// 成功的 loadMessages 把 entry drop 掉"上，而该次终态的 force-loadMessages 在亚秒窗里没落地。
+		// __endRun 终态顺手把 _streaming/_pending 关掉，保证转圈瞬间必停，且不依赖 dropRun 成功。
+		test('content-less 流式占位的 run 进终态：_streaming/_pending 关掉、保留内容、entry 不删（不依赖 dropRun）', () => {
+			const store = useAgentRunsStore();
+			// 默认占位即 content-less：assistant entry _streaming:true、content:''（首 token 之前）
+			registerRun(store);
+			const before = store.runs['run-1'].streamingMsgs;
+			const botBefore = before.find((m) => m.message.role === 'assistant');
+			expect(botBefore._streaming).toBe(true);
+
+			// 经会走到 __endRun 的公开取消路径进入终态（启发式 cancel-gone）
+			store.settleByCancel('1::agent:main:main', 'cancel-gone');
+
+			const run = store.runs['run-1'];
+			const bot = run.streamingMsgs.find((m) => m.message.role === 'assistant');
+			// (a) 终态即关转圈：assistant 占位 _streaming/_pending 都为 false；.message 等其它字段原样保留
+			expect(bot._streaming).toBe(false);
+			expect(bot._pending).toBe(false);
+			expect(bot.message).toBe(botBefore.message);
+			// (b) entry 未被删、run 仍在注册表（dropRun 未发生，关转圈不依赖 loadMessages 成功）
+			expect(run.ended).toBe(true);
+			expect(store.runKeyIndex['1::agent:main:main']).toBe('run-1');
+			expect(run.streamingMsgs).toHaveLength(2);
+			expect(store.getActiveRun('1::agent:main:main')).toBeTruthy();
 		});
 	});
 

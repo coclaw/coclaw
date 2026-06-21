@@ -1709,11 +1709,10 @@ export function createChatStore(storeKey, opts = {}) {
 			 * 把上一轮的最终回答误判成本轮终态而提前 drop。
              *
 			 * silent loadMessages 失败时不 dropRun（沿用旧策略）：避免清掉 streamingMsgs 又
-			 * 拉不到终态消息。下次 activate / __onConnReady silent reload 成功才会
-			 * 重新走 reconcile 路径——但 stripLocalUserMsgs 在 run.ended=true 时早返回，
-			 * 不动 streamingMsgs；__endRun 已清掉 POST_ACCEPT_TIMEOUT_MS 24h 兜底定时器。
-			 * 等于 sessions.get 失败时本 run 的 streamingMsgs 永久 orphan（直到 chat 重建）。
-			 * 这是预存缺陷，详见 TODO.md 第 2 条。
+			 * 拉不到终态消息。此时 entry 暂留为 orphan，但有两道兜底：__endRun 已在终态把
+			 * streamingMsgs 的 _streaming/_pending 清掉（转圈不会卡死），且下次任意成功的
+			 * silent reload 会命中 doLoad 的孤儿清理分支（orphanRun?.ended → dropRun）真正释放。
+			 * 即 sessions.get 失败仅留一个无转圈的 orphan 条目，下次成功 reload 即自愈（非永久）。
 			 *
 			 * **必须用 force 路径**：终态触发的载入必须拿到与本次 run 状态对齐的 fresh
 			 * sessions.get。如果复用 activate / connReady / onRefresh 起的 silent reload，

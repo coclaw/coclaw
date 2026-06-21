@@ -4,6 +4,8 @@
 > 状态：已知 bug，**暂不修复**（出现概率极低，影响面有限）
 > 关联 TODO：`ui/TODO.md` #16、#31（合并入本文，原条目精简为索引）
 
+> **勘误（2026-06-21）**：本文「永久 orphan / 兜底全部失效」（见 §6）的结论已**陈旧**——commit `3ecd5e94`（2026-05-08 `fix(ui): clear orphan streaming placeholder after loadMessages success`）在 `loadMessages` 末尾加了孤儿清理分支 `if (orphanRun?.ended) dropRun`，使残留占位**下次成功 reload 即自愈**（非永久）。另：`__endRun` 进终态时已顺手擦掉本 run 流式占位的 `_streaming/_pending`（保留内容、不删条目），**移除了卡转圈的可见症状**——run 进终态那一刻转圈即停，不再寄生于"一次成功的 loadMessages 把 entry drop 掉"；dropRun 仍按原路径真正释放 entry。本文余下分析（链路 / 关键事实 / 修法选项）仅作历史背景保留。
+
 ## 一句话现象
 
 agent run 进行中网络持续故障 ≥ 3 分钟（ICE restart 预算耗尽），UI 判 run 死，但那条"思考中…"动画（streaming overlay）**永远不消失**，唯一恢复路径是发新消息或重启 app。

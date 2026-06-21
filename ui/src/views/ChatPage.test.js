@@ -744,7 +744,8 @@ describe('ChatPage send message', () => {
 	 *   1. accepted 瞬间 register 一条 run，带流式占位（_streaming=true）
 	 *   2. RPC reject 触发 __onRpcFailed → __endError='rtc failed' → __endRun('failed')
 	 *   3. dropRun **不被调用**（成因：__awaitPersistAndDrop 的 silent loadMessages 在 DC 刚断时
-	 *      拿不到东西，兜底没调 dropRun → streamingMsgs 永久 orphan，见 chat.store.js:1626-1631）
+	 *      拿不到东西，兜底没调 dropRun → entry 仍 orphan）。注：__endRun 终态已擦掉占位的
+	 *      _streaming/_pending（转圈停），但 entry 本身要等下次成功 loadMessages 才真正释放
 	 *   4. sendMessage promise resolve `{accepted:true, endReason:'failed', errorMessage:'rtc failed'}`
 	 */
 	function setupRtcBrokenAcceptedRun() {
@@ -800,22 +801,23 @@ describe('ChatPage send message', () => {
 		expect(input.props('sending')).toBe(false);
 	});
 
-	// [red] sendMessage 直接 mock 路径下，"思考中"占位赖着不走的现象。
-	// 此红测**不会**被 X1 修法变绿——因为它 mock sendMessage 后根本没走 loadMessages
-	// 链路（X1 兜底点在 loadMessages 成功路径里）。它锁的是 streamingMsgs 当前作为
-	// "前台显示载体"的根本设计——在 plugin 未及时持久化的极端场景下 partial reply
-	// 让位失败 → 占位丢内容。这正是 TODO.md "X4 课题" 处理的方向。
-	// X4 落地后此测试应变绿，届时摘掉 .fails 升级为常规 test。
-	test.fails('[red] accepted run RTC 真断后 streamingMsgs 占位应被释放（X4 课题，X1 不修复）', async () => {
-		const { wrapper, chatStore } = setupRtcBrokenAcceptedRun();
+	// __endRun 终态擦 _streaming 修法：run 进终态那一刻，流式占位的 _streaming/_pending
+	// 被擦掉（转圈停），即便没有任何 loadMessages 跑过（此处 sendMessage 全程 mock、不走
+	// loadMessages 链路）。占位 entry 本身仍未释放（X4 课题：partial reply 让位 / entry
+	// 真正 drop 仍在 loadMessages 成功路径，见下一条），但用户已不再看到幽灵转圈。
+	test('accepted run RTC 真断后：终态擦掉占位 _streaming（转圈停），entry 仍留待 loadMessages 释放（X4 未解）', async () => {
+		const { wrapper, chatStore, agentRunsStore } = setupRtcBrokenAcceptedRun();
 		await flushPromises();
 
 		const input = wrapper.findComponent({ name: 'ChatInput' });
 		input.vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		const orphan = chatStore.allMessages.find((m) => m._streaming === true);
-		expect(orphan).toBeUndefined();
+		// 终态擦标记：再无 _streaming===true 的占位（转圈已停）
+		expect(chatStore.allMessages.find((m) => m._streaming === true)).toBeUndefined();
+		// 但 entry 未被 drop——占位 assistant 条目仍在 allMessages，run 仍在注册表（X4 未解）
+		expect(chatStore.allMessages.find((m) => m._local && m.message?.role === 'assistant')).toBeDefined();
+		expect(agentRunsStore.getActiveRun(chatStore.runKey)).toBeTruthy();
 	});
 
 	// 钉死 stripLocalUserMsgs 自身行为：对 ended run 早返回，既不动 streaming claw 占位
@@ -830,7 +832,9 @@ describe('ChatPage send message', () => {
 		input.vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		const before = chatStore.allMessages.find((m) => m._streaming === true);
+		// 终态已擦 _streaming（转圈停）；占位 assistant entry 本身仍在（_local），用它做存在性探针
+		const findPlaceholder = () => chatStore.allMessages.find((m) => m._local && m.message?.role === 'assistant');
+		const before = findPlaceholder();
 		expect(before).toBeDefined();
 
 		const dropSpy = vi.spyOn(agentRunsStore, 'dropRun');
@@ -841,7 +845,7 @@ describe('ChatPage send message', () => {
 		];
 		agentRunsStore.stripLocalUserMsgs(chatStore.runKey, fakeServerMsgs);
 
-		const after = chatStore.allMessages.find((m) => m._streaming === true);
+		const after = findPlaceholder();
 		expect(after).toBeDefined();
 		expect(dropSpy).not.toHaveBeenCalled();
 	});
@@ -858,8 +862,8 @@ describe('ChatPage send message', () => {
 		input.vm.$emit('send', { text: 'hi', files: [] });
 		await flushPromises();
 
-		// 前置：占位此刻仍在（X1 还没机会跑）
-		const before = chatStore.allMessages.find((m) => m._streaming === true);
+		// 前置：占位 entry 此刻仍在（X1 还没机会跑；终态已擦 _streaming 但 entry 未 drop）
+		const before = chatStore.allMessages.find((m) => m._local && m.message?.role === 'assistant');
 		expect(before).toBeDefined();
 		const runKey = chatStore.runKey;
 		expect(agentRunsStore.getActiveRun(runKey)).toBeTruthy();
@@ -889,7 +893,7 @@ describe('ChatPage send message', () => {
 
 		// 钉死：X1 触发 dropRun → entry 已删 → 占位释放
 		expect(agentRunsStore.getActiveRun(runKey)).toBeNull();
-		const after = chatStore.allMessages.find((m) => m._streaming === true);
+		const after = chatStore.allMessages.find((m) => m._local && m.message?.role === 'assistant');
 		expect(after).toBeUndefined();
 	});
 
