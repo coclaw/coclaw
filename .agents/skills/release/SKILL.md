@@ -66,19 +66,67 @@ git commit -m "..."
 
 ## 模式 A：完整发布
 
-通用 0–5 → push & tag → Release 判断 → 若插件本次 bump 则发 npm。
+通用 0–5 → push main → 等 CI 绿 → 打/push tag → Release 判断 → 若插件本次 bump 则发 npm。
 
-### 6A. push & tag
+### 6A. push main → 等 CI 绿 → 打/push tag
+
+push tag 会**立刻**触发 `publish-images.yaml` 建镜像、且没有第二道闸；所以必须**先确认这次 bump commit 的 CI 通过，再打 tag**。顺序即保险：CI 没绿就别打 tag，远端零残留、可干净重来。
+
+**① push bump commit 到 main，并记下它的确切 SHA**
 
 ```bash
 git push origin main
+SHA=$(git rev-parse HEAD)   # 钉住本次 bump commit；下面 tag/门禁都对这个 SHA，别用裸 HEAD
+```
 
+**② 等这次 push 触发的 CI 在该 SHA 上跑绿（门禁）**
+
+CI（`ci.yaml`）只在 push main / PR 时跑，**tag 不触发 CI**——这里等的就是上一步 push 触发的那一次。push 后 run 要几秒才注册，先按 SHA 找到对应 run，再轮询其结论。**别用 `gh run watch --exit-status` 接 `| tail` / `; echo`**（退码会被盖、红跑误报成绿）；用 `gh run view --json` 自己判定。
+
+> **执行提示**：这段要等 CI 跑完（正常 ~2min）。把它当**一次 Bash 调用**跑时，**务必把 Bash 工具超时调到上限 `600000`ms（10min），别用默认 120s**——否则绿跑还没结束就被工具超时掐断、还得善后。下面的轮询自带上界，不会无限等。
+
+```bash
+# 找该 SHA 对应的 CI run id（刚 push 可能还没注册，短重试）
+RUN_ID=""
+for i in $(seq 1 12); do
+	RUN_ID=$(gh run list --workflow ci.yaml --commit "$SHA" --limit 1 --json databaseId -q '.[0].databaseId')
+	[ -n "$RUN_ID" ] && break
+	sleep 5
+done
+[ -z "$RUN_ID" ] && { echo "CI run for $SHA not found"; exit 1; }
+
+# 轮询到 completed（有上界，别无限等）：最多 24 轮 ×15s ≈ 6min，远超正常 ~2min，又稳在工具 10min 超时内
+STATUS=""
+for i in $(seq 1 24); do
+	STATUS=$(gh run view "$RUN_ID" --json status -q '.status')
+	[ "$STATUS" = "completed" ] && break
+	sleep 15
+done
+if [ "$STATUS" != "completed" ]; then
+	echo "CI 超 ~6min 仍未结束（run $RUN_ID）：去 Actions 页核实，绿了再手动对该 SHA 打 tag。aborting"
+	exit 1
+fi
+CONCLUSION=$(gh run view "$RUN_ID" --json conclusion -q '.conclusion')
+echo "CI conclusion: $CONCLUSION"
+```
+
+**③ CI 绿才打 tag，并把 tag 钉到那个确切 SHA**
+
+```bash
+# CI 非 success（红/取消）→ 中止发布：不打、不推 tag，报告失败。远端无 tag、无镜像，零不可逆残留。
+[ "$CONCLUSION" != "success" ] && { echo "CI not green ($CONCLUSION); aborting tag/release"; exit 1; }
+
+# 绿：tag 钉到 $SHA——不是裸 HEAD，防等 CI 的几分钟里别的终端推进了本地 main、套到未被 CI 验过的更新 commit
 # 若 tag 不存在才建（`git tag -l` 无匹配也退 0，不能用作存在性判断）
-git rev-parse -q --verify "refs/tags/v<root-version>" >/dev/null || git tag v<root-version>
+git rev-parse -q --verify "refs/tags/v<root-version>" >/dev/null || git tag v<root-version> "$SHA"
 git push origin v<root-version>
 ```
 
-> **镜像构建**：push 新 `v*` tag 会自动触发 `publish-images.yaml` 建 GHCR 镜像。若本次未 bump 根版本（无新 `v*` tag，仅动 server/plugin 而 ui 仍最高），自动构建不触发，需手动补：`gh workflow run publish-images.yaml`。
+> **中途已建本地 tag 又要中止**：先 `git tag -d v<root-version>` 删掉本地 tag 再退出，确保不残留。
+
+> **镜像构建（按需选择性）**：push 新 `v*` tag 触发 `publish-images.yaml`，只重建自上个 tag 起**真有改动**的 server / ui（没改的跳过，省 server arm64 慢构建；其 `:latest`/`:<version>` 仍指向正确 digest，属预期、非漏建）。根依赖变更（lockfile / `workspace.yaml` / 根 `package.json` 的**非 version** 改动）则两个都建。
+>
+> 若本次未 bump 根版本（无新 `v*` tag，仅动 server/plugin 而 ui 仍最高），tag 触发不发生，需手动补 `gh workflow run publish-images.yaml`——它**始终全建**，是该盲区的可靠兜底；**手动补建前同样先等该 SHA 的 CI 绿**。
 
 ### 7A. Release 判断
 
@@ -100,7 +148,7 @@ cd plugins/openclaw && pnpm release
 
 ## 模式 B：只 bump push
 
-通用 0–5 → push & tag → Release 判断。**步骤完全同 A，跳过 8A**——即使本次插件有 bump 也不发 npm（用户的明确意图，留到下次 A 模式时再发）。
+通用 0–5 → push & tag（**含 6A 的 CI 闸：先等该 SHA 的 CI 绿再打/push tag**）→ Release 判断。**步骤完全同 A，跳过 8A**——即使本次插件有 bump 也不发 npm（用户的明确意图，留到下次 A 模式时再发）。
 
 > **B 后想补发 npm**（不再 bump、发当前版本）：直接 `cd plugins/openclaw && pnpm release`，相当于补做 8A。
 
@@ -109,6 +157,8 @@ cd plugins/openclaw && pnpm release
 ## 模式 C：紧急 npm
 
 通用 0–5（**跳过第 4 步**）→ `cd plugins/openclaw && pnpm release`。**不 push、不 tag、不 Release**。
+
+> **CI 闸不涉及 C**：不打 tag → 不触发镜像构建，无需等 CI；且 `pnpm release` 本就先跑 `pnpm verify`（本地全门禁，失败即 abort），已有一道保险。
 
 完成后明确告知用户："本地领先 origin N 个 commit，待下次 A/B 模式批量 push（包括本次的 bump commit）。"
 
