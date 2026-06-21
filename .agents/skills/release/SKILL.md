@@ -95,15 +95,18 @@ for i in $(seq 1 12); do
 done
 [ -z "$RUN_ID" ] && { echo "CI run for $SHA not found"; exit 1; }
 
-# 轮询到 completed（有上界，别无限等）：最多 24 轮 ×15s ≈ 6min，远超正常 ~2min，又稳在工具 10min 超时内
+# CI 实测 ~2min+ 才完成：先一次性等过拐点，省掉头 ~8 次必然 in_progress 的白查
+sleep 135   # ~2m15s
+# 之后短间隔轮询，有上界别无限等：最多 24 轮 ×10s ≈ 再 4min
+# 合计等待上界 ~6.5min（远超实测 ~2min+），又稳在工具 10min 超时内、留足余量
 STATUS=""
 for i in $(seq 1 24); do
 	STATUS=$(gh run view "$RUN_ID" --json status -q '.status')
 	[ "$STATUS" = "completed" ] && break
-	sleep 15
+	sleep 10
 done
 if [ "$STATUS" != "completed" ]; then
-	echo "CI 超 ~6min 仍未结束（run $RUN_ID）：去 Actions 页核实，绿了再手动对该 SHA 打 tag。aborting"
+	echo "CI 超 ~6.5min 仍未结束（run $RUN_ID）：去 Actions 页核实，绿了再手动对该 SHA 打 tag。aborting"
 	exit 1
 fi
 CONCLUSION=$(gh run view "$RUN_ID" --json conclusion -q '.conclusion')
