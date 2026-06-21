@@ -576,17 +576,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - 给 auto-upgrade 路径加专项测试覆盖 fsync 抛错场景
 - 单独发一个补丁版本（不与 release 节奏混在一起）
 
-## race 测试标题与实现失配（PRE-EXISTING，Phase B-stage1 plan-2 deep-review 顺手抓出，不修）
-
-**发现日期**：2026-05-03（rpc-queue-startup deep-review dim C）
-**关联**：`plugins/openclaw/src/realtime-bridge.test.js:3451` / `:3498`
-
-**问题**：两个测试标题写 "stop() called during preload (race protection)" / "stop() during pion preload"，但实现只手动 `bridge.started = false`，没真调 `bridge.stop()`。覆盖了"flag 已变 false"分支，但没走 stop 生命周期副作用（如清 timers / 关 ws）。
-
-**为什么不修**：本次（plan-2）只是顺手注入了 stub 跳过 plan-2 fs 预热，没动这两条测试的语义；标题与实现失配是 plan-1 之前就存在的问题。
-
-**修复方向**：要么把标题改为 "started=false during preload"（轻），要么把实现改为真调 `await bridge.stop()`（更重，但更覆盖到生命周期副作用）。
-
 ## setupDir() 全局污染 process.env / runtime（PRE-EXISTING，记录）
 
 **发现日期**：2026-05-03（rpc-queue-startup deep-review dim C）
@@ -993,19 +982,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 **严重度**：Low（窗口窄、复用条件苛刻；但要根治需要架构层改动，纳入 async-orphan 治本方案讨论）
 
-## webrtc-peer.test.js 2390 既有弱断言（预存）
-
-**发现日期**：2026-05-11（信令串行化 per-connId deep-review，codex 测试 review 抓出 H1）
-**关联**：`webrtc-peer.test.js` "ICE restart 复用现有 PC" 测试，line ~2390
-
-**问题**：测试断言 `firstPc.setRemoteDescription.__called === undefined`——mock PC 从未定义 `__called` 属性，恒为 `undefined`，等于 `assert.equal(undefined, undefined)`，恒真。即便 SRD 完全没被调用也能通过。
-
-**为什么本次未一并修**：与本次信令串行化无直接关系；该断言在 mutex-时代就已经是无效断言，属预存测试缺口。
-
-**修复方向**：把 mock 的 `setRemoteDescription` 改成包装版（如 `mock.fn()` / 计数 wrapper），断言调用次数大于 0；或断言"setRemoteDescription 收到了 ICE-restart offer 的 sdp"等真实可验证的副作用。
-
-**严重度**：Low（测试整体场景已被旁路断言覆盖——`PC.instances.length === 1`、`sent[0].type === 'rtc:answer'` 等仍保护核心行为）
-
 ## OpenClaw issue #80697 本地补丁需在上游修复后撤销
 
 **发现日期**：2026-05-14（用户笔记本 chat 打开慢的排查）
@@ -1023,22 +999,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 **对终端用户的部署形态（尚未实施）**：当前脚本只在 CoClaw 仓库内，不会随 npm plugin 安装自动应用。若上游迟迟不修，可考虑：(a) 在 plugin `postinstall` 钩子里跑该脚本（但触碰用户 OpenClaw 安装目录有侵入性、需明确告知）；(b) 写到 `docs/troubleshooting.md` 让遇到同类问题的用户自助；(c) 维持现状，仅作为维护者排查手段。当前选择 (c)。
 
-
----
-
-## bind rebind 测试的 mock `rebound: false` 与测试名不一致
-
-**发现日期**：2026-05-16（Phase B 去 wrap 改造 deep-review codex-rescue B 实例识别）
-**关联**：`plugins/openclaw/src/cli-registrar.test.js:168-184` `bind CLI should show previousClawId when rebinding`
-
-**问题**：测试名暗示是 rebind 场景，但 mock 给的 `rebound: false`——`bindOk` 渲染时走 'bound' 分支（非 're-bound'），跟测试名传达的"rebind"语义对不上。当前测试仍通过是因为只断了 `previous Claw` 字符串（在 previousClawId 非空时永远出现，与 rebound 无关）。
-
-**预存性**：本次改造未触碰这个测试逻辑，是原本就存在的测试设计混乱。
-
-**修复方向**：
-
-- 改 mock 给 `rebound: true` 让 fixture 跟测试名对齐
-- 或重命名测试名为 `bind CLI should show previousClawId when given` 描述 previousClawId 处理本身（不绑定 rebind 语义）
 
 ---
 
