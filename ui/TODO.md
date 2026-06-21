@@ -243,16 +243,11 @@
    - 现状：topic 模式首次 send 时，UI 在第一条消息持久化前就尝试 `loadTopicMessages(<topicId>)`，必然 NOT_FOUND（来源：round-3 topic E2E `e4d59ccc` 观测）。随后的 load 成功（count=2），功能无影响，但 happy path 上每个新 topic 首发都留一行错误日志。
    - 修复方向：新 topic 首发前跳过/守卫这次注定失败的 pre-persist load，或把该 NOT_FOUND 降级为 debug。仅 UI。
 
-3. **E2E 调用文档失真：`pnpm e2e:ci -- --grep` 在 macOS 不工作**
-   - 现状：`pnpm` 注入的 `--` 经 `e2e/run.js` 透传给 Playwright，使 `--grep <title>` 被当作位置式文件过滤 → "No tests found"（exit 1、零用例）。可用形式：`npx playwright test --grep "<title>"`（globalSetup/webServer 仍经 config 加载）或单文件 `pnpm e2e:ci -- e2e/<file>.e2e.spec.js`；整套 `pnpm e2e:ci` 不受影响。
-   - 影响：`e2e-test` skill 与 `ui/docs/e2e-troubleshooting.md` 疑似仍记录失效的 `--grep` 形式，需后续一轮订正。
-   - 可能的根因修法（需各自验证不破坏可用的 `-- e2e/<file>` 形式）：让 `run.js` 剥掉转发参数里的前导 `--`。本轮按指示不动 `run.js`。
-
-4. **rtc-transport 消息计数 `after > before` 在 50 条渲染上限处脆弱**（预存，非本轮引入）
+3. **rtc-transport 消息计数 `after > before` 在 50 条渲染上限处脆弱**（预存，非本轮引入）
    - round-3 把该计数选择器从 CSS `.px-3.py-3` 换成 `[data-testid="chat-msg-item"]`（`2f9b7db2`）。计数增量断言本身在主会话达到 50 条渲染上限时会脆断（新消息把旧消息挤出、计数不增）。当前主会话较小（实测 0→7 通过）；同回合的收发已由「用户消息可见 + btn-stop 消失」独立证明，计数增量属冗余弱校验。
    - 修复方向：若未来观测到脆断，改为按发送的唯一消息存在性 / 助手回复存在性断言，去掉对计数增量的依赖。
 
-5. **content-less post-accept 取消：assistant 气泡 `_streaming` 卡死的窄竞态**（与「Bug 1 修复」节的 streaming-overlay 永久残留 / 「streamingMsgs 接管策略缺陷」(X4) / dropRun 族同根，不另立修复）
+4. **content-less post-accept 取消：assistant 气泡 `_streaming` 卡死的窄竞态**（与「Bug 1 修复」节的 streaming-overlay 永久残留 / 「streamingMsgs 接管策略缺陷」(X4) / dropRun 族同根，不另立修复）
    - 现象：post-accept 后在**首 token 之前**的亚秒窗口点 STOP（取消一个尚无任何内容的回复），取消到终态后该 assistant 气泡的 `_streaming` 可能仍为 true（空气泡持续显示流式指示）。一旦回复已开始流式输出内容（contentLen>0）再取消则干净清除。来源：round-3 整套验收 1 次命中（`contentLen:0`→stuck），隔离 `--repeat-each` 在 contentLen>0 路径 10/10 干净。
    - 影响：LOW。触发窄（accept 后 ~1s 内、首 token 之前取消）；表现为空 assistant 气泡留一个流式指示；下次发消息/导航/reload 自愈；sending/isCancelling 终态与 btn-send 复用均正常。
    - 处置：B3 post-accept 取消用例（`chat-cancel-restore.e2e.spec.js`）已收紧为"内容已开始流式且仍在飞时才取消"（真实用户动作），确定性绿（10/10），不覆盖此 content-less 边角。产品修复（终态清 `_streaming`）属上述 streaming-overlay/streamingMsgs/dropRun 族，需 codex-rescue 事前评估 + 签字，超本轮 E2E 范围。

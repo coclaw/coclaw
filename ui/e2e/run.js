@@ -28,8 +28,16 @@ import process from 'node:process';
 const isLinux = process.platform === 'linux';
 const isCi = process.argv.includes('--ci');
 
-// 传递给 playwright 的参数（过滤掉 --ci）
-const pwArgs = ['test', ...process.argv.slice(2).filter(a => a !== '--ci')];
+// 透传给 playwright 的参数：先滤掉 run.js 自己的 --ci。
+const forwarded = process.argv.slice(2).filter(a => a !== '--ci');
+// `pnpm e2e:ci -- <args>` 时 pnpm 会注入一个分隔符 `--`（在 --ci 之后、用户参数之前，
+// 滤掉 --ci 后落在首位）。若原样透传，playwright 会把 `--` 之后的一切（含 --grep <title>）
+// 当成位置式文件过滤 → --grep 失效、报 "No tests found"。故剥掉这个前导分隔符；
+// 文件路径形式（e2e/x.e2e.spec.js）剥掉后仍作位置过滤照常工作。
+// 只剥一个前导 --：兼容 pnpm 未注入分隔符的情形（首位非 -- 时不动），
+// 也保留用户显式再加一个 -- 强制位置过滤的能力。
+if (forwarded[0] === '--') forwarded.shift();
+const pwArgs = ['test', ...forwarded];
 
 function isWSL() {
 	if (!isLinux) return false;
