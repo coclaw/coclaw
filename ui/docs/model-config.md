@@ -521,7 +521,7 @@ export const PROVIDER_META = {
 
 ## 十一、测试要求
 
-按 ui 工作区 CLAUDE.md "所有代码改动必须配套测试"原则，本设计的测试覆盖按下表分层。task-new 拆 subtask 时按此填 Acceptance。
+按仓库根 CLAUDE.md "所有代码改动必须配套测试"原则，本设计的测试覆盖按下表分层。task-new 拆 subtask 时按此填 Acceptance。
 
 ### 必 E2E 场景（4 条）
 

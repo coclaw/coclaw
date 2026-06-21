@@ -23,13 +23,6 @@
 - 缓解：用 `Date.now()` 保证账号名唯一、永不碰撞，账号泄漏不影响其他用例。
 - 接受现状，账号表显著增长时再回头处理（如加管理端清理任务 / 测试账号定期清扫）。
 
-## 文档引用失效：model-config.md 把根文件的测试原则说成 ui 工作区 CLAUDE.md
-
-**发现日期**：2026-06-10
-**来源**：CLAUDE.md 全面梳理 review 发现；预存断链，与本次梳理任务无关
-
-- `ui/docs/model-config.md:524` 称"ui 工作区 CLAUDE.md 的配套测试原则"——该原则实际一直在根 AGENTS.md「单元测试规范」，ui 工作区文件从未承载。修复方向：改写该句指向根文件。
-
 ## Tauri 残留待清理决策（脚本/目录/设计稿与既定 Electron 方案并存）
 
 **发现日期**：2026-06-10
@@ -76,16 +69,6 @@
 - 现状：`flushPendingDeepLink` 仅在 win 存在且未 destroyed 时 send + 清空；若此刻窗口已销毁，`pendingUrl` 滞留，下个窗口加载后会投递这条可能已过期的 deep-link。
 - 影响：极边角（需"有 pending 时窗口恰好销毁"再开新窗口），且"留着等下个窗口"也可视作有意行为。严重度低。
 - 修法方向（若要治）：窗口 closed/销毁路径上按需丢弃过期 pending，或给 pendingUrl 加时效。
-
-## InstanceOverview 的 channel 渲染同款换行隐患（窄屏多渠道可能溢出）
-
-**发现日期**：2026-06-01
-**来源**：claw 卡片模型入口改造时的 channel 调研；预存隐患，非本次引入
-
-- 现状：`ui/src/components/dashboard/InstanceOverview.vue` 渲染 channel 列表的那段（`✅/❌ + id`）与 `ManageClawsPage.vue` 此前逐字相同——内层 channels 容器用 `flex`（**无 flex-wrap**）、id 文本无 truncate/max-width、容器无 `min-w-0`。渠道数多（4+）时这条不换行的横线宽度随渠道数线性增长，链路上无 `overflow-hidden`，窄屏可能向右溢出卡片。
-- 本次只修了 `ManageClawsPage.vue` 那处（加 `flex flex-wrap ... min-w-0`），`InstanceOverview.vue` 这份**未动**（超出本次范围）。
-- 修法方向：照搬 `ManageClawsPage.vue` 的处理——channels 内层 span 从 `flex items-center gap-1.5` 改为 `flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0`。零视觉副作用、基线安全。
-- 严重度：低（id 实为短渠道类型名，需 4+ 渠道才显形；当前开发环境 channels 为空、无法目测，需有真实多渠道卡片确认）。
 
 ## AddProviderDialog 不校验"provider 至少有一个已知认证方式" → 空方式 provider 会渲染空 chooser
 
@@ -165,15 +148,6 @@
 - 现状：`MobilePageHeader.vue` 及多处子页面顶部用 icon-only 的"返回"按钮（`i-lucide-arrow-left`），没有 `aria-label` / 可读名字，屏幕阅读器只能读出图标 unicode。模型设置子页 desktop header 的返回按钮同样。
 - 修复方向：在 `common.*` 加 `back` key（all 12 locales），各处 `UButton aria-label="$t('common.back')"`。
 - 范围：跨页面 a11y 统一改造，与 model-config 功能无关，本期未修。
-
-## 设计文档 i18n 范围与实际语种数量不一致
-
-**发现日期**：2026-05-25
-**来源**：model-config T1 deep-review
-
-- 现状：`ui/docs/model-config.md` § 8.2 列的 i18n 语种约束写 "en / zh-CN / zh-TW / es / de" 5 个，但实际 ui workspace 已扩到 12 个（en/zh-CN/zh-TW/es/de/fr/hi/ja/ko/pt/ru/vi）；task 文件 `docs/tasks/model-config.md` 已按 12 个语种作为硬约束。
-- 修复方向：把设计文档 § 8.2 那段文案改成 "全部 12 个 locale 文件同步新增"。
-- 范围：纯文档勘误，与本次实施无功能影响。
 
 ## ManageClawsPage unbind 修复 review 后续
 
@@ -778,22 +752,17 @@ X4 触及面比 X1 广，需要重新评估：
    - 修法：给按钮加 `:aria-label="$t('claws.renameAction', { name })"`（带行级上下文），同步 12 语种新增 i18n key
    - 优先级：低；属预存可访问性缺陷
 
-2. **ChatPage `__handleNewTopicSend` 发消息 catch 不打 console**
-   - 现状：`ChatPage.vue` `__handleNewTopicSend` 中 sendMessage 失败的 catch 只 surface 到 toast，未走 `console.error` / `remoteLog`；远程排查时拿不到栈
-   - 修法：catch 里补一行 `console.error('[chat] send in new-topic flow failed', err)`；若属高频可观测，再决定是否升级到 `remoteLog`
-   - 优先级：低；为预存"远程排查盲点"
-
-3. **ManageClawsPage status dot 仅色相区分（色盲风险）**
+2. **ManageClawsPage status dot 仅色相区分（色盲风险）**
    - 现状：在线 / 离线 / 错误态用绿/灰/红色 dot 区分，未叠加形状或文字辅助；色盲用户（尤其红绿色盲）难分辨
    - 修法：给 dot 旁加文字状态标签，或在 dot 内叠加图标（如 ✓ / – / ! 形状区分）
    - 优先级：低；预存 a11y 缺陷，影响色盲用户
 
-4. **file-helper `saveBlobToFile` 双层 finally 错误掩盖**
+3. **file-helper `saveBlobToFile` 双层 finally 错误掩盖**
    - 现状：`src/utils/file-helper.js` 现版本嵌套两层 try/finally；外层 finally 若也抛错会把内层错误吞掉（诊断保真度损失）；本次重构引入
    - 修法：合并 finally 逻辑或显式 catch + 再 throw 内层错误（参考 V8 `AggregateError` 模式）
    - 优先级：低；现网仅影响错误诊断深度，不影响功能
 
-5. **ManageClawsPage 窄屏 320px 下 claw 名称 h2 被挤窄**
+4. **ManageClawsPage 窄屏 320px 下 claw 名称 h2 被挤窄**
    - 现状：`ManageClawsPage.vue` claw 卡片标题 h2 在 320px 极窄屏下被同行操作按钮挤窄，依赖 `truncate` 兜底；视觉降级但不破损
    - 修法：调整窄屏 flex/grid 布局让标题独占一行，或为 320px 加专属断点处理
    - 优先级：极低；当前 truncate 已可 cover，列入跟踪

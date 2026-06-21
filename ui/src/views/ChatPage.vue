@@ -781,6 +781,7 @@ export default {
 				}
 			}
 			catch (err) {
+				console.error('[chat] send in established-chat flow failed', err);
 				// 根据 err.code 映射友好文案
 				const errMsg = this.__sendErrorMessage(err);
 				this.notify.error(errMsg);
@@ -895,6 +896,7 @@ export default {
 				}
 			}
 			catch (err) {
+				console.error('[chat] send in new-topic flow failed', err);
 				this.__creatingTopic = false;
 				const errMsg = this.__sendErrorMessage(err);
 				this.notify.error(errMsg);

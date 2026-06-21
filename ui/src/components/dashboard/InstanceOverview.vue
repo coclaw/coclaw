@@ -19,7 +19,7 @@
 		<div class="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted">
 			<span v-if="instance.pluginVersion">{{ $t('claws.pluginVersion') }}{{ instance.pluginVersion }}</span>
 			<span v-if="instance.clawVersion">{{ $t('claws.clawVersion') }}{{ instance.clawVersion }}</span>
-			<span v-if="instance.channels?.length" class="flex items-center gap-1.5">
+			<span v-if="instance.channels?.length" class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 min-w-0">
 				<span v-for="ch in instance.channels" :key="ch.id" class="inline-flex items-center gap-0.5" :title="ch.id">
 					<span class="text-[10px]">{{ ch.connected ? '✅' : '❌' }}</span>
 					<span>{{ ch.id }}</span>
