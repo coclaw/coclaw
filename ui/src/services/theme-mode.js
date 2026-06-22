@@ -116,9 +116,17 @@ export function initThemeModeWatcher() {
 	}
 	initialized = true;
 	const mql = window.matchMedia('(prefers-color-scheme: dark)');
-	mql.addEventListener('change', () => {
+	// 提成具名引用：removeEventListener 必须传同一函数引用才能真注销
+	const onChange = () => {
 		if (activeMode === 'auto') {
 			applyThemeMode('auto');
 		}
-	});
+	};
+	mql.addEventListener('change', onChange);
+	// dev HMR：模块被替换/重载时注销旧监听，避免累积泄漏（生产被 Vite 剥除、vitest 下为 undefined）
+	if (import.meta.hot) {
+		import.meta.hot.dispose(() => {
+			mql.removeEventListener('change', onChange);
+		});
+	}
 }
