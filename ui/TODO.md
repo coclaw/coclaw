@@ -631,11 +631,6 @@ X4 触及面比 X1 广，需要重新评估：
 **发现日期**：2026-05-24
 **关联背景**：ui 工作区 22 个未 push commit 第二轮 read-only deep-review（5 维度 codex-rescue + opus subagent 补 Dim 4）的业务代码 finding。本会话只处理测试加固，业务代码改动留待后续，先沉淀避免遗忘。
 
-1. **ManageClawsPage status dot 仅色相区分（色盲风险）**
-   - 现状：在线 / 离线 / 错误态用绿/灰/红色 dot 区分，未叠加形状或文字辅助；色盲用户（尤其红绿色盲）难分辨
-   - 修法：给 dot 旁加文字状态标签，或在 dot 内叠加图标（如 ✓ / – / ! 形状区分）
-   - 优先级：低；预存 a11y 缺陷，影响色盲用户
-
 4. **ManageClawsPage 窄屏 320px 下 claw 名称 h2 被挤窄**
    - 现状：`ManageClawsPage.vue` claw 卡片标题 h2 在 320px 极窄屏下被同行操作按钮挤窄，依赖 `truncate` 兜底；视觉降级但不破损
    - 修法：调整窄屏 flex/grid 布局让标题独占一行，或为 320px 加专属断点处理

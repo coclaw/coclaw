@@ -256,6 +256,30 @@ describe('ManageClawsPage', () => {
 		expect(wrapper.text()).toContain('Remove');
 	});
 
+	test('状态色点标记为装饰（aria-hidden）——状态已由 connLabel 文字承担，避免读屏重复朗读', async () => {
+		// 在线分支：dashboard.instance 存在 → 彩色状态点（clawDotClass）
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue({
+			instance: { name: 'Bot1', online: true, channels: [] },
+			agents: [],
+			loading: false,
+		});
+		const wrapper = createWrapper();
+		await flushPromises();
+		const onlineDot = wrapper.find('[data-testid="claw-1"] span.rounded-full');
+		expect(onlineDot.exists()).toBe(true);
+		expect(onlineDot.attributes('aria-hidden')).toBe('true');
+
+		// 离线分支：无 instance → 灰点
+		mockBots = [{ id: '2', name: 'OfflineBot', online: false }];
+		mockGetDashboard.mockReturnValue(null);
+		const wrapper2 = createWrapper();
+		await flushPromises();
+		const offlineDot = wrapper2.find('[data-testid="claw-2"] span.rounded-full');
+		expect(offlineDot.exists()).toBe(true);
+		expect(offlineDot.attributes('aria-hidden')).toBe('true');
+	});
+
 	test('离线 claw + 缓存 rtcTransportInfo → 连接行显示 idle 文案（与 online 解耦，detail 按钮仍可展开）', async () => {
 		mockBots = [{ id: '1', name: 'A', online: false, rtcTransportInfo: { localType: 'srflx', localProtocol: 'udp' } }];
 		mockGetDashboard.mockReturnValue({ agents: [], instance: null, loading: false });

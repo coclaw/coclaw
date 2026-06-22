@@ -37,9 +37,11 @@
 							<template v-if="dashboard?.instance">
 								<div class="flex items-center justify-between gap-2">
 									<div class="flex items-center gap-2 min-w-0">
+										<!-- 状态色点为装饰：活动态状态已由下方 connLabel 文字呈现，故 aria-hidden 免读屏重复朗读（online+idle 瞬态无文字，视力用户此时亦只见无文字的点，属可接受小缺口） -->
 										<span
 											class="inline-block size-2.5 rounded-full shrink-0"
 											:class="clawDotClass(claw)"
+											aria-hidden="true"
 										></span>
 										<h2 class="text-base font-semibold truncate min-w-0">{{ getClawName(claw) }}</h2>
 										<UBadge color="primary" variant="subtle" size="xs" class="shrink-0">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
@@ -80,7 +82,7 @@
 							</template>
 							<template v-else>
 								<div class="flex items-center gap-2 min-w-0">
-									<span class="inline-block size-2.5 rounded-full bg-gray-500 shrink-0"></span>
+									<span class="inline-block size-2.5 rounded-full bg-gray-500 shrink-0" aria-hidden="true"></span>
 									<h2 class="text-base font-semibold truncate min-w-0">{{ getClawName(claw) }}</h2>
 									<UBadge color="neutral" variant="subtle" size="xs" class="shrink-0">{{ $t('dashboard.offline') }}</UBadge>
 								</div>
