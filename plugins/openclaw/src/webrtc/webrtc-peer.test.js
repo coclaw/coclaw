@@ -3308,6 +3308,96 @@ test('WebRtcPeer: rpc DC dc.onmessage 旧 DC 迟到的 req 不污染新 session�
 	await peer.closeAll();
 });
 
+// --- 陈旧通道早返回守卫家族补完（onconnectionstatechange reorder + dc.onopen/onerror/onmessage entry guard）---
+
+test('WebRtcPeer: stale PC 的 onconnectionstatechange guard 前移后不打 rtc.state 日志', async (t) => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+
+	await peer.handleSignaling(makeOffer('c_state_reorder'));
+	const oldPc = PC.instances[0];
+	const oldHandler = oldPc.onconnectionstatechange;
+
+	// 重复 offer 触发 close 旧 + 建新，pc 归属切到新 PC
+	await peer.handleSignaling(makeOffer('c_state_reorder'));
+	assert.notEqual(PC.instances[1], oldPc);
+
+	resetRemoteLog();
+	// 旧 PC 的回调迟到投递：guard 前移到日志之前，应早返回且不打 rtc.state
+	oldPc.connectionState = 'failed';
+	oldHandler();
+
+	const stateLogs = remoteLogBuffer.filter((e) => /rtc\.state conn=c_state_reorder/.test(e.text));
+	assert.equal(stateLogs.length, 0, 'stale PC 不应打 rtc.state 日志（guard 已前移到日志之前）');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: rpc DC dc.onopen 旧 DC 迟到 → 陈旧守卫早返回（不打 dc.open 日志）', async (t) => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_open_stale'));
+	const dc1 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc1 });
+
+	const session = peer.__sessions.get('c_open_stale');
+	assert.equal(session.rpcChannel, dc1);
+
+	// 模拟 DC 重建：rpcChannel 切到新 dc2（仅换字段，不起新 setup）
+	const dc2 = makeMockRpcDc();
+	session.rpcChannel = dc2;
+
+	resetRemoteLog();
+	dc1.onopen(); // 陈旧守卫应早返回
+	await flushAsync();
+
+	const openLogs = remoteLogBuffer.filter((e) => /dc\.open conn=c_open_stale/.test(e.text));
+	assert.equal(openLogs.length, 0, '旧 dc 的迟到 onopen 不应打 dc.open 日志');
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: rpc DC dc.onerror 旧 DC 迟到 → 陈旧守卫早返回（不打 dc.error 日志）', async (t) => {
+	resetRemoteLog();
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+	});
+	await peer.handleSignaling(makeOffer('c_err_stale'));
+	const dc1 = makeMockRpcDc();
+	PC.instances[0].ondatachannel({ channel: dc1 });
+
+	const session = peer.__sessions.get('c_err_stale');
+	assert.equal(session.rpcChannel, dc1);
+
+	const dc2 = makeMockRpcDc();
+	session.rpcChannel = dc2;
+
+	resetRemoteLog();
+	dc1.onerror({ message: 'stale-dc-err' }); // 陈旧守卫应早返回
+	await flushAsync();
+
+	const errLogs = remoteLogBuffer.filter((e) => /dc\.error conn=c_err_stale/.test(e.text));
+	assert.equal(errLogs.length, 0, '旧 dc 的迟到 onerror 不应打 dc.error 日志');
+
+	await peer.closeAll();
+});
+
 // --- MemoryQueue + RpcDcSender 集成（阶段 1 替换原 RpcSendQueue 集成）---
 
 test('WebRtcPeer: 建立 rpc DC 时创建 MemoryQueue + RpcDcSender 并设置 bufferedAmountLowThreshold', async (t) => {

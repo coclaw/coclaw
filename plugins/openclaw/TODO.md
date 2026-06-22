@@ -445,23 +445,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **为什么 TODO**：预存、穿透概率低、webrtcPeer 内部 guard 已兜底。
 
-### webrtc-peer 几处 handler 缺 stale guard（L，预存）
-
-**发现**：G 阶段 deep-review 维度 2（codex-rescue）。
-
-| 锚点 | 缺什么 |
-|---|---|
-| `webrtc-peer.js:388` `pc.onconnectionstatechange` | guard 在打日志之前应该挪到 logger 之前 |
-| `webrtc-peer.js:671` `dc.onopen` | 没 stale DC guard，旧 DC open 仍会调 `__sendPeerTransport` |
-| `webrtc-peer.js:705` `dc.onmessage` | handler 入口没有 stale DC guard（reassembler callback 内部已 guard，但 stale 数据仍喂进 reassembler.feed） |
-| `webrtc-peer.js:700` `dc.onerror` | 没 stale guard |
-
-**影响**：均 Low——日志噪音 / 老 reassembler 状态被无害修改。核心数据通道已经被 reassembler callback 的 identity guard（`4120b02`）兜住。
-
-**修复方向**：每个 handler 入口加 `if (sess?.rpcChannel !== dc) return;` 或 PC 同款 guard。
-
-**为什么 TODO**：预存边角，整体 stale-guard 体系已经正确兜住关键路径。
-
 ### G 阶段其它 Low 条目
 
 - **测试覆盖小缺口**（本次引入）：`dfdc277` 的 stale-PC 测试只覆盖 `onselectedcandidatepairchange`，未覆盖 `onicecandidate` / `onicegatheringstatechange`；`webrtc-peer.js:173` `sendTo` 的 enqueue-throw catch 路径未测。

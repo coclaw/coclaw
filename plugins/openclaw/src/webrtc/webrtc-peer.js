@@ -729,12 +729,12 @@ export class WebRtcPeer {
 		// 连接状态变更（校验 pc 归属，防止旧 PC 异步回调删除新 session）
 		pc.onconnectionstatechange = () => {
 			const state = pc.connectionState;
-			this.__remoteLog(`rtc.state conn=${connId} ${state}`);
-			this.logger.info?.(`${this.__rtcTag} [${connId}] connectionState: ${state}`);
-
 			// 校验 pc 归属：旧 PC 的异步回调可能在新 session 已建立后触发
 			const cur = this.__sessions.get(connId);
 			if (!cur || cur.pc !== pc) return;
+
+			this.__remoteLog(`rtc.state conn=${connId} ${state}`);
+			this.logger.info?.(`${this.__rtcTag} [${connId}] connectionState: ${state}`);
 
 			// 离开 failed 状态时清理 TTL timer（ICE restart 恢复、自然关闭等）
 			if (state !== 'failed' && cur.__failedTimer) {
@@ -879,6 +879,8 @@ export class WebRtcPeer {
 			// 注入 __onRequest 或 enqueue 到新 rpcQueue。session 已删除时（rpcChannel===null 或
 			// sess undefined）也按 stale 处理，避免向已清空的 session 注入消息。
 			const sess = this.__sessions.get(connId);
+			// 身份守卫故意放在派发处（而非 dc.onmessage 入口）：reassembler 每 dc 独立、陈旧 chunk 派发前
+			// 无害，放此处可挡住所有通向派发的路径（含未来 reassembler 定时刷新等非 onmessage 旁路）。
 			if (!sess || sess.rpcChannel !== dc) {
 				return;
 			}
@@ -924,6 +926,9 @@ export class WebRtcPeer {
 		}, { logger: this.logger });
 
 		dc.onopen = () => {
+			// 陈旧通道早返回：旧 dc 的迟到 onopen 不应对新 session 误报 transport
+			const sess = this.__sessions.get(connId);
+			if (!sess || sess.rpcChannel !== dc) return;
 			this.__remoteLog(`dc.open conn=${connId} label=${dc.label}`);
 			this.logger.info?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" opened`);
 			// rpc DC 建立后，把本端 transport 信息单播给 UI。
@@ -963,6 +968,9 @@ export class WebRtcPeer {
 			}
 		};
 		dc.onerror = (err) => {
+			// 陈旧通道早返回：旧 dc 的迟到 onerror 不打进新 session 上下文
+			const sess = this.__sessions.get(connId);
+			if (!sess || sess.rpcChannel !== dc) return;
 			this.__remoteLog(`dc.error conn=${connId} label=${dc.label}`);
 			/* c8 ignore next -- ?./?? fallback */
 			this.logger.warn?.(`${this.__rtcTag} [${connId}] DataChannel "${dc.label}" error: ${String(err?.message ?? err)}`);
