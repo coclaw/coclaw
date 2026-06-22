@@ -1053,6 +1053,7 @@ export function createChatStore(storeKey, opts = {}) {
 						return;
 					}
 					if (!isMine()) return; // cleared / superseded during in-flight
+					// result.ok 为 plugin 解包后的业务标记（abort 是否受理/完成），非网关协议层 ok
 					if (result?.ok) {
 						console.info('[chat] cancelSend done: immediate sid=%s ticks=%d', sid, me.tickSeq);
 						remoteLog(`cancel.immediate sid=${sid} ticks=${me.tickSeq}`);
