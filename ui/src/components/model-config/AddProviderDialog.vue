@@ -547,7 +547,9 @@ export default {
 			this.step = 'configure';
 			this.apiKey = '';
 			this.inlineErrorKey = '';
-			// 单方式直接进入对应入口（跳过 chooser）；多方式（含 0，理论不出现）显示 chooser
+			// 单方式直接进入对应入口（跳过 chooser）；多方式显示 chooser。
+			// methods 为空理论不出现：catalog 契约只下发至少含一个已知认证方式的 provider；万一违反，最坏只渲染空 chooser（仅返回键、无害不卡死）。
+			// 此处故意不加守卫：为不可达且无害的分支加防御属过度设计，已评估接受现状（原 TODO 据此删除）。
 			this.selectedMethod = methods.length === 1 ? methods[0] : '';
 		},
 		onPickMethod(method) {

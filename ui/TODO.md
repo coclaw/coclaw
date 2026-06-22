@@ -70,17 +70,6 @@
 - 影响：极边角（需"有 pending 时窗口恰好销毁"再开新窗口），且"留着等下个窗口"也可视作有意行为。严重度低。
 - 修法方向（若要治）：窗口 closed/销毁路径上按需丢弃过期 pending，或给 pendingUrl 加时效。
 
-## AddProviderDialog 不校验"provider 至少有一个已知认证方式" → 空方式 provider 会渲染空 chooser
-
-**发现日期**：2026-06-01
-**来源**：provider OAuth UI 打磨批次（`c6c0c057..HEAD`）的只读 deep-review；预存隐患，非本批引入
-
-- 现状：`availableProviders`（`ui/src/components/model-config/AddProviderDialog.vue:415-435`）对任何带合法 `provider` id 且未配过的 catalog 条目无条件建 entry，**不校验 `authMethods` 是否含已知方式**（api-key / oauth-device-code / oauth-login）。若 catalog 哪天下发一个 `authMethods:[]` 或仅含 token/custom 的 provider，它会出现在可加列表里；点进去 `selectedProviderMethods`（:460）为空 → `onPickProvider`（:558-559）落 `selectedMethod=''` → 渲染**空 chooser**（`v-for` 遍历空数组、零入口按钮，仅 footer 单个返回按钮，不会彻底卡死）。
-- 为何现在不复现：被上游 catalog 契约挡住——catalog handler 只下发"至少有一个已知方式"的 provider（未知 kind token/custom 本就不进；custom-only 的 ollama/proxy/cli 已在网关 setup 侧排除）。属"完全依赖上游契约兜底、组件自身无防御"。
-- 与本批 cb 过滤无关：`selectedProviderMethods` 的 `found.delete('oauth-login')` 只在 device-code 在场时触发、device-code 永留，数学上塌不到零，本批不新增任何空塌陷路径。
-- 修复方向（候选）：在 `availableProviders` 过滤掉 `selectedProviderMethods` 恒空的 provider；或 `onPickProvider` 对 `methods.length===0` 给提示而非进空 chooser。
-- 范围：仅 UI（`AddProviderDialog.vue`）。
-
 ## 账号授权 starting 态取消后"在飞 login"治理：晚到 accepted 主动拨后端 + 新 login 竞态（增强，待评审）
 
 **发现日期**：2026-06-01
@@ -454,14 +443,7 @@
 **发现日期**：2026-05-07
 **关联 commit**：c2a3e46 "fix(ui): silence error toast when user cancels and upstream returns error"（测试场景补强 deep-review）
 
-1. **chat 切换期间 in-flight sendMessage resolve → `__tryGenerateTitle` 落到错的 chat**
-    - 来源：2026-03-17 引入 Topic 管理 feature 时模式就存在，与 bc13c96 / c2a3e46 无关，是预存 bug
-    - 现状：`ChatPage.vue:754` `__tryGenerateTitle` 用 `this.chatStore`，未走入口快照 `targetStore`。用户在 chat A 上发送、await 期间切到 chat B（也是 topic），sendMessage 落地后 generateTitle 被基于 chat B 的 topicId/messages 触发
-    - 影响：chat B 可能还没 send 过任何消息，让 LLM 给空 chat 起标题，结果是垃圾或失败
-    - 修复方向：`__tryGenerateTitle(targetStore = this.chatStore)`，两处调用点（`ChatPage.vue:631`、`:737`）显式传入 `targetStore`；同时把 `!this.isTopicRoute` guard 改为 `!targetStore?.topicMode`（topicMode 是 store 属性，与当前路由无关）
-    - 测试：chat 切换期间 sendMessage resolve → generateTitle 调用 with targetStore 的 topicId/clawId
-
-2. **失败 toast 文案 generic（无 chat 来源）→ unmount/chat 切换后用户难判归属**
+1. **失败 toast 文案 generic（无 chat 来源）→ unmount/chat 切换后用户难判归属**
     - 现状：`ChatPage.vue:651` `__notifyRunFailed` 弹 `chat.errRunFailed`（"Agent run failed"），不带 chat / topic 名称。用户在 chat A 上 send 后切到 chat B，sendMessage 落地弹的 toast 看起来像 chat B 的失败
     - 影响：UX 困惑，用户难定位失败来源；尤其多 chat / 多 topic 并发使用场景
     - 修复方向：toast description 前缀加 chat / topic 名称（如 `[Topic 标题] FailoverError: ...`）；或 toast 加 "Open" 按钮跳回 source chat。属 i18n + UX 改造，需统一其它失败 toast（如 `__sendErrorMessage`）一起规划
@@ -787,16 +769,14 @@ X4 触及面比 X1 广，需要重新评估：
 - UI 侧清不干净：把变体归一到基座需要 `resolveProviderIdForAuth`，UI 拿不到（设计 dump #8「归一在插件侧」）。
 - 最优修法方向：**插件在 `coclaw.model.list` 出参按 scope 附加"主模型 provider 的别名归一基座 id"字段**（additive，用已注入的 `resolveProviderIdForAuth` 算），UI carrier 判定比对该字段而非裸名。次选：UI 在 remove-flow 加"变体主模型 + 撤任一已配基座 → 强提示"的过警告启发式（多基座时会过报，且越本子任务 scope）。
 
-## 常用 provider 标记 `zhipuai`/`groq` 与 catalog id 对不上 → 这两个常用分组未生效
+## 常用 provider 标记 `groq` 与 catalog id 对不上 → groq 常用分组未生效
 
-**发现日期**：2026-06-03
+**发现日期**：2026-06-03（原含智谱 `zhipuai`，已于 2026-06-22 把 key 改为真实 id `zai` 修复；本条仅剩 groq）
 **来源**：provider 研究（常用模型清单 + plan 徽章）调研，活网关 2026.5.28 实测 `coclaw.providerAuth.catalog`；预存 bug，非本次引入
 
-- 现状：`ui/src/constants/provider-meta.js` 的 popular 集里有两个 id 对不上运行时 catalog：
-  - **智谱 `zhipuai`**：OpenClaw 智谱原生 id 是 `zai`（别名仅 `z.ai`/`z-ai`，**不含 `zhipuai`**）。catalog 里在位的是 `zai`、有 13 个模型。
-  - **`groq`**：`providerAuth.catalog`（添加对话框数据源）的 43 个 provider 里**根本没有 `groq`**（groq 只出现在 model-catalog 路径 `infer model providers`，未进 setup 鉴权发现集）。
-- 机制：`AddProviderDialog` 的 popular 分组靠 `getProviderMeta(catalog.m.provider)` 严格匹配 catalog id，匹配不到就降级 `{ popular:false }`。结果 7 个 popular 实际只有 anthropic/openai/google/deepseek/moonshot 这 5 个进了常用组，zhipuai/groq 落空（智谱仍在"其他"组可加，groq 干脆不在添加列表）。
-- 修法：把 `zhipuai` 改为 `zai`（dashboardUrl 同步核对智谱官网建 key 链接）；`groq` 为何不在 providerAuth catalog 需单独查（插件是否启用/是否只走 model-catalog），确认后决定留删。同步更新 `provider-meta.test.js` 若有相关断言。
+- 现状：`ui/src/constants/provider-meta.js` 的 popular 集里 `groq` 对不上运行时 catalog——`providerAuth.catalog`（添加对话框数据源）的 43 个 provider 里**根本没有 `groq`**（groq 只出现在 model-catalog 路径 `infer model providers`，未进 setup 鉴权发现集）。
+- 机制：`AddProviderDialog` 的 popular 分组靠 `getProviderMeta(catalog.m.provider)` 严格匹配 catalog id，匹配不到就降级 `{ popular:false }` → groq 干脆不在添加列表（智谱 `zhipuai` 是同类问题，已修：key 改为真实 id `zai`）。
+- 修法：`groq` 为何不在 providerAuth catalog 需单独查（插件是否启用/是否只走 model-catalog），确认后决定留删；需活网关核实。
 - 严重度：低（仅常用置顶失效，不影响可达性与功能）。
 
 ## E2E multi-agent S8：是否允许从非 main agent 新建 topic？（产品决策待定）

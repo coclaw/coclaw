@@ -441,7 +441,7 @@ export const PROVIDER_META = {
 	groq:      { displayName: 'Groq',             popular: true,  dashboardUrl: 'https://console.groq.com/keys' },
 	deepseek:  { displayName: 'DeepSeek',         popular: true,  dashboardUrl: 'https://platform.deepseek.com/api_keys' },
 	moonshot:  { displayName: 'Moonshot (Kimi)',  popular: true,  dashboardUrl: 'https://platform.moonshot.cn/console/api-keys' },
-	zhipuai:   { displayName: '智谱 AI (GLM)',    popular: true,  dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
+	zai:       { displayName: '智谱 AI (GLM)',    popular: true,  dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
 	// 其它 provider 未在表中即为 popular: false / dashboardUrl 缺省（不显示"去官网"链接）
 };
 ```

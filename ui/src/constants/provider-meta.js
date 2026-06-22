@@ -47,7 +47,8 @@ export const PROVIDER_META = {
 		popular: true,
 		dashboardUrl: 'https://platform.moonshot.cn/console/api-keys',
 	},
-	zhipuai: {
+	// 智谱：OpenClaw 真实 provider id 是 zai（非 zhipuai），key 必须与 catalog 一致才能匹配上、进"常用"组
+	zai: {
 		displayName: '智谱 AI (GLM)',
 		popular: true,
 		dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
