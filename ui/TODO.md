@@ -23,14 +23,6 @@
 - 缓解：用 `Date.now()` 保证账号名唯一、永不碰撞，账号泄漏不影响其他用例。
 - 接受现状，账号表显著增长时再回头处理（如加管理端清理任务 / 测试账号定期清扫）。
 
-## Tauri 残留待清理决策（脚本/目录/设计稿与既定 Electron 方案并存）
-
-**发现日期**：2026-06-10
-**来源**：CLAUDE.md 全面梳理 review；预存问题，与本次梳理任务无关
-
-- 现状：package.json 仍有 7 个 tauri 相关脚本（`tauri` / `tauri:*`）、`src-tauri/` 目录、`ui/scripts/tauri-build.sh|.ps1`（2026-06-10 skills/commands 梳理补充）、`docs/designs/tauri-desktop-shell.md`，而桌面壳方案已定为 Electron（ui/AGENTS.md 已加一句定性"早期评估残留，勿再使用"）。
-- 待决策：删除残留（脚本 + 目录 + 相关 devDependencies），或保留归档；删除需确认 `src-tauri/` 无被引用的共享资源。
-
 ## ImgViewDialog 图片上限 85vh 与 Electron 弹窗避让叠加后内滚阈值升高
 
 **发现日期**：2026-06-11
@@ -185,14 +177,6 @@
 
 1. **run 终态 `loadMessages`→`dropRun` 抢跑持久化致回复短暂消失**（与上文「chat.store loadMessages 周边的预存问题」#3 同族，不另立修复）
    - round-3 chat-flow 多轮对话 E2E（`abe1bd7e`）复现：run 终态的 `loadMessages` 若早于服务端持久化完成，刚落地的回复会从 live view 短暂消失、且无自动重拉，直到下次 `loadMessages`/导航/reload 自愈（消息已持久化、非数据丢失）。E2E 侧已用 `page.reload()` 确定性重拉绕开。修复方向见该族条目。
-
-2. **topic 首发前置 `loadTopicMessages` 必报 `transcript not found` 噪音日志**
-   - 现状：topic 模式首次 send 时，UI 在第一条消息持久化前就尝试 `loadTopicMessages(<topicId>)`，必然 NOT_FOUND（来源：round-3 topic E2E `e4d59ccc` 观测）。随后的 load 成功（count=2），功能无影响，但 happy path 上每个新 topic 首发都留一行错误日志。
-   - 修复方向：新 topic 首发前跳过/守卫这次注定失败的 pre-persist load，或把该 NOT_FOUND 降级为 debug。仅 UI。
-
-3. **rtc-transport 消息计数 `after > before` 在 50 条渲染上限处脆弱**（预存，非本轮引入）
-   - round-3 把该计数选择器从 CSS `.px-3.py-3` 换成 `[data-testid="chat-msg-item"]`（`2f9b7db2`）。计数增量断言本身在主会话达到 50 条渲染上限时会脆断（新消息把旧消息挤出、计数不增）。当前主会话较小（实测 0→7 通过）；同回合的收发已由「用户消息可见 + btn-stop 消失」独立证明，计数增量属冗余弱校验。
-   - 修复方向：若未来观测到脆断，改为按发送的唯一消息存在性 / 助手回复存在性断言，去掉对计数增量的依赖。
 
 ## ProgressRing 后续优化
 
@@ -537,24 +521,15 @@ X4 触及面比 X1 广，需要重新评估：
 - Apollo Client 的 `clearStore` / `resetStore`：登出时清缓存 + abort 在飞 query
 本次场景与上面这些库的"身份切换时清缓存 + 取消在飞"模式同源；可在调研阶段对照它们的接口设计敲细节。
 
-## 全仓库 `_MS` / `Ms` 后缀清扫
+## _MS/Ms 毫秒后缀命名约定（已决策：存量不回溯清扫）
 
 **发现日期**：2026-05-13
-**关联 commit**：refactor(ui): rewrite remoteLog with producer/consumer pattern and AbortSignal
+**决策日期**：2026-06-23
 
-来源：remote-log 重构落实了「JS 时间常量默认 ms 单位，无需后缀」规则（memory `feedback-ms-suffix-convention`）。本次 scope 锁定 `remote-log.js` + 测试，未触其它模块。
-
-- 待清扫面（grep `_MS\b\|Ms\b` 摘录）：
-  - `ui/src/stores/chat.store.js`：`POST_ACCEPT_TIMEOUT_MS` / `CANCEL_TICK_MS` / `RPC_GRACE_MS` / 注释 + JSDoc 里的 `durationMs`
-  - `ui/src/utils/dc-chunking.js`：`ORPHAN_REMOTE_LOG_WINDOW_MS`
-  - `ui/src/services/file-transfer.js`：`READY_TIMEOUT_MS` / `DEFAULT_CONNECT_TIMEOUT_MS` / `formatTransferLog(bytes, durationMs)`
-  - `ui/src/utils/agent-stream.js`：参数 `timeoutMs`
-  - `plugins/openclaw/src/auto-upgrade/worker-verify.js`：`CMD_TIMEOUT_MS`
-  - 其它（agent-runs.store.js / claw-connection.js / 各组件 props）按需 grep
-- 建议拆按模块独立 PR 推进（chat.store 一个、file-transfer 一个、plugin 一个），避免大动整改
-- 注意保留两类带单位描述的场景：
-  - JSDoc 参数说明里的 "ms"（单位口径，不是后缀）
-  - 局部变量描述如 "5 秒" / "30 秒"（中文场景按上下文）
+- 约定：ms 是 JS 默认时间单位，表示毫秒时长的常量/变量**新代码不带 `_MS`/`Ms` 后缀**（仅非默认单位如秒才标）。
+- 存量 ~35 个 `_MS` 常量散布在 RTC/信令/重连等敏感栈，`_MS` 本是行业常见写法、可读性无损；维护期稳定优先，**不做回溯性 churn**（大 rename 在敏感栈制造 diff 噪音，且易撞并行合并冲突，风险/收益不划算）。
+- 例外：某文件因别的原因本就要改时，可顺手去掉该文件内的 `_MS` 后缀；不为去后缀单独发 PR。
+- 坑（若哪天真要改时记住）：`agent-runs.store.js` 里 `timeoutMs: 0` 是网关 RPC wire 字段名（`coclaw.agent.wait` 参数），**不能改**；`session-msg-group.js` 的 `endMs` 其实是时刻不是时长。
 
 ## 大 session 一次性渲染卡顿（coclaw.sessions.getById 解除 500 上限后）
 
@@ -774,9 +749,7 @@ X4 触及面比 X1 广，需要重新评估：
 - **bind 测试 churn 共享绑定的固有脆弱性**：`@bind` 用例会把本机网关从基线 claw 换绑走（成功路径留 keeper B、失败中途则可能留未绑定态）。本轮孤儿清理（基线 diff + globalTeardown + keeper）已防孤儿泄漏，但"跑 bind 会改变共享绑定身份"是固有现象；与上一条 globalSetup 自愈配合可消解。
 
 ### C. 测试腐化遗留（低优先，本轮未覆盖）
-- **两处裸 `pressSequentially` 绕过 typeText**：`chat-input.e2e.spec.js:183`（Shift+Enter 第二行）、`model-config.e2e.spec.js:99`（API key 输入），未享受 typeText 的"读回校验+补齐"，WSL2 负载下理论上仍可能偶发掉尾字符（本轮均通过，短字符串风险低）。建议改走 typeText 或加同款补齐。
 - **multi-agent 计数断言依赖 agent 夹具**（2026-06-10 已解决）：globalSetup 的 `ensureNamedAgents` 幂等预置 `main` + `tester`（id=tester、名 压测锤、emoji 🔨）夹具，multi-agent S1–S7 已按 agent id（href `/chat/<claw>/<id>`）真跑而非 skip。夹具持久存在、无 teardown（同 test 账号自愈）。残留观察：S7 每跑一次会给 tester 累积一个 topic（accumulating data，符合规范，未做清理）。
-- **chat-attachment test3 图片预览依赖 RTC 取回 1x1 PNG 后渲染**：慢环境下 `<img>` 出现可能偏慢（当前 10s toPass 足够）；若偶发偏慢可给 `ChatImg.vue` 加 testid 改为只数附件卡片。
 
 ### D. 产品侧观察（非 bug，UX/健壮性，待斟酌）
 - **chat 输入受控竞态（严重度 LOW）**：`chat-textarea` 是完全受控输入（modelValue ↔ draftStore），冷加载时首条消息渲染触发的重渲染风暴若恰好压在打字窗口上，落后一拍的 draft 回写会覆盖刚敲入的字符（丢尾字符）。e2e 侧已用 `waitChatInputStable` 规避。真实用户手速很难命中亚秒窗口、丢了也会重打，故严重度低；如要根治可考虑输入防抖/非受控+受控同步/输入后校验。

@@ -50,7 +50,7 @@
 
 ## Electron 桌面壳子
 
-桌面壳一律 Electron；package.json 中的 `tauri:*` 脚本与 `src-tauri/` 为早期评估残留，勿再使用。
+桌面壳一律 Electron；package.json 中的 `tauri:*` 脚本与 `src-tauri/` 当前不使用（桌面壳已定 Electron），保留以备未来可能重启用 Tauri，暂不删除。
 
 - 壳子代码在 `ui/electron/`，ESM 主进程 + CommonJS preload（sandbox 要求 preload 必须是 `.cjs`）
 - 本地开发需双终端：先 `pnpm dev`，另一终端 `pnpm electron:dev`（加载 http://localhost:5173；生产模式加载 https://im.coclaw.net）
