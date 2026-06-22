@@ -444,12 +444,7 @@
     - 影响：诊断日志、analytics、UI 状态展示无法区分两类终态
     - 修复方向：`__onRpcDone` 读 `rpcResult.result?.meta?.aborted`，true → endReason='rpc-aborted'；ChatPage 不 notify 但日志区分
 
-11. **`coclaw.agent.abort` 用 `result.ok` 当业务标记** — **已评估保持现状（2026-05-24 复核）**
-    - 现状：与协议层 `ok` 同名不同义（前者是插件本地业务返回，后者是 RPC 协议层，已被 ClawConnection 解包）。源码层 `respond(true, { ok: ... })` 已经把两层在同一表达式上隔离，实际阅读无歧义
-    - 评估结论：改名跨 plugin+ui，涉及 1 处 plugin handler + 5 处 return + 1 处 UI 读 + 24+ 处测试 mock；纯命名洁癖无功能 bug，违 CLAUDE.md "非需求不重命名" 原则
-    - 缓解：`agent-abort.js` JSDoc 已写明 shape；可在 `chat.store.js:1045` 调用点加一行行内注释点明"此 ok 是 abort 业务语义，非 RPC 协议 ok"
-
-12. **协议偏离时 error/summary 是 object 形态显示成 `[object Object]`**
+11. **协议偏离时 error/summary 是 object 形态显示成 `[object Object]`**
     - 现状：`agent-runs.store.js:404` 与 `chat.store.js:1133` 的 `String(raw)` 兜底能保证 toast 不丢 description，但若 `summary`/`error` 是 object（协议偏离），用户看到的是 `[object Object]` 而非可读内容
     - 触发条件：当前 OpenClaw `chat.ts` / `agent.ts` 的 error/summary 都是 string，不会触发
     - 修复方向：换 JSON.stringify 兜底（含循环引用 try/catch），让协议偏离时至少给出 raw JSON 而非 `[object Object]`。属"可读性增强"，非阻塞
