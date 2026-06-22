@@ -463,13 +463,6 @@ export const zhCNMessages = {
 		fileTooLarge: '"{name}" 超过 1 GB，暂不支持上传',
 		uploadConflictDownloading: '部分文件正在下载中，请稍后再上传',
 	},
-	demo: {
-		title: 'Nuxt UI 4 示例',
-		desc: '已完成 Nuxt UI 组件库基础接入。',
-		ready: '就绪',
-		clickedTimes: '点击了 {count} 次',
-		backToAuthPrototype: '返回认证原型',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: '暂无可用项',

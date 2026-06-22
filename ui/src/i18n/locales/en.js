@@ -463,13 +463,6 @@ export const enMessages = {
 		fileTooLarge: '"{name}" exceeds 1 GB and cannot be uploaded',
 		uploadConflictDownloading: 'Some files are being downloaded. Please try again later',
 	},
-	demo: {
-		title: 'Nuxt UI 4 Demo',
-		desc: 'Nuxt UI component library baseline integration is ready.',
-		ready: 'Ready',
-		clickedTimes: 'Clicked {count} times',
-		backToAuthPrototype: 'Back to Auth Prototype',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: 'No items available',

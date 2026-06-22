@@ -463,13 +463,6 @@ export const hiMessages = {
 		fileTooLarge: '"{name}" 1 GB से अधिक है और अपलोड नहीं किया जा सकता',
 		uploadConflictDownloading: 'कुछ फ़ाइलें डाउनलोड हो रही हैं। कृपया बाद में पुनः प्रयास करें',
 	},
-	demo: {
-		title: 'Nuxt UI 4 डेमो',
-		desc: 'Nuxt UI कॉम्पोनेंट लाइब्रेरी बेसलाइन इंटीग्रेशन तैयार है।',
-		ready: 'तैयार',
-		clickedTimes: '{count} बार क्लिक किया',
-		backToAuthPrototype: 'Auth प्रोटोटाइप पर वापस जाएं',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: 'कोई आइटम उपलब्ध नहीं',

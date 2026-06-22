@@ -463,13 +463,6 @@ export const frMessages = {
 		fileTooLarge: '"{name}" dépasse 1 Go et ne peut pas être envoyé',
 		uploadConflictDownloading: 'Certains fichiers sont en cours de téléchargement. Veuillez réessayer plus tard',
 	},
-	demo: {
-		title: 'Démo Nuxt UI 4',
-		desc: 'L\'intégration de base de la bibliothèque de composants Nuxt UI est prête.',
-		ready: 'Prêt',
-		clickedTimes: 'Cliqué {count} fois',
-		backToAuthPrototype: 'Retour au prototype d\'authentification',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: 'Aucun élément disponible',

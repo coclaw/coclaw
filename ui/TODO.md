@@ -792,16 +792,6 @@ X4 触及面比 X1 广，需要重新评估：
 - 用户已明确**本期不处理**，仅登记。
 - **附「refreshAfterWrite 缺 seq 守卫」已解决（2026-05-30，commit `4ccf7e59`）**：`refreshAfterWrite` 现按 `__writeEpoch`（配置版本号）作竞态守卫——两次写操作的刷新乱序落地时，旧那次整批被判陈旧丢弃（含 `usable`/`configuredProviders`/`loadOk.*`），原"快速连点旧盖新"已挡住。原补注里"旧 refresh 晚于新 `loadAll` 把 listUsable 打回 fallback"那条依赖 `connReady` 抖动触发重连 loadAll，而该路径实测不可达（[[project_rtc_connection_hard_to_break]]：ICE restart 3min+ 预算、dcReady 几乎不翻），故残角不可达、不再加守卫（加 recency 守卫会换来"更晚但失败的 loadAll 作废更早但成功的 refresh"对称毛病，得不偿失）。
 
-## NuxtUiDemoPage 的 "Back to Auth Prototype" 按钮文案已失效
-
-**发现日期**：2026-05-26
-**来源**：密码框显隐功能 deep-review（附带发现的预存问题）
-
-- 现状：`NuxtUiDemoPage.vue:24` 的按钮用 `demo.backToAuthPrototype`（"返回认证原型"）文案，但它 `to="/"`，而 `/` 现在重定向到 `/home`（`router/index.js`）。本次又删掉了从未注册路由的死文件 `AuthPrototypePage.vue`，"认证原型"这个去处已彻底不存在，文案语义彻底落空。
-- 后果：仅内部 Nuxt UI 演示页的一个按钮文案误导（点了到首页而非"认证原型"）。不影响正式用户路径、不影响功能。
-- 性质：预存问题（该按钮一直指向 `/`、从未真正去到原型页），非本次引入；本次删死文件让它更明显。
-- 修复方向：把 key/文案改成 `demo.backHome` 之类（需同步 12 语言），或干脆移除该按钮。低优先。
-
 ## 把 agent 卡片模型显示信息内聚进插件（仪表盘弃用全量目录后的后续）
 
 **发现日期**：2026-05-27

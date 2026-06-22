@@ -4,7 +4,6 @@ import AuthedLayout from '../layouts/AuthedLayout.vue';
 import AdminLayout from '../layouts/AdminLayout.vue';
 import LoginPage from '../views/LoginPage.vue';
 import RegisterPage from '../views/RegisterPage.vue';
-import NuxtUiDemoPage from '../views/NuxtUiDemoPage.vue';
 import HomePage from '../views/HomePage.vue';
 import ChatPage from '../views/ChatPage.vue';
 import TopicsPage from '../views/TopicsPage.vue';
@@ -36,11 +35,6 @@ const routes = [
 		path: '/register',
 		name: 'register',
 		component: RegisterPage,
-	},
-	{
-		path: '/nuxt-ui-demo',
-		name: 'nuxt-ui-demo',
-		component: NuxtUiDemoPage,
 	},
 	{
 		path: '/',

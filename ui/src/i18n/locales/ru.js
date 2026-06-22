@@ -463,13 +463,6 @@ export const ruMessages = {
 		fileTooLarge: '«{name}» превышает 1 ГБ и не может быть загружен',
 		uploadConflictDownloading: 'Некоторые файлы сейчас загружаются. Попробуйте позже',
 	},
-	demo: {
-		title: 'Демо Nuxt UI 4',
-		desc: 'Базовая интеграция библиотеки компонентов Nuxt UI готова.',
-		ready: 'Готово',
-		clickedTimes: 'Нажато {count} раз',
-		backToAuthPrototype: 'Назад к прототипу авторизации',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: 'Нет доступных элементов',

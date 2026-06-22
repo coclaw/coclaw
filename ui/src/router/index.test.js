@@ -15,7 +15,6 @@ vi.mock('../layouts/AuthedLayout.vue', stubComponent);
 vi.mock('../layouts/AdminLayout.vue', stubComponent);
 vi.mock('../views/LoginPage.vue', stubComponent);
 vi.mock('../views/RegisterPage.vue', stubComponent);
-vi.mock('../views/NuxtUiDemoPage.vue', stubComponent);
 vi.mock('../views/HomePage.vue', stubComponent);
 vi.mock('../views/ChatPage.vue', stubComponent);
 vi.mock('../views/TopicsPage.vue', stubComponent);

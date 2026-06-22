@@ -463,13 +463,6 @@ export const deMessages = {
 		fileTooLarge: '„{name}" überschreitet 1 GB und kann nicht hochgeladen werden',
 		uploadConflictDownloading: 'Einige Dateien werden gerade heruntergeladen. Bitte versuchen Sie es später erneut',
 	},
-	demo: {
-		title: 'Nuxt UI 4 Demo',
-		desc: 'Nuxt UI Komponentenbibliothek-Basisintegration ist bereit.',
-		ready: 'Bereit',
-		clickedTimes: '{count} mal geklickt',
-		backToAuthPrototype: 'Zurück zum Auth Prototype',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: 'Keine Einträge verfügbar',

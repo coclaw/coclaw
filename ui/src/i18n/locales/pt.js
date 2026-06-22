@@ -463,13 +463,6 @@ export const ptMessages = {
 		fileTooLarge: '"{name}" excede 1 GB e não pode ser enviado',
 		uploadConflictDownloading: 'Alguns arquivos estão sendo baixados. Tente novamente mais tarde',
 	},
-	demo: {
-		title: 'Demo Nuxt UI 4',
-		desc: 'A integração base da biblioteca de componentes Nuxt UI está pronta.',
-		ready: 'Pronto',
-		clickedTimes: 'Clicado {count} vezes',
-		backToAuthPrototype: 'Voltar ao Protótipo de Autenticação',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: 'Nenhum item disponível',

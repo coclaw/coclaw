@@ -463,13 +463,6 @@ export const zhTWMessages = {
 		fileTooLarge: '「{name}」超過 1 GB，暫不支援上傳',
 		uploadConflictDownloading: '部分檔案正在下載中，請稍後再上傳',
 	},
-	demo: {
-		title: 'Nuxt UI 4 範例',
-		desc: '已完成 Nuxt UI 元件庫基礎接入。',
-		ready: '就緒',
-		clickedTimes: '點擊了 {count} 次',
-		backToAuthPrototype: '返回認證原型',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: '暫無可用項目',

@@ -463,13 +463,6 @@ export const viMessages = {
 		fileTooLarge: '"{name}" vượt quá 1 GB và không thể tải lên',
 		uploadConflictDownloading: 'Một số tệp đang được tải xuống. Vui lòng thử lại sau',
 	},
-	demo: {
-		title: 'Demo Nuxt UI 4',
-		desc: 'Tích hợp cơ sở thư viện component Nuxt UI đã sẵn sàng.',
-		ready: 'Sẵn sàng',
-		clickedTimes: 'Đã nhấn {count} lần',
-		backToAuthPrototype: 'Quay lại nguyên mẫu xác thực',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: 'Không có mục nào',

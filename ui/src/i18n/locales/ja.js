@@ -463,13 +463,6 @@ export const jaMessages = {
 		fileTooLarge: '「{name}」は 1 GB を超えているためアップロードできません',
 		uploadConflictDownloading: '一部のファイルがダウンロード中です。しばらくしてから再度お試しください',
 	},
-	demo: {
-		title: 'Nuxt UI 4 デモ',
-		desc: 'Nuxt UI コンポーネントライブラリのベースライン統合が完了しています。',
-		ready: '準備完了',
-		clickedTimes: '{count} 回クリックされました',
-		backToAuthPrototype: '認証プロトタイプに戻る',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: '利用可能な項目はありません',

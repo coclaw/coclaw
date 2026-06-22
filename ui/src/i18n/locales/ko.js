@@ -463,13 +463,6 @@ export const koMessages = {
 		fileTooLarge: '"{name}"은(는) 1GB를 초과하여 업로드할 수 없습니다',
 		uploadConflictDownloading: '일부 파일이 다운로드 중입니다. 잠시 후 다시 시도해 주세요',
 	},
-	demo: {
-		title: 'Nuxt UI 4 데모',
-		desc: 'Nuxt UI 컴포넌트 라이브러리 기본 통합이 완료되었습니다.',
-		ready: '준비됨',
-		clickedTimes: '{count}번 클릭됨',
-		backToAuthPrototype: '인증 프로토타입으로 돌아가기',
-	},
 	webAgents: {
 		title: 'Web Agent',
 		empty: '사용 가능한 항목이 없습니다',
