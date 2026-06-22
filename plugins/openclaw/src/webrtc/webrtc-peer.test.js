@@ -1328,6 +1328,44 @@ test('WebRtcPeer: closeAll 容忍单个 session 关闭失败，仍清空其余�
 	assert.equal(okSession.rpcDcSender, null, 'rpcDcSender 应被清空');
 });
 
+test('WebRtcPeer: closeByConnId 删表前的同步 teardown 抛错时 closeAll 仍终止 drain（delete 先行，不死循环）', async (t) => {
+	// 回归 LOOP-SAFETY 加固：closeAll 的 while-drain 用 per-session catch 吞掉单个 reject。
+	// 若 closeByConnId 在删表前的某个同步步骤（detach handler / clear timer）抛错，旧顺序
+	// （detach → clear → delete）下 session 会残留在表里 → 下一轮 drain 再次取到它、再次抛错
+	// → 无限自旋拖挂 gateway。新顺序把 __sessions.delete 提到所有可抛错同步步骤之前，
+	// 使 drain 终止无条件成立（即便后续同步步骤抛错，session 也已离表）。
+	const warns = [];
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: MockPCFactory(),
+		impl: 'ndc',
+		rpcQueueImpl: 'mem',
+	});
+
+	await peer.handleSignaling(makeOffer('c_loop_safe'));
+	assert.ok(peer.__sessions.has('c_loop_safe'), 'session 应已入表');
+
+	// 注入：让删表前的同步 teardown 步骤抛错（模拟 session.pc 失效等不变量被破坏的极端情形）。
+	// 旧顺序下 detach 排在 delete 之前 → 抛错时 session 未删 → while-drain 死循环。
+	peer.__detachPcHandlers = () => { throw new Error('boom-detach'); };
+
+	// 超时竞速兜底：若死循环（旧顺序）则 closeAll 永不 resolve，1.5s 后由 timeout 抢先 reject，
+	// 测试快速失败而非拖挂整个套件；新顺序下 closeAll 立即 resolve，timeout 被清掉。
+	let timer;
+	const timeout = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error('closeAll 未终止：同步 teardown 抛错触发 while-drain 死循环')), 1500);
+	});
+	try {
+		await Promise.race([peer.closeAll(), timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
+
+	assert.equal(peer.__sessions.size, 0, 'delete 先行：抛错后 session 仍已从表中删除，drain 终止');
+	assert.ok(warns.some((m) => /boom-detach/.test(m)), '同步 teardown 失败应留下 per-session warn 诊断');
+});
+
 test('WebRtcPeer: rtc:ready 仅日志', async (t) => {
 	const logs = [];
 	const peer = makeTestPeer(t, {

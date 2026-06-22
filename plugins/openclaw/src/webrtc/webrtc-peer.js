@@ -208,13 +208,17 @@ export class WebRtcPeer {
 		if (!expectedSession) return;
 		if (this.__sessions.get(connId) !== expectedSession) return;
 		const session = expectedSession;
-		// 同步先 detach handler + clear timer，再 delete map，最后才进入 fire-and-forget 兼容的
-		// 异步收尾（sender/queue/pc.close）。这个顺序保证：(1) pc.close 期间的滞后回调不会
-		// 误改新 session；(2) sessions.get(connId) 在删表后立即返回 undefined，并发 offer 走
-		// 同步段五件事路径而非误以为"close 还在跑"。
+		// 同步段顺序：先 delete map，再 detach handler + clear timer，最后进入 fire-and-forget
+		// 兼容的异步收尾（sender/queue/pc.close）。三步同步、彼此间无 await，外部异步观察者
+		// （并发 offer / pc.close 滞后回调）看到的是整段原子切换，故 delete 提前不改变原有两条
+		// 保证：(1) pc.close 期间的滞后回调不会误改新 session（detach 仍在 pc.close 之前）；
+		// (2) sessions.get(connId) 删表后立即返回 undefined，并发 offer 走替换路径而非误以为
+		// "close 还在跑"。delete 必须排在任何可能抛错的同步步骤之前：closeAll drain 用
+		// per-session catch 吞掉单个 reject，若 detach/clear 在 delete 前抛错，session 会残留在
+		// 表里让 while-drain 死循环、拖挂 gateway——delete 先行使这条不变量无条件成立。
+		this.__sessions.delete(connId);
 		this.__detachPcHandlers(session);
 		this.__clearSessionSyncState(session);
-		this.__sessions.delete(connId);
 		await this.__finalizeSessionAsync(session);
 		this.__remoteLog(`rtc.closed conn=${connId}`);
 		this.logger.info?.(`${this.__rtcTag} [${connId}] closed`);
