@@ -1291,6 +1291,43 @@ test('WebRtcPeer: closeAll 空 sessions', async (t) => {
 	await peer.closeAll(); // 不应抛异常
 });
 
+test('WebRtcPeer: closeAll 容忍单个 session 关闭失败，仍清空其余（per-session catch）', async (t) => {
+	const warns = [];
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: { info: () => {}, warn: (m) => warns.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+		impl: 'ndc',
+		rpcQueueImpl: 'mem',
+	});
+
+	await peer.handleSignaling(makeOffer('c_close_fail'));
+	await peer.handleSignaling(makeOffer('c_close_ok'));
+
+	// 给 c_close_ok 装一套完整 rpc 三件套，验证它被正常清理
+	const okSession = peer.__sessions.get('c_close_ok');
+	const dcOk = makeMockRpcDc();
+	okSession.pc.ondatachannel({ channel: dcOk });
+	dcOk.onopen?.();
+	await waitFor(() => !!(okSession.rpcQueue && okSession.rpcDcSender && okSession.rpcChannel));
+	assert.ok(okSession.rpcQueue && okSession.rpcDcSender && okSession.rpcChannel, 'c_close_ok 三件套应就绪');
+
+	// 让 c_close_fail 的 pc.close reject —— closeByConnId 会随之 reject
+	peer.__sessions.get('c_close_fail').pc.close = async () => { throw new Error('boom-close'); };
+
+	// closeAll 不应因单个 session 失败而整体 reject
+	await assert.doesNotReject(() => peer.closeAll());
+
+	assert.equal(peer.__sessions.size, 0, 'closeAll 应清空所有 session');
+	// per-session 失败必须留下 warn 诊断，不能静默全吞
+	assert.ok(warns.some((m) => /boom-close/.test(m)), '失败 session 应有 warn 诊断');
+	// 另一个 session 的三件套（sender/queue/channel）已清
+	assert.equal(okSession.rpcChannel, null, 'rpcChannel 应被清空');
+	assert.equal(okSession.rpcQueue, null, 'rpcQueue 应被清空');
+	assert.equal(okSession.rpcDcSender, null, 'rpcDcSender 应被清空');
+});
+
 test('WebRtcPeer: rtc:ready 仅日志', async (t) => {
 	const logs = [];
 	const peer = makeTestPeer(t, {
@@ -1338,6 +1375,47 @@ test('WebRtcPeer: DataChannel onclose 清除 rpcChannel', async (t) => {
 
 	fakeChannel.onclose();
 	assert.equal(peer.__sessions.get('c_100').rpcChannel, null);
+
+	await peer.closeAll();
+});
+
+test('WebRtcPeer: 旧 rpc DC onclose 晚到不误清新通道三件套（rebuild 身份守卫）', async (t) => {
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: () => {},
+		logger: silentLogger(),
+		PeerConnection: PC,
+		impl: 'ndc',
+		rpcQueueImpl: 'mem',
+	});
+
+	await peer.handleSignaling(makeOffer('c_rebuild'));
+	const pc = PC.instances[0];
+	const session = peer.__sessions.get('c_rebuild');
+
+	// 第一个 rpc DC（dc1）：等三件套就绪
+	const dc1 = makeMockRpcDc();
+	pc.ondatachannel({ channel: dc1 });
+	dc1.onopen?.();
+	await waitFor(() => !!(session.rpcQueue && session.rpcDcSender));
+	assert.equal(session.rpcChannel, dc1, 'rpcChannel 应先指向 dc1');
+
+	// 第二个 rpc DC（dc2，同 session 重建）：等 rpcChannel 切到 dc2 且新三件套就绪
+	const dc2 = makeMockRpcDc();
+	pc.ondatachannel({ channel: dc2 });
+	dc2.onopen?.();
+	await waitFor(() => session.rpcChannel === dc2 && !!session.rpcQueue && !!session.rpcDcSender);
+	const newQueue = session.rpcQueue;
+	const newSender = session.rpcDcSender;
+	assert.equal(session.rpcChannel, dc2);
+	assert.ok(newQueue && newSender, 'dc2 的新三件套应就绪');
+
+	// 旧 dc1 的 onclose 晚到——身份守卫（rpcChannel === dc）应拒绝清理新通道
+	dc1.onclose();
+
+	assert.equal(session.rpcChannel, dc2, '旧 dc onclose 不应改写 rpcChannel');
+	assert.equal(session.rpcQueue, newQueue, '旧 dc onclose 不应清空 rpcQueue');
+	assert.equal(session.rpcDcSender, newSender, '旧 dc onclose 不应清空 rpcDcSender');
 
 	await peer.closeAll();
 });
@@ -2544,6 +2622,45 @@ test('WebRtcPeer: ICE restart 协商失败时发送 rtc:restart-rejected', async
 	assert.equal(sent[0].type, 'rtc:restart-rejected');
 	assert.equal(sent[0].toConnId, 'c_ir03');
 	assert.equal(sent[0].payload.reason, 'restart_failed');
+});
+
+test('WebRtcPeer: ICE restart 中途 session 被替换 → 中止，不发 stale rtc:answer', async (t) => {
+	const sent = [];
+	const logs = [];
+	const PC = MockPCFactory();
+	const peer = makeTestPeer(t, {
+		onSend: (msg) => sent.push(msg),
+		logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: () => {}, debug: () => {} },
+		PeerConnection: PC,
+		impl: 'pion',
+	});
+
+	await peer.handleSignaling(makeOffer('c_ir_abort'));
+	const firstPc = PC.instances[0];
+
+	// setRemoteDescription 在 await 中途把该 connId 的 session 从 Map 删除（模拟并发 close /
+	// 第二轮 offer 替换）。await 后身份重核应命中 → 走 aborted 路径，不发 stale answer。
+	firstPc.setRemoteDescription = async () => { peer.__sessions.delete('c_ir_abort'); };
+	sent.length = 0;
+	logs.length = 0;
+
+	await peer.handleSignaling({
+		type: 'rtc:offer',
+		fromConnId: 'c_ir_abort',
+		payload: { sdp: 'restart-sdp', iceRestart: true },
+	});
+
+	// 不应发出 rtc:answer（身份重核拦截 stale answer），也不走 restart-rejected
+	assert.ok(!sent.some((m) => m.type === 'rtc:answer'), 'stale rtc:answer 不应被发送');
+	assert.ok(!sent.some((m) => m.type === 'rtc:restart-rejected'), '中途替换应走 aborted 路径，不发 restart-rejected');
+	// aborted 行为：命中 setRemoteDescription 后的身份重核
+	assert.ok(
+		logs.some((m) => /ICE restart aborted: session changed after setRemoteDescription/.test(m)),
+		'应记录 setRemoteDescription 后的 aborted 日志',
+	);
+
+	// 模拟的旧 PC 不在 Map 内，手动收尾避免悬挂
+	await firstPc.close();
 });
 
 // --- ICE restart credRemain 诊断字段 ---

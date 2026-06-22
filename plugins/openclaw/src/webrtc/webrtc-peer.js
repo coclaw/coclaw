@@ -236,7 +236,15 @@ export class WebRtcPeer {
 		// 下次复用会建新实例从 false 起。
 		this.__stopping = true;
 		while (this.__sessions.size > 0) {
-			const closing = [...this.__sessions.values()].map((s) => this.closeByConnId(s.connId, s));
+			// per-session catch：单个 closeByConnId reject 不能中断其余 session 的清理，也不能
+			// 打断 while-drain 兜底循环。session 在 closeByConnId 首个 await 前已同步从 Map 删除，
+			// 故失败的 session 不会被下一轮重复处理、也不会无限循环。失败降级为 warn 诊断而非
+			// 静默全吞，保留定位线索。
+			const closing = [...this.__sessions.values()].map((s) =>
+				this.closeByConnId(s.connId, s).catch((err) => {
+					this.logger.warn?.(`${this.__rtcTag} [${s.connId}] closeByConnId failed during closeAll: ${err?.message ?? err}`);
+				}),
+			);
 			await Promise.all(closing);
 		}
 	}
