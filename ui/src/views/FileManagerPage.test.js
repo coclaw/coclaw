@@ -151,6 +151,17 @@ describe('FileManagerPage', () => {
 			expect(replace).toHaveBeenCalledWith('/chat/claw1/main');
 			expect(back).not.toHaveBeenCalled();
 		});
+
+		test('返回按钮暴露可访问名称（aria-label，locale 安全）', () => {
+			const wrapper = mountWithRouter({ back: vi.fn(), replace: vi.fn() });
+			// icon 作为透传属性渲染到 <button>，locator 不依赖 aria-label 本身
+			const back = wrapper.find('button[icon="i-lucide-arrow-left"]');
+			expect(back.exists()).toBe(true);
+			const label = back.attributes('aria-label');
+			// locale 安全：断言存在且等于组件取的 $t('common.back')（mock 回传 key），不硬编码英文
+			expect(label).toBeTruthy();
+			expect(label).toBe('common.back');
+		});
 	});
 
 	// ===================================================================

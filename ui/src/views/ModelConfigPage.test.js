@@ -213,6 +213,19 @@ describe('ModelConfigPage — header + clawId', () => {
 		history.replaceState(orig, '');
 		w.unmount();
 	});
+
+	test('desktop back button exposes a translated accessible name (aria-label)', async () => {
+		mockRequest.mockResolvedValue({});
+		const w = makeWrapper();
+		// 定位桌面 header 返回键：icon 作为透传属性渲染到 <button>，locator 不依赖 aria-label 本身
+		const back = w.find('button[icon="i-lucide-arrow-left"]');
+		expect(back.exists()).toBe(true);
+		const label = back.attributes('aria-label');
+		// locale 安全：断言存在且等于组件取的 $t('common.back')（mock 回传 key），不硬编码英文
+		expect(label).toBeTruthy();
+		expect(label).toBe('common.back');
+		w.unmount();
+	});
 });
 
 describe('ModelConfigPage — initial load races', () => {
