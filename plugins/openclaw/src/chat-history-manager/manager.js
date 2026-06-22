@@ -341,8 +341,11 @@ export class ChatHistoryManager {
 		// 分区：宽松判空 == null 把活跃头（archivedAt 实测是 undefined）与已归档段分开。
 		// filter 保序且产生新数组——绝不原地 sort 污染 cache（list 是无锁读路径，被污染的
 		// cache 可能被后续写盘误持久化）。
-		const heads = history.filter((it) => it.archivedAt == null);
-		const archived = history.filter((it) => it.archivedAt != null);
+		// 谓词用可选链：恢复旧版"透传不解引用"的容忍度——null / 非对象等脏元素 → undefined
+		// → ==null true → 落 heads 段原样保留、不参与排序、不抛（与写盘侧 __sanitizeAllSessionKeys
+		// 显式防 null 元素的姿态一致）。
+		const heads = history.filter((it) => it?.archivedAt == null);
+		const archived = history.filter((it) => it?.archivedAt != null);
 		// 全序安全比较器：任意值规整成有限数，坏值（NaN/非数字串/对象/Infinity）一律沉到 0、
 		// 落最旧端。哨兵必须用 0 不能用 -Infinity（两个 -Infinity 相减 = NaN 会复活乱序 bug）。
 		const ms = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };

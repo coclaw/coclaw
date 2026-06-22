@@ -1495,3 +1495,34 @@ test('list - 返回新数组，cache 内部数组保持磁盘原序不被原地�
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
 });
+
+// L6: 脏元素（null / 非对象）不崩、原样保留——恢复旧版透传容忍度（杀「filter 谓词去掉可选链」变异）
+test('list - 数组含 null/非对象脏元素时不抛、原样保留、合法项仍降序', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir);
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		// null / 数字 42 都能经 JSON 落盘并存活；混入合法头与两条合法归档
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' },
+				null,
+				{ sessionId: 'old', archivedAt: 1000 },
+				42,
+				{ sessionId: 'new', archivedAt: 3000 },
+			],
+		}));
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 5, '脏元素不被丢弃，length 不变');
+		// 脏元素落 heads 段、原序保留（head, null, 42）
+		assert.equal(history[0].sessionId, 'head');
+		assert.equal(history[1], null, 'null 元素原样保留在输出里');
+		assert.equal(history[2], 42, '非对象元素原样保留');
+		// 合法归档段仍按 archivedAt 降序
+		assert.equal(history[3].sessionId, 'new');
+		assert.equal(history[4].sessionId, 'old');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
