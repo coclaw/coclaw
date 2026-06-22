@@ -125,19 +125,6 @@
 
 **修复方向**：在 4001/4003 入口先 `await this.__webrtcPeerReady?.catch(()=>{})`，再走清理；或引入 generation token，pending init 在完成时检查 token 是否仍有效。
 
-## DC onclose 与 closeByConnId 的 race（旧 DC onclose 晚到误清理新 session）
-
-**发现日期**：2026-05-02（rpc-dc-integration 阶段 1 deep-review 时识别）
-**关联**：webrtc-peer.js 的 dc.onclose 路径
-
-**问题**：`closeByConnId` 主动清理后，旧 DC 的 `onclose` 事件可能晚到。届时 connId 已被新 session 复用，`dc.onclose` handler 通过 `this.__sessions.get(connId)` 拿到的是**新 session**，进而错误地置空新 session 的 `rpcQueue / rpcDcSender / rpcChannel`。
-
-**影响**：低概率但确切 bug。同 connId 短时间内 close+rebuild 时可能出现新 session 立刻被旧 DC 的 onclose 误清理。
-
-**修复方向**：在 `dc.onclose` 内增加身份校验：`if (sess?.rpcChannel !== dc) return;`；或 `closeByConnId` 主动 detach 旧 dc.onclose handler。
-
-**预存问题**：旧 RpcSendQueue 时代也存在，本次重构未引入。
-
 ## DC onerror 不触发清理 → consumeLoop 可能永挂
 
 **发现日期**：2026-05-02
@@ -217,24 +204,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **当前实现**：构造抛点在实践中触发不到——connId 由 UI 生成 `c_${UUID}` 格式总是满足 ID_RE；dc 是 ondatachannel 参数永不为 null。
 
 **修复方向**（不修）：包 try/catch 在 `if (session && dc.label === 'rpc')` 段内，失败时 warn + return 不赋值任何字段。属纯防御。
-
-## ICE restart 跨 await 不重验 session 在 Map（预存）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
-**关联**：webrtc-peer.js __handleOffer ICE restart 分支
-
-**问题**：ICE restart 路径含多次 await（setRemoteDescription / createAnswer / setLocalDescription），但每次 await 后没有重验 `this.__sessions.get(connId) === existing`。若中途另一路径删除/替换 session（closeAll / __evictOldestFailed / 第二轮 offer），旧 continuation 仍会更新已无效的 session。
-
-**修复方向**（不修）：每个 await 后加 `if (this.__sessions.get(connId) !== existing) return;`。预存问题，本次重构未引入也未扩大。
-
-## closeAll 用 Promise.all 无 per-session catch（预存）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
-**关联**：webrtc-peer.js closeAll
-
-**问题**：`Promise.all(closing)` 任一 closeByConnId reject 整体 reject。其余 session 仍会跑（Promise.all 不中断已启动的），但调用方拿到 rejection。
-
-**修复方向**（不修）：用 `Promise.allSettled` 或 `closing.map(p => p.catch(...))`。预存。
 
 ## __sendPeerTransport 失败后无重试调度（预存）
 
@@ -1227,19 +1196,6 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **修复方向**：上游确实加新 segment 形态时，及时把它加入黑名单（一行改动）。若上游频繁演进 segment 词表，考虑迁移到白名单 + 默认拒绝策略。
 
 **严重性**：低——需要上游主动加新形态才会触发；可观测信号有 `chat-history.skip-*` 缺失。
-
-## file-manager upload `done` 帧未进入终态，迟到 binary 可能凑足 declaredSize 后被吸纳进文件
-
-**发现日期**：2026-05-25（read-only deep-review 2026-05-24 综合报告 #5）
-**关联**：`plugins/openclaw/src/file-manager/handler.js:767-811` 上传模式下的 `dc.onmessage`
-
-**问题**：收到 `{done:true}` 后只置 `doneReceived=true`，没有把 binary 通道锁死。后续到达的 binary 帧仍走 else 分支累加 `receivedBytes`、入队、由 drainLoop 写盘。若 done 早于全部 binary 到达 + 后续 binary 恰好把 `receivedBytes` 凑到 `declaredSize`，最终 size 校验通过、rename 成功——多写的字节被吸纳进目标文件。
-
-**为什么本期未修**：协议宽松而非安全漏洞——上传方对自己 workspace 内容本就有完全权限；生产环境未观察到实例（正常客户端不会在 done 之后继续 send binary）。
-
-**修复方向**：done 收到后置 terminal flag；后续 binary 帧直接丢弃，或走 `SIZE_EXCEEDED` 同款 reject 路径上报错误码。
-
-**严重性**：低——协议宽松；无安全影响。
 
 ## providerAuth.list 返回原始 provider 拼写，未做上游别名归一化，UI 端 === 比对误判别名服务商
 
