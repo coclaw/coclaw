@@ -331,17 +331,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：在 setRemoteDescription 之前调 `existing.pc.setConfiguration({ iceServers: rebuiltFromTurnCreds })`。需先验证 pion-node 与 werift 的 setConfiguration 实现一致性。
 
-### pion preload 缺并发合并保护
-
-**发现日期**：2026-05-02（D 阶段 dim 2）
-**关联**：plugins/openclaw/src/webrtc/pion-preloader.js + realtime-bridge.js 调用点
-
-**问题**：bridge 重启或多次直接调用 `preloadPion()` 时，每次都独立构造并启动新 `PionIpc` 实例，没有 in-flight Promise 合并。
-
-**影响**：可能并发 spawn 多个 pion-ipc Go 子进程；被覆盖的那次 preload 结果没有 cleanup 归属。bridge 正常生命周期下不触发。
-
-**修复方向**：`preloadPion` 内维护 in-flight Promise 引用，重入直接返回同一 Promise。
-
 ### claw-binding 并发 bind/unbind R-M-W 跨调用竞态
 
 **发现日期**：2026-05-02（D 阶段 dim 7）
@@ -376,6 +365,8 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **修复方向**：给 singleton 生命周期加 mutex / promise queue，串行化 restart/stop。
 
 **为什么 TODO**：跨模块状态机锁，需整体设计 lifecycle 管理；现有测试只覆盖顺序 restart，需新增并发场景测试。
+
+**2026-06-22 注记（合并自原「pion preload 缺并发合并保护」条）**：该 race 在 pion 层有重复症状——并发 restart 各自 `start()→preloadPion()` 会 spawn 多个 pion-ipc Go 子进程 + 旧 singleton 孤儿化（孤儿 PionIpc 带 autoRestart 看门狗、仅 `stop()` 回收，泄漏自愈型 Go 进程）。⚠️ **别在 `preloadPion` 内做 in-flight 合并**（原条目的修复方向是错的）：它是每 bridge 实例一次的无状态工厂、每次 new 独立 `PionIpc` 且 `cleanup=ipc.stop()` 绑死该实例（`pion-preloader.js:53-64,80-89`），合并会让两个不同 bridge 共享同一 Go 进程→一个 stop()/restart 把另一个传输层一并杀掉（共享生命周期/双重 stop）。治本＝本条的 restart/stop 串行化，pion 多进程是其副作用、随本条一并消除。
 
 ### bind/unbind 在缺 serverUrl 但有 token 时静默跳过远端解绑
 
@@ -1113,6 +1104,8 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderId`（`openclaw-repo/src/agents/provider-id.ts`：`moonshotai→moonshot`、`modelstudio/qwencloud→qwen`、`z.ai→zai` 等）折叠别名 + 小写。CoClaw 前端复制了读写、漏了这步归一化，于是两份未对齐的原始拼写硬比 → 主模型被误报"失效"（橙条）、picker 里看不到该 provider 的模型。
 
 **影响**：很窄。只在该 provider 是**绕开 CoClaw 界面**（`openclaw` onboard 命令 / 手改 auth-profiles / 外部 CLI 导入）用别名形或非规范大小写配置时才触发。通过 CoClaw 界面添加时，发出去的 provider 名取自 catalog 规范名（`AddProviderDialog` 可选列表来自 catalog 的 `m.provider`，`provider-meta.js` 也只有规范的 `moonshot` 无 `moonshotai`），存进去 = 规范名 = 与 catalog 一致，永不触发。无数据损坏、不崩、不影响其它 provider。
+
+**2026-06-22 复核：两个症状已被 model.list/listAvailable 别名感知重构架空（症状休眠，根因仍在）**。橙条改吃 `coclaw.model.list` 的 `hasAnyUsableCredential`/`default.providerUsable`（`ui/src/stores/dashboard.store.js:298-299`）+ `listAvailable.byProvider`（`ui/src/views/ModelConfigPage.vue:268-284,358`），picker 改吃 `listAvailable.byProvider`（`PrimaryModelPickerDialog.vue:172,181-196`），`providerAuth.list` 现仅喂纯展示的 `ProviderAuthRow`（`ModelConfigPage.vue:119-125`）、无 `===` 误判。**根因仍在**——`handlers.js` list 三源（账本 `:169-171`/内联 `:688-691`/env `:715-729`）原样透传不归一，仅 catalog 路径归一（`:594-602`）。故降级为备忘：当前无活跃有害消费者，若 UI 日后再以 `providerAuth.list` 的 provider 做语义判断会复活；修法 B（list 出参侧归一）仍是正解。
 
 **为什么发版前不修**：
 - 修法 A（前端复刻上游别名映射表，比对前先折叠）会让前端持有一份与上游可能脱节的映射，上游新增别名时无声错位；临发版加投机性复杂度不划算。
