@@ -1684,10 +1684,13 @@ export class RealtimeBridge {
 		// 但显式销毁时必须清干净，避免 refresh 后留下指向旧 connId 的孤儿条目。
 		this.__dcPendingRequests.clear();
 		this.__closeGatewayWs();
+		// 镜像 auth-close 守卫：stop()（refresh/restart 会走）撞 __initWebrtcPeer 在飞时
+		// webrtcPeer 仍 null，不等就漏清理那个即将诞生的 peer/fileHandler，refresh/restart 后留无主实例。
+		await this.__webrtcPeerReady?.catch(() => {});
+		this.__webrtcPeerReady = null;
 		if (this.webrtcPeer) {
 			await this.webrtcPeer.closeAll().catch(() => {});
 			this.webrtcPeer = null;
-			this.__webrtcPeerReady = null;
 		}
 		// pion: 关闭 Go 进程（异步，快速）
 		// ndc: 不调用 cleanup()——同步 join native threads 耗时 10s+，进程退出时 OS 回收

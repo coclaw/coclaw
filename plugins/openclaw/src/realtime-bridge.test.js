@@ -3348,6 +3348,50 @@ test('auth-close 撞 lazy init 在飞且 init reject：仍清理已赋值的 fil
 	}
 });
 
+test('stop() 撞 lazy init 在飞：先等 init 落地再清理（孪生竞态回归锁）', async () => {
+	const { bridge, server } = await setupConnectedBridge();
+	let stopped = false;
+	try {
+		let closeAllCalls = 0;
+		let cancelCleanupCalls = 0;
+		const fakePeer = {
+			handleSignaling: async () => {},
+			closeAll: async () => { closeAllCalls += 1; },
+		};
+		const fakeHandler = { cancelCleanup: () => { cancelCleanupCalls += 1; } };
+		let gateResolve;
+		const gate = new Promise((res) => { gateResolve = res; });
+		bridge.__initWebrtcPeer = async () => {
+			await gate;
+			bridge.__fileHandler = fakeHandler;
+			bridge.webrtcPeer = fakePeer;
+		};
+		const messageListener = server.listeners.get('message')[0];
+
+		// 投 rtc:offer 让 lazy init 进 pending（peer 仍 null）
+		const msgP = messageListener({
+			data: JSON.stringify({ type: 'rtc:offer', fromConnId: 'c_stoprace', payload: { sdp: 'sdp' } }),
+		});
+		assert.equal(bridge.webrtcPeer, null, 'init 在飞时 peer 仍 null');
+		assert.ok(bridge.__webrtcPeerReady, '__webrtcPeerReady 应为 pending');
+
+		// 闸门 pending 时调 stop()（先别 await 完）
+		const stopP = bridge.stop();
+		stopped = true;
+		// 放行 init → 赋值 peer/fileHandler
+		gateResolve();
+		await Promise.all([msgP, stopP]);
+
+		assert.equal(closeAllCalls, 1, 'closeAll 应对落地的 peer 调 1 次');
+		assert.equal(cancelCleanupCalls, 1, 'cancelCleanup 应对落地的 fileHandler 调 1 次');
+		assert.equal(bridge.webrtcPeer, null, 'webrtcPeer 应被清空（无无主 PC）');
+		assert.equal(bridge.__fileHandler, null, 'fileHandler 应被清空');
+		assert.equal(bridge.__webrtcPeerReady, null, '__webrtcPeerReady 应被清空');
+	} finally {
+		if (!stopped) await bridge.stop();
+	}
+});
+
 test('RealtimeBridge __forwardToServer should log when ws not ready', async () => {
 	const { bridge } = await setupConnectedBridge();
 	const warns = [];
