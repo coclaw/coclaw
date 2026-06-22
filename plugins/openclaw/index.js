@@ -418,6 +418,9 @@ const plugin = {
 				// 取消前一个 enroll（与 doBind/doUnbind 共享 helper）
 				cancelActiveEnroll();
 				const abortController = new AbortController();
+				// 故意提前 set：enrollClaw 抛错（如 ALREADY_BOUND）时此 controller 会残留，不在 catch 重置——
+				// signal 无 live waiter，abort 死 controller 是 no-op，唯一后果是下次多一行 cancel 日志；
+				// defer/catch-reset 两轮补丁均不可靠已 revert，故保持原样。
 				activeEnrollAbort = abortController;
 
 				const serverUrl = params?.serverUrl ?? api.pluginConfig?.serverUrl;
@@ -866,6 +869,7 @@ const plugin = {
 						// 并发控制：取消前一个 enroll（与 RPC 路径共享 helper）
 						cancelActiveEnroll();
 						const abortController = new AbortController();
+						// 同上：故意提前 set，残留仅日志噪音、abort 为 no-op（理由见 RPC handler 处）。
 						activeEnrollAbort = abortController;
 
 						const serverUrl = options.server ?? api.pluginConfig?.serverUrl;

@@ -1036,6 +1036,10 @@ export class WebRtcPeer {
 		// FBQ.init 承担 fs 残留清理（含同 connId 唯一后缀文件，不会撞旧实例）；MemoryQueue.init 是 no-op。
 		// await 期间可能发生 closeByConnId / 同 connId 二次 ondatachannel，因此后面必须身份重核才能赋字段。
 		await queue.init();
+		// 故意不为同 connId 并发 setup 引入 rpcSetupInProgress 协调锁：双 loop / 泄漏被下方身份重核
+		// + 段首 teardown 结构性挡死（rpcChannel 在 ondatachannel 同步路径单调前移：先到者被后到
+		// teardown 收割，后到者 dc 已非 rpcChannel 则自毁返回）；即便分析有误，孤儿也只是空转 idle
+		// 任务 + 少量内存（无 producer → 无 spill → 无 FD），无崩溃 / 丢数据。
 		// 身份重核：init 期间 session 可能被 closeByConnId 从 Map 删除，或被同 connId 二次
 		// ondatachannel 把 rpcChannel 替换成新 dc。任一不再成立都视为 stale，destroy queue 后
 		// 直接退出，绝不污染 session 三件套字段。monitor 自然 GC，无需 summarize（无 drop）。

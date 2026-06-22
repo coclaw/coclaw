@@ -249,19 +249,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **同族第二形态（2026-06-11 独立验证 S2 观察）**：record 的 `spec` 也会被装坏版时重新钉死为精确版号（实测：S1 解钉后的裸名 spec，经 S2 装 0.26.23 失败回滚后变回 `@coclaw/openclaw-coclaw@0.26.23`）。发现逻辑不受影响（skip 周期用裸名查 latest 实测正常），下次成功升级经裸包名 update 会再次解钉自愈。同根因（restore 不回写上游记录），随本条一起处置。
 
-## bridge async listener 其他真隐患（C 阶段维度 1）
-
-**发现日期**：2026-05-02
-**关联**：realtime-bridge.js
-
-| # | 锚点 | 问题 | 修向 |
-|---|---|---|---|
-| 1 | 826-834 | terminal res 的 `__dcPendingRequests.delete` 在 `await sendTo` 之前发生；await 期间若同 id 第二帧到来（理论上 server 不会重发），会走广播兜底而非单播 | delete 移到 await 之后 |
-| 2 | 978 附近 `__handleGatewayRequestFromDc` | payload.method 不存在时，`JSON.stringify({ method: undefined })` 字段会被省略，gateway 拒绝/路由空 method | 入口校验 typeof method === 'string'，不合则返回 INVALID_REQUEST |
-| 3 | 963-968 撞号处理 | 撞 reqId 时只删旧 entry，不通知旧发起方；旧响应会变广播被其他 connId 看到（潜在信息泄漏） | 撞号时也向旧 connId 发 DUPLICATE_REQUEST_ID 错误帧 |
-
-**影响**：低概率边角，#2/#3 与 server 协议契约相关，需要确认是否真会触发。当前 listener 顶层 catch 已挡住主要爆炸路径，这三条收益小、改动有耦合，先记 TODO。
-
 ## file-manager handler 8 项预存问题（C 阶段维度 2）
 
 **发现日期**：2026-05-02
@@ -443,17 +430,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **Compact 后复盘（2026-05-02）**：origin/main 的 `waitForClaimAndSave` 完全没有 abort 检查，落盘动作直接发生——比当前 HEAD 的窗口更宽。本次仅是收紧、不是引入或放大，属预存问题。
 
-### claw-binding rollback `.catch(()=>{})` 不防同步 throw
-
-**发现**：E 阶段 round-2 复查（codex-rescue Low）。
-**锚点**：`plugins/openclaw/src/common/claw-binding.js:76`、`:161`、`:173` 三处 `await unbindServer(...).catch(() => {})`
-
-**问题**：`unbindServer`（axios 风格 async 函数）正常生产路径绝不会同步 throw，所以 `.catch()` 挂得正确。但若测试注入同步 throw 的 mock，`.catch()` 还没挂上 unhandled rejection 已逃逸。
-
-**影响**：仅测试注入同步 throw 的非常规 mock 时才触发；生产路径完全安全。
-
-**为什么 TODO**：避免过度设计——抽 try/catch helper 替换 3 处仅是为了"防御一种本不该发生的测试输入"。等真实场景需要时再统一改。
-
 ## G 阶段（2026-05-02）deep-review 发现且不修
 
 ### enroll cancel 不通知 server，mobile 后到 claim 留孤儿 claw（H, 本次引入）
@@ -497,7 +473,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 ### G 阶段其它 Low 条目
 
-- **activeEnrollAbort 提前 set**（`index.js` enroll handler，预存；2026-05-24 评估）：`enrollClaw()` 同步抛错时 controller 残留，下一次 enroll 进来时 `cancelActiveEnroll` 会对死 controller 多 log 一行 "cancelling active enroll"。**仅日志噪音、无功能影响**（abort 一个无人 listen 的 controller 是 no-op）。2026-05-24 走过两轮补丁（defer 赋值 / early-set + catch identity guard），均不可靠且都被 revert：defer 削弱"第二次 enroll 立即取消第一次"语义、catch guard 是补丁式拼接。**根本方案**应是让 `enrollClaw` 自身消费 signal 并透传到 fetch，但窄窗口救一点的收益小、上层 CLI/gateway/server 三端语义需先讨论清楚，遂不立刻做；等下次有动机时一并设计。
 - **测试覆盖小缺口**（本次引入）：`dfdc277` 的 stale-PC 测试只覆盖 `onselectedcandidatepairchange`，未覆盖 `onicecandidate` / `onicegatheringstatechange`；`webrtc-peer.js:173` `sendTo` 的 enqueue-throw catch 路径未测。
 
 **为什么 TODO**：均不影响发版正确性，待后续清理批次统一处理。
@@ -713,29 +688,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 - close-log 加 bypass 累计字段（与 dropped / residual 并列），让降级期间的 bypass 救援量级可观测
 
 ## 2026-05-08 FBQ/MemoryQueue 收口 deep-review 发现的预存问题
-
-### 同 connId 多次 ondatachannel 并发 setup race
-
-**发现日期**：2026-05-08（收口 deep-review 期间 codex-rescue 对 P1 装配段 nullify 修法做事前副作用评估时 surface）
-
-**锚点**：
-- `plugins/openclaw/src/webrtc/webrtc-peer.js:519` `__setupDataChannel` 是 fire-and-forget 调用（ondatachannel 回调 sync 段无法 await）
-- `plugins/openclaw/src/webrtc/webrtc-peer.js:694-708` 装配段开头检查 `session.rpcDcSender || session.rpcQueue` 决定是否清旧实例
-
-**问题**：sync nullify 修法把四字段先置 null 再 await 旧 destroy。**race**：第二次 ondatachannel 在 setup1 还没跑完时同 connId 又来一次（极罕见，但理论上 UI/Server 不正确实现可触发）：
-- setup1 进入装配段，sync nullify 四字段，await 旧 destroy（卡在 mutex 异步）
-- 同 tick setup2 触发 ondatachannel sync 段（rpcChannel 又被覆盖一次到第三个 dc）
-- setup2 进装配段看 `session.rpcDcSender || session.rpcQueue` —— 都已 null（被 setup1 清空）→ 跳过整段清旧分支
-- setup2 直接走"创建新 monitor + new Queue + queue.init() + ..."—— 与 setup1 await destroy 后将创建的新 queue 并存
-
-**影响**：两个 setup 的 consumeLoop 同时跑，两个 queue 同时 wire 到 session，最后赋值的覆盖前一个，前一个泄漏。生产中没有已知触发场景（UI 不会在第一次 rpc DC 还没关闭时就发起第二次）。
-
-**说明**：此 race 在 sync nullify 修法**之前**也已存在（旧代码下 setup2 也会进入 await destroy 但 destroy 内 fast-return，结果仍是双 setup 覆盖赋值）；nullify 不是引入根因，只是窗口更明显。codex 建议在 session 上挂 `rpcSetupInProgress` Promise，让后到 setup await 它——但这是引入新协调机制，违反"避免过度设计"原则。
-
-**修复方向**（如未来真触发再做）：
-- 在 session 上加 `rpcSetupInProgress` promise marker
-- setup 进入装配段前先 `await session.rpcSetupInProgress`，再开始自己的 teardown-then-build
-- setup 完成时清 marker
 
 ### `__handleFsError` 不 emit `onSpillEnd` → monitor `spillActive` 永远 true
 

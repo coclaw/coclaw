@@ -959,6 +959,10 @@ export class RealtimeBridge {
 								}
 							}
 							// 终态才清条目；accepted 类中间态保留等下一帧
+							// 故意不把 delete 移到 await sendTo 之后：上游对每个 reqId 只发一帧终态 res、不重发，
+							// await 期间不会有第二帧同 id；万一到来则 miss 路由走 (d) 兜底广播，而 claw 与 userId
+							// 一一绑定（server validateClawOwnership），只会达同一用户自有 tab、原发起 tab 已 resolve
+							// 会忽略——无跨用户泄漏、无副作用，故不防。
 							if (isFinalResMsg(payload)) {
 								this.__dcPendingRequests.delete(payload.id);
 								this.logger.debug?.(`[coclaw/rpc-res-route] remove reqId=${payload.id} reason=final-res`);
@@ -1161,6 +1165,9 @@ export class RealtimeBridge {
 		}
 		// 撞号检测：UUID 全唯一时极小概率，但旧 UI 跨 tab 或 UI bug 可能触发。
 		// 删旧条目让旧响应未来走广播兜底，不主动回错给旧发起方（可能已断）
+		// 故意不再回 DUPLICATE_REQUEST_ID 通知旧发起方：reqId 带 crypto.randomUUID 每连接前缀，跨连接
+		// 撞号密码学不可达；且 claw↔userId 一一绑定，所有 DC peer 同属一用户，撞号即便由未来 UI bug 引入
+		// 也只在该用户自有 tab 间串响应（可重试恢复）、无跨用户泄漏，故不加守卫。
 		const id = payload.id;
 		if (typeof id === 'string' && this.__dcPendingRequests.has(id)) {
 			this.logger.warn?.(`[coclaw] duplicate dc reqId, dropping previous mapping: id=${id}`);

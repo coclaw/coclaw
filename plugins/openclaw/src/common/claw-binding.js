@@ -73,6 +73,8 @@ export async function bindClaw({ code, serverUrl }, deps = {}) {
 	}
 	catch (writeErr) {
 		// 本地 writeCfg 失败 → 回滚 server 端，避免产生孤儿 claw（与 unbind 强制不容错的红线对称）
+		// unbindServer 是 async，调用恒返回 promise（连同步异常也转 rejected），.catch 必挂上；
+		// 故意不防"同步 throw"——只有非 async mock 才造得出、生产不可达，真发生也被外层 catch 兜住。
 		await unbindServer({ baseUrl, token: data.token }).catch(() => {
 			// 回滚失败不掩盖原因；用户根据原始 writeErr.message 排查，
 			// server 端孤儿可通过下次 enroll/bind 时 401/404/410 再清理
