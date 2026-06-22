@@ -1496,8 +1496,9 @@ test('list - 返回新数组，cache 内部数组保持磁盘原序不被原地�
 	}
 });
 
-// L6: 脏元素（null / 非对象）不崩、原样保留——恢复旧版透传容忍度（杀「filter 谓词去掉可选链」变异）
-test('list - 数组含 null/非对象脏元素时不抛、原样保留、合法项仍降序', async () => {
+// L6: 脏元素（null / 非对象）被丢弃、不崩、合法项仍降序（杀「filter 不剔除脏元素」变异）。
+// 丢弃而非保留：保留 null 会被 UI loadNextHistorySession 无守卫 candidate.sessionId 解引用打断历史加载。
+test('list - 数组含 null/非对象脏元素时不抛、脏元素被丢弃、合法项降序', async () => {
 	const tmpDir = await makeTmpDir();
 	try {
 		const { mgr, rootDir } = await setupManager(tmpDir);
@@ -1514,14 +1515,13 @@ test('list - 数组含 null/非对象脏元素时不抛、原样保留、合法�
 			],
 		}));
 		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
-		assert.equal(history.length, 5, '脏元素不被丢弃，length 不变');
-		// 脏元素落 heads 段、原序保留（head, null, 42）
-		assert.equal(history[0].sessionId, 'head');
-		assert.equal(history[1], null, 'null 元素原样保留在输出里');
-		assert.equal(history[2], 42, '非对象元素原样保留');
-		// 合法归档段仍按 archivedAt 降序
-		assert.equal(history[3].sessionId, 'new');
-		assert.equal(history[4].sessionId, 'old');
+		assert.equal(history.length, 3, '脏元素被丢弃，length 缩为合法元素数');
+		// 输出不含 null 也不含 42
+		assert.ok(!history.includes(null), 'null 脏元素应被丢弃');
+		assert.ok(!history.includes(42), '非对象脏元素应被丢弃');
+		// 合法元素：head 居首 + 归档段按 archivedAt 降序
+		assert.deepStrictEqual(ids(history), ['head', 'new', 'old']);
+		assert.equal(history[0].archivedAt, undefined, 'head 仍是未归档头');
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
