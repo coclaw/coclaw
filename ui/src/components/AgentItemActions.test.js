@@ -34,13 +34,26 @@ function createWrapper(props = {}) {
 				UIcon: UIconStub,
 			},
 			mocks: {
-				$t: (key) => key,
+				$t: (key, params) => (params && params.name ? `${key} · ${params.name}` : key),
 				$router: { push },
 			},
 		},
 	});
 	return { wrapper, push };
 }
+
+test('trigger aria-label carries row name when name prop is set (WCAG 2.4.6)', () => {
+	const { wrapper } = createWrapper({ name: 'helper@bot' });
+	const label = wrapper.find('.u-button-stub').attributes('aria-label');
+	// locale 安全：断言走带占位符的新 key 且行名出现在标签内，不硬编码完整英文
+	expect(label).toContain('common.moreActionsFor');
+	expect(label).toContain('helper@bot');
+});
+
+test('trigger aria-label falls back to generic label without name', () => {
+	const { wrapper } = createWrapper();
+	expect(wrapper.find('.u-button-stub').attributes('aria-label')).toBe('common.moreActions');
+});
 
 test('renders chat / files menu items', () => {
 	const { wrapper } = createWrapper();

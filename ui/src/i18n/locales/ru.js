@@ -12,6 +12,7 @@ export const ruMessages = {
 		retry: 'Повторить',
 		moreActions: 'Дополнительные действия',
 		back: 'Назад',
+		moreActionsFor: 'Дополнительно · {name}',
 		showPassword: 'Показать пароль',
 		hidePassword: 'Скрыть пароль',
 	},

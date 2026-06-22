@@ -97,7 +97,7 @@
 									size="md"
 									icon="i-lucide-ellipsis"
 									:loading="!!unbindingMap[claw.id]"
-									:aria-label="$t('common.moreActions')"
+									:aria-label="$t('common.moreActionsFor', { name: getClawName(claw) })"
 								/>
 								<template #content>
 									<div class="flex max-w-60 flex-col py-1">

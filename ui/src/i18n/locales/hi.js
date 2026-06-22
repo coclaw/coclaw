@@ -12,6 +12,7 @@ export const hiMessages = {
 		retry: 'पुनः प्रयास करें',
 		moreActions: 'अधिक क्रियाएँ',
 		back: 'वापस',
+		moreActionsFor: 'अधिक क्रियाएँ · {name}',
 		showPassword: 'पासवर्ड दिखाएं',
 		hidePassword: 'पासवर्ड छिपाएं',
 	},

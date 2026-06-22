@@ -12,6 +12,7 @@ export const viMessages = {
 		retry: 'Thử lại',
 		moreActions: 'Tác vụ khác',
 		back: 'Quay lại',
+		moreActionsFor: 'Tác vụ khác · {name}',
 		showPassword: 'Hiện mật khẩu',
 		hidePassword: 'Ẩn mật khẩu',
 	},

@@ -52,11 +52,12 @@ function createWrapper(props = {}) {
 				UIcon: UIconStub,
 			},
 			mocks: {
-				$t: (key) => {
+				$t: (key, params) => {
 					const map = {
 						'webAgents.removeFromRecent': '从列表移除',
 					};
-					return map[key] ?? key;
+					const base = map[key] ?? key;
+					return params && params.name ? `${base} · ${params.name}` : base;
 				},
 			},
 		},
@@ -66,6 +67,18 @@ function createWrapper(props = {}) {
 describe('WebAgentItemActions', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+	});
+
+	test('trigger 的 aria-label 带行级名字（有 name prop，WCAG 2.4.6）', () => {
+		const wrapper = createWrapper({ name: 'Kimi' });
+		const label = wrapper.findAll('button')[0].attributes('aria-label');
+		expect(label).toContain('common.moreActionsFor');
+		expect(label).toContain('Kimi');
+	});
+
+	test('无 name 时 aria-label 回退到通用标签', () => {
+		const wrapper = createWrapper();
+		expect(wrapper.findAll('button')[0].attributes('aria-label')).toBe('common.moreActions');
 	});
 
 	test('渲染 trigger 按钮 + 单一菜单项', () => {

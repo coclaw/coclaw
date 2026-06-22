@@ -12,6 +12,7 @@ export const ptMessages = {
 		retry: 'Tentar novamente',
 		moreActions: 'Mais ações',
 		back: 'Voltar',
+		moreActionsFor: 'Mais ações · {name}',
 		showPassword: 'Mostrar senha',
 		hidePassword: 'Ocultar senha',
 	},

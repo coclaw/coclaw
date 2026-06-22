@@ -12,6 +12,7 @@ export const esMessages = {
 		retry: 'Reintentar',
 		moreActions: 'Más acciones',
 		back: 'Atrás',
+		moreActionsFor: 'Más acciones · {name}',
 		showPassword: 'Mostrar contraseña',
 		hidePassword: 'Ocultar contraseña',
 	},

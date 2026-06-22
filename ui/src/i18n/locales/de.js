@@ -12,6 +12,7 @@ export const deMessages = {
 		retry: 'Wiederholen',
 		moreActions: 'Weitere Aktionen',
 		back: 'Zurück',
+		moreActionsFor: 'Weitere Aktionen · {name}',
 		showPassword: 'Passwort anzeigen',
 		hidePassword: 'Passwort verbergen',
 	},

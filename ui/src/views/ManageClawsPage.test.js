@@ -141,7 +141,11 @@ function createWrapper() {
 						'claws.model.notSet': 'No primary model',
 						'claws.model.noProvider': 'No model configured',
 					};
-					return map[key] ?? key;
+					if (map[key] !== undefined) return map[key];
+					// 镜像 *ItemActions.test.js 的 $t mock：带 name 占位符的 key（如 common.moreActionsFor）
+					// 把行名拼进文案，否则裸 key 会让 aria-label 的行名断言空过（vacuous）
+					if (params && params.name) return `${key} · ${params.name}`;
+					return key;
 				},
 				$router: { push: vi.fn() },
 			},
@@ -1120,6 +1124,21 @@ describe('模型设置入口（三点菜单）', () => {
 		await flushPromises();
 
 		expect(wrapper.find('[data-testid="claw-menu-1"]').exists()).toBe(true);
+	});
+
+	test('三点菜单触发按钮 aria-label 带 claw 行名（WCAG 2.4.6：屏幕阅读器可区分是哪台 claw 的菜单）', async () => {
+		mockBots = [{ id: '1', name: 'Bot1', online: true }];
+		mockGetDashboard.mockReturnValue(dashWithModelConfig({ fetched: true, hasAny: true, primary: 'groq/llama', effective: true }));
+		const wrapper = createWrapper();
+		await flushPromises();
+
+		const trigger = wrapper.find('[data-testid="claw-menu-1"]');
+		expect(trigger.exists()).toBe(true);
+		const label = trigger.attributes('aria-label');
+		// locale 安全：断言走带占位符的新 key 且行名出现在标签内，不硬编码完整英文
+		// 若 L100 退回静态 $t('common.moreActions')，label 不再含行名 → 此断言失败
+		expect(label).toContain('common.moreActionsFor');
+		expect(label).toContain('Bot1');
 	});
 
 	test('菜单「管理模型」在线可点、点击 → 导航到 /claws/:id/models', async () => {

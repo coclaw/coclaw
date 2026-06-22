@@ -12,6 +12,7 @@ export const zhCNMessages = {
 		retry: '重试',
 		moreActions: '更多操作',
 		back: '返回',
+		moreActionsFor: '更多操作 · {name}',
 		showPassword: '显示密码',
 		hidePassword: '隐藏密码',
 	},

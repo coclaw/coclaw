@@ -693,21 +693,6 @@ X4 触及面比 X1 广，需要重新评估：
 
 先讨论方案 A 是否可推进，再决定是否要兜底。
 
-2. **MainList 行内 "更多操作" 按钮 aria-label 缺行级上下文（WCAG 2.4.6）**
-   - 现状：`AgentItemActions.vue:11`、`TopicItemActions.vue:11`、`WebAgentItemActions.vue:12` 三处 trigger 按钮都用静态 `:aria-label="$t('common.moreActions')"`。列表里 N 行 agent / topic / web agent，读屏用户依次 Tab 到这些按钮听到的全是同一句"更多操作"，无法分辨当前焦点落在哪一行
-   - 预存：45f1fa1 只把硬编码 "More actions" 做了 i18n 化，未引入也未改善这个无障碍短板
-   - 修法方向（已细化方案）：
-     - 三个子组件各加一个可选 `name` prop（`type: String, default: ''`，向后兼容）
-     - aria-label 改为 `name ? $t('common.moreActionsFor', { name }) : $t('common.moreActions')`（有 name 走带占位符的新 key，无 name fallback 到旧 key）
-     - 父组件 `MainList.vue` 三处调用点各传一个 name：
-       - Agent 行：inline 三元 ``item.clawName ? `${item.agentName}@${item.clawName}` : item.agentName``（沿用模板 line 122-129 显示规则，单/多 claw 行为一致）
-       - Web Agent 行：`item.name`
-       - Topic 行：`item.label`（注意不能复用现有 `title` prop——后者是"重命名对话框默认值"语义，可空，不等于显示名）
-     - i18n：12 语言文件统一新增 `common.moreActionsFor`（如 zh-CN: `"更多操作 · {name}"`、en: `"More actions · {name}"`），旧 `common.moreActions` 保留作 fallback
-     - 测试：3 组件各加 aria-label 断言（有 name / 无 name 两路）
-   - 风险：低。改动机械、向后兼容、新增测试纯加法；唯一铺得宽的是 12 语言文件同步（项目硬约束的常规成本）
-   - 暂缓理由：本次不动；后续如有专项 i18n 或无障碍批改时一并实施
-
 ## ProgressRing 暗主题与 Android 真机肉眼验证（顺延，需手工）
 
 **发现日期**：2026-05-23
@@ -738,12 +723,7 @@ X4 触及面比 X1 广，需要重新评估：
 **发现日期**：2026-05-24
 **关联背景**：ui 工作区 22 个未 push commit 第二轮 read-only deep-review（5 维度 codex-rescue + opus subagent 补 Dim 4）的业务代码 finding。本会话只处理测试加固，业务代码改动留待后续，先沉淀避免遗忘。
 
-1. **ManageClawsPage rename 笔形按钮缺 aria-label**
-   - 现状：`ManageClawsPage.vue` 笔形（编辑名称）按钮无文本 label，读屏用户听到的是空按钮 / 通用 fallback；按钮在 030df46 引入但本批未触
-   - 修法：给按钮加 `:aria-label="$t('claws.renameAction', { name })"`（带行级上下文），同步 12 语种新增 i18n key
-   - 优先级：低；属预存可访问性缺陷
-
-2. **ManageClawsPage status dot 仅色相区分（色盲风险）**
+1. **ManageClawsPage status dot 仅色相区分（色盲风险）**
    - 现状：在线 / 离线 / 错误态用绿/灰/红色 dot 区分，未叠加形状或文字辅助；色盲用户（尤其红绿色盲）难分辨
    - 修法：给 dot 旁加文字状态标签，或在 dot 内叠加图标（如 ✓ / – / ! 形状区分）
    - 优先级：低；预存 a11y 缺陷，影响色盲用户

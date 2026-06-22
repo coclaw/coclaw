@@ -12,6 +12,7 @@ export const jaMessages = {
 		retry: '再試行',
 		moreActions: 'その他の操作',
 		back: '戻る',
+		moreActionsFor: 'その他の操作 · {name}',
 		showPassword: 'パスワードを表示',
 		hidePassword: 'パスワードを非表示',
 	},

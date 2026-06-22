@@ -78,7 +78,7 @@ function createWrapper(props = {}) {
 				UIcon: UIconStub,
 			},
 			mocks: {
-				$t: (key) => {
+				$t: (key, params) => {
 					const map = {
 						'topic.rename': '重命名',
 						'topic.delete': '删除',
@@ -90,7 +90,8 @@ function createWrapper(props = {}) {
 						'common.cancel': '取消',
 						'common.confirm': '确认',
 					};
-					return map[key] ?? key;
+					const base = map[key] ?? key;
+					return params && params.name ? `${base} · ${params.name}` : base;
 				},
 			},
 		},
@@ -106,6 +107,19 @@ test('renders menu trigger button', () => {
 	const wrapper = createWrapper();
 	const button = wrapper.find('button');
 	expect(button.exists()).toBe(true);
+});
+
+test('trigger aria-label carries row name when name prop is set (WCAG 2.4.6)', () => {
+	const wrapper = createWrapper({ name: 'My Topic' });
+	const label = wrapper.findAll('button')[0].attributes('aria-label');
+	// locale 安全：走带占位符的新 key 且行名出现在标签内，不硬编码完整英文
+	expect(label).toContain('common.moreActionsFor');
+	expect(label).toContain('My Topic');
+});
+
+test('trigger aria-label falls back to generic label without name', () => {
+	const wrapper = createWrapper({ name: '' });
+	expect(wrapper.findAll('button')[0].attributes('aria-label')).toBe('common.moreActions');
 });
 
 test('menu shows rename and delete options', () => {

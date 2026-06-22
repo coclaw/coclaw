@@ -12,6 +12,7 @@ export const enMessages = {
 		retry: 'Retry',
 		moreActions: 'More actions',
 		back: 'Back',
+		moreActionsFor: 'More actions · {name}',
 		showPassword: 'Show password',
 		hidePassword: 'Hide password',
 	},

@@ -12,6 +12,7 @@ export const zhTWMessages = {
 		retry: '重試',
 		moreActions: '更多操作',
 		back: '返回',
+		moreActionsFor: '更多操作 · {name}',
 		showPassword: '顯示密碼',
 		hidePassword: '隱藏密碼',
 	},

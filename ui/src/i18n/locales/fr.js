@@ -12,6 +12,7 @@ export const frMessages = {
 		retry: 'Réessayer',
 		moreActions: 'Plus d\'actions',
 		back: 'Retour',
+		moreActionsFor: 'Plus d\'actions · {name}',
 		showPassword: 'Afficher le mot de passe',
 		hidePassword: 'Masquer le mot de passe',
 	},

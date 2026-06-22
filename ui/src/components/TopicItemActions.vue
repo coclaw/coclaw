@@ -8,7 +8,7 @@
 				icon="i-lucide-ellipsis"
 				class="cc-icon-btn"
 				:class="menuOpen ? 'opacity-100' : ''"
-				:aria-label="$t('common.moreActions')"
+				:aria-label="name ? $t('common.moreActionsFor', { name }) : $t('common.moreActions')"
 			/>
 			<template #content>
 				<div class="flex max-w-60 flex-col py-1">
@@ -76,6 +76,7 @@ export default {
 		topicId: { type: String, required: true },
 		clawId: { type: String, required: true },
 		title: { type: String, default: '' },
+		name: { type: String, default: '' },
 	},
 	emits: ['deleted'],
 	setup() {

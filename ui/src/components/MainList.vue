@@ -132,6 +132,7 @@
 						class="agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
 						:claw-id="item.clawId"
 						:agent-id="item.agentId"
+						:name="item.clawName ? item.agentName + '@' + item.clawName : item.agentName"
 					/>
 				</template>
 				<template v-else>
@@ -160,6 +161,7 @@
 						class="web-agent-actions shrink-0 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
 						:web-agent-id="item.webId"
 						:instance="instance"
+						:name="item.name"
 					/>
 				</template>
 			</div>
@@ -199,6 +201,7 @@
 					:topic-id="item.id"
 					:claw-id="item.clawId"
 					:title="item.rawTitle"
+					:name="item.label"
 					@deleted="onTopicDeleted"
 				/>
 			</div>

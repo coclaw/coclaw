@@ -9,7 +9,7 @@
 				icon="i-lucide-ellipsis"
 				class="cc-icon-btn"
 				:class="menuOpen ? 'opacity-100' : ''"
-				:aria-label="$t('common.moreActions')"
+				:aria-label="name ? $t('common.moreActionsFor', { name }) : $t('common.moreActions')"
 			/>
 			<template #content>
 				<div class="flex max-w-60 flex-col py-1">
@@ -39,6 +39,7 @@ export default {
 		 * 详见 MainList.vue 同名 prop 注释。
 		 */
 		instance: { type: String, default: 'main' },
+		name: { type: String, default: '' },
 	},
 	data() {
 		return {

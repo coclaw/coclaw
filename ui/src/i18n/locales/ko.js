@@ -12,6 +12,7 @@ export const koMessages = {
 		retry: '다시 시도',
 		moreActions: '추가 작업',
 		back: '뒤로',
+		moreActionsFor: '추가 작업 · {name}',
 		showPassword: '비밀번호 표시',
 		hidePassword: '비밀번호 숨기기',
 	},
