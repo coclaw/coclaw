@@ -205,9 +205,11 @@ html.cc-electron-custom :is(.cc-app-content, .cc-scrollbar-thin, .hljs-code-cont
 html.cc-electron-custom .cc-scrollbar-gutter {
 	scrollbar-gutter: stable;
 }
-/* 顶部浮层避让（toast teleport 到 body、仍是 html 后代，故能命中；+1rem 保留 Nuxt UI 默认 top-4 的 16px 视觉间距） */
+/* 顶部浮层避让（toast teleport 到 body、仍是 html 后代，故能命中；+1rem 保留 Nuxt UI 默认 top-4 的 16px 视觉间距）。
+ * safe-area-inset-top 不在此叠加——它已由 viewport 的 mt-[safe-area] 跨端承载（web/Capacitor 仅靠该 margin），
+ * 这里再加会双计（notch Mac 全屏 inset>0 时上移 2× safe-area）。 */
 html.cc-electron-custom .cc-toaster-viewport {
-	top: calc(var(--cc-titlebar-h) + 1rem + var(--safe-area-inset-top, 0px));
+	top: calc(var(--cc-titlebar-h) + 1rem);
 }
 /*
  * 弹窗避让标题栏（marker `cc-modal-content`，由 modal-theme.js 注入所有 UModal content）：
