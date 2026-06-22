@@ -790,11 +790,11 @@ describe('WebRtcConnection — DC probe', () => {
 		rtc.close();
 	});
 
-	test('无 DC → 返回 false', () => {
+	test('无 DC → 返回 false', async () => {
 		const clawConn = createMockBotConn();
 		const rtc = new WebRtcConnection('bot1', clawConn, { PeerConnection: MockRTCPeerConnection });
 		// 未 connect，无 DC
-		expect(rtc.probe(100)).resolves.toBe(false);
+		expect(await rtc.probe(100)).toBe(false);
 	});
 
 	test('DC send 抛异常 → 返回 false', async () => {
