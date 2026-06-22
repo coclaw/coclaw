@@ -46,7 +46,7 @@
 **来源**：同上发布前 review（renderer + 主进程维度）
 
 1. **窄于 md(768px) 时移动 header 钻到色带下**：~~`MobilePageHeader`（`sticky top-0 z-10`）在自定义模式下任何宽度都渲染；内容滚动后 sticky header 升到 top:0，落在 z-60 色带与拖动区之下，返回键不可点~~——**已由 2026-06-11 滚动容器化顺带修复**：滚动收进 `.cc-app-content` 后 sticky 锚到容器顶=标题栏下缘，header 不再钻色带。
-2. **toaster 顶距重复叠加 safe-area**：`main.css` `.cc-toaster-viewport` 用 `top: calc(--cc-titlebar-h + 1rem + safe-area-inset-top)`，而 viewport 已带 `mt-[safe-area-inset-top]`（`vite.config.js`）。桌面端 safe-area=0 故无害，仅冗余、属死代码。
+2. **toaster 顶距重复叠加 safe-area**：~~`main.css` `.cc-toaster-viewport` 用 `top: calc(--cc-titlebar-h + 1rem + safe-area-inset-top)`，而 viewport 已带 `mt-[safe-area-inset-top]`（`vite.config.js`）。~~——**已由本批 `63a14035` 修复**：`top` 去掉 safe-area 叠加，由 viewport 的 `mt-[safe-area]` 单独承载（带刘海 Mac 全屏 inset>0 时原会 2× 计，并非"恒 0 无害"）。
 3. **主题 matchMedia 监听未注销**：`theme-mode.js` 的 `auto` 跟随系统监听只有模块级 `initialized` 守重复注册；Vite HMR 模块替换会重置 `initialized` 而留下旧监听。仅 dev-HMR 受影响，生产 boot-once 干净。
 4. **页面 zoom（Cmd+/-）下色带与系统按钮区纵向错位**（2026-06-10 红绿灯居中修复时发现，预存）：应用菜单开着 `zoomIn`/`zoomOut`，而 mac `trafficLightPosition` 按 point 固定、Windows WCO `height:38` 按 DIP 固定，38px CSS 色带却随 zoom 缩放——zoom≠100% 时按钮相对色带偏移（mac 偏上，Windows 按钮区矮于色带）。显示器 DPI/Retina 缩放**无此问题**（CSS px 与原生坐标同系等比缩放）。修法方向：监听 zoom 变化按 zoomFactor 重算 `setWindowButtonPosition` / `setTitleBarOverlay({height})`，或收掉 zoom 菜单角色。用户主动 zoom 才触发、纯观感，暂不修。
 （浅色主题启动闪一下深色背景 `backgroundColor:'#202122'` 属已知接受取舍，`window-chrome.js` 已注明，不另登记。原第 4 条"Mac 红绿灯未竖直居中"已由 `trafficLightPosition` 垂直居中修复。）

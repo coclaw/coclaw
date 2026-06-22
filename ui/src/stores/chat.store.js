@@ -1206,8 +1206,8 @@ export function createChatStore(storeKey, opts = {}) {
 						const reject = this.__slashCommandReject;
 						this.__cleanupSlashCommand(conn);
 						this.__removeLocalMessages();
-						// summary/error 恒为 string（object 形态仅帧级、已在 claw-connection reject），String 兜底的
-						// object 分支不可达，故意不升级 JSON.stringify
+						// 这些字段在 payload 里要么是 string 要么缺省——object 形态的 error 仅帧级 errorShape、
+						// 已在 claw-connection reject，故 String 兜底的 object 分支不可达，故意不升级 JSON.stringify
 						const rawMsg = result?.summary ?? result?.error ?? result?.errorMessage;
 						const errMsg = (typeof rawMsg === 'string' && rawMsg)
 							? rawMsg

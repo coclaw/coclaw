@@ -399,10 +399,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const isFailed = status === 'error' && !run.cancelled;
 			const isTimeout = status === 'timeout' && !run.cancelled;
 			if (isFailed || isTimeout) {
-				// String 兜底是廉价保险：上游 payload 的 summary/error 恒为 string（formatForLog 签名即 :string、
-				// 其余走 String(err)）；object 形态的 error 仅存在于帧级 errorShape，已在 claw-connection 转成
-				// Error reject，故此处 object 分支不可达；故意不升级成 JSON.stringify（那是对不可达分支的纯观感增强），
-				// 但保留 String 兜底防御。
+				// String 兜底是廉价保险：上游终态 payload 的 summary 恒为 string（formatForLog 签名即 :string、
+				// 其余 String(err) 也写进 summary），且 payload 无独立 error 字段——object 形态的 error 只在帧级
+				// errorShape、已在 claw-connection 转 Error reject。故 raw 恒为 string|undefined，object 分支不可达；
+				// 故意不升级成 JSON.stringify（对不可达分支的纯观感增强），但保留 String 兜底防御。
 				const raw = rpcResult?.summary ?? rpcResult?.error;
 				const errMsg = (typeof raw === 'string' && raw)
 					? raw
