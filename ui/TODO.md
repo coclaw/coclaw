@@ -127,10 +127,12 @@
 
 来源：unbind 弹窗卡住 / 本地僵尸卡片修复的深度 review（codex-rescue + opus subagent 各一）。两条预存问题，与本次修改无直接因果，本次未恶化也未修复。
 
-1. **server `/api/v1/claws/unbind-by-user` 404 假阳性会强制本地清在线 claw**
-   - 现状：UI 修复后，server 返 404 时主动调 `clawsStore.removeClawById(clawId)` 把本地全清（含 RTC 断连、retry/probe state、topics/dashboard cache、connections）。这依赖 server 端 404 真的表示"该用户无此 claw"。如果运维误触 / DB 短暂不一致 / 鉴权切换等场景下 server 错误返了 404，用户实际还绑着的 claw 会被本地强清，需要用户重新绑才能恢复。
-   - 修复方向：server 侧确保 `unbind-by-user` 的 404 路径有清晰幂等性边界——只有"该用户当前确实无此 claw"才返 404；任何"暂时查不到"用 5xx 或 503。或 UI 侧加重试 + 降级（先 GET claws 二次确认才本地清）——但代价高，当前 trade-off 用户已确认接受。
-   - 触发概率极低，但属已知风险，记录追踪。
+1. **server `/api/v1/claws/unbind-by-user` 误 404 会本地清在线 claw（瞬态、自愈、无需重绑）**
+   - 现状：server 返 404 时 UI 主动调 `clawsStore.removeClawById(clawId)` 清本地（RTC 断连、retry/probe state、topics/dashboard/sessions 等 RPC 缓存与实时流）。依赖 404 真表示"该用户无此 claw"。
+   - 误 404 当前不可达（已核）：404 仅来自 `claw-binding.svc.js` 属主校验且在删库之前早返回 → 误 404 不删 DB 绑定；`findClawById` 是裸 Prisma 主键直读、单库强一致无副本/缓存窗口；畸形入参落 400 而非 404。
+   - 即便误触发也无持久损失、**无需重绑**（原"需重新绑才能恢复"系误述）：绑定记录在 DB 完好，下次 `claw.snapshot` 自动补回该 claw 含 RTC 重建；topics 权威副本在 plugin 侧持久 JSON、草稿在独立 draft.store，均不受影响。最坏仅"卡片暂时消失 + 在跑 run 实时流中断"。
+   - 唯一缺口（codex 核出）：健康 SSE 流上 server 30s 心跳会持续重置 UI 的 65s 重连定时器 → 唯一的定时器自动重连不触发。纯持续前台 + 网络稳定的 web 会话上，被清 claw 会一直缺到切前台 / 网络抖动 / **手动刷新页面** 才补回（刷新属手动恢复）。
+   - 修复方向：server 侧保证 404 幂等性边界（只有"确实无此 claw"才 404，"暂时查不到"用 5xx/503）；或 UI 给 SSE 加周期性强制 resnapshot / 让 `loadData` 重新拉列表，消除手动刷新窗口。当前 trade-off 用户已确认接受。
 
 2. **ManageClawsPage 组件 unmount 后 await 仍跑、写已销毁 reactive state**
    - 现状：`onConfirmRemove` 异步路径里 `await unbindClawByUser` / `await loadData` 跑到一半组件被卸载（用户跳页 / 登出），post-finally 的 `delete this.unbindingMap[clawId]` / `dashboardStore.clearDashboard` / `loadData` 仍会跑，写已销毁实例的 reactive state（如 `this.loading`）。
