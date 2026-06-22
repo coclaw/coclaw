@@ -114,17 +114,6 @@
 
 **修复方向**：达到上限时拒绝新 offer 回 `rtc:offer-rejected reason=max_sessions`，或加 LRU 强制淘汰。
 
-## Lazy init race：close handler 撞 `__webrtcPeerReady` pending
-
-**发现日期**：2026-05-08（codex-rescue review 时识别）
-**关联**：`realtime-bridge.js` close handler 4001/4003 分支与 `__initWebrtcPeer`
-
-**问题**：4001/4003 destructive close 用 `if (this.webrtcPeer)` 判空跳过 closeAll；若此时 `__webrtcPeerReady` 仍 pending（lazy init 进行中），close handler 不会清理；稍后 init 完成把 webrtcPeer/fileHandler 赋上去，绕过清理留下无主实例。
-
-**影响**：仅 4001/4003 路径（plugin 失资格 + 不重连），形成 leak 直到 plugin 重启或 stop()；不会影响新 sock 的服务（4001/4003 后无重连）。本次解耦方案未放大此 race。
-
-**修复方向**：在 4001/4003 入口先 `await this.__webrtcPeerReady?.catch(()=>{})`，再走清理；或引入 generation token，pending init 在完成时检查 token 是否仍有效。
-
 ## DC onerror 不触发清理 → consumeLoop 可能永挂
 
 **发现日期**：2026-05-02
@@ -419,16 +408,14 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **为什么 TODO**：触发面极窄（ws send 在 OPEN 状态抛错少见）；改动需要谨慎覆盖握手三态机。先放一放，等真实环境观察到该路径触发再修。
 
-### agentId 非字符串静默 fallback 'main'（多个 RPC handler）
+### sessions.listAll 的 agentId 归一化是「半用」的（normalize 后未传给真正 listAll）
 
-**发现**：E3 codex-rescue。
-**锚点**：`plugins/openclaw/index.js:323/393/516/541`、`plugins/openclaw/src/file-manager/handler.js:197`
+**发现日期**：2026-06-22（agentId 归一化清理时 review 顺带发现）
+**关联**：`plugins/openclaw/index.js` `nativeui.sessions.listAll` handler / `src/session-manager/manager.js` `listAll`
 
-**问题**：所有用 `params?.agentId?.trim?.() || 'main'` 的 handler 在 `agentId` 是数字 / 对象等非字符串值时静默 fallback `main`，可能让操作落到错误 workspace。
+**问题**：`listAll` handler 入口已用 `normalizeAgentId(params)` 校验并归一化 agentId，但该归一化值只喂给 best-effort `ensureAgentSession`；真正的 `manager.listAll(params)` 内部自行再读 `params.agentId` 决定 workspace 目标，不复用归一化值。非字符串已被入口 `normalizeAgentId` 提前抛掉（校验有效），但 trim / 空串→main 这类归一化对真正的 list 目标不生效，存在潜在分叉（如 `'  main  '` 带空白的 agentId）。
 
-**修复方向**：抽 `normalizeAgentId(params)` helper：`undefined` / 空字符串才默认 `main`，其他非字符串值抛 `INVALID_INPUT`。
-
-**为什么 TODO**：跨多 handler 一致性变更；需规划好统一 helper 后再批量替换并补测试。
+**为什么暂不修**：触发面极窄（官方 UI 传干净字符串）、无实际危害；根治应让 `manager.listAll` 接受归一化后的 agentId（或自身归一化），属小重构，留 follow-up。
 
 ### transport-adapter / message-model timestamp 静默回填
 
@@ -1112,32 +1099,6 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **修复方向**：mutex 改为基于文件路径的全进程级注册表（同路径不同实例共享同一把锁）；或所有 read-modify-write 改用 `flock` 文件锁；或 reload 时显式 await 所有 in-flight RPC handler。
 
 **严重性**：低——用户主动改 `plugins.*` 配置且改的时机正好撞上 enroll / RPC handler in-flight 才会复现，极偶发。不阻塞当前发布。
-
-## chat-history follow-up F6：chat-history.json 顺序异常实测（2/3 位时间戳倒置）
-
-**发现日期**：2026-05-18（任务 #9 opus subagent 实测发现）
-**关联**：`plugins/openclaw/src/chat-history-manager/manager.js#recordSessionTransition` splice 路径
-
-**观测事实**：本机当前 chat-history.json（main agent，`agent:main:main` 键）顺序为：
-
-| 位置 | sessionId | archivedAt | 时间戳含义 |
-|---|---|---|---|
-| 0 | `8af05d02-…` | 缺（未归档头） | 当前 current（subagent 实测 reset 后） |
-| 1 | `21c7bd13-…` | 1777798486453 | 较旧 |
-| 2 | `4abc9fc0-…` | 1779039659992 | 较新（被 reset 翻下去的） |
-
-`manager.js` 文档约定"已归档项按归档时间新→旧"，但 1/2 位顺序倒置。
-
-**怀疑**：历史 hook 路径里 `resumedFrom` 与文件 head 不一致时，splice(1, 0, ...) 把"补充归档目标"插在 0 之后但未把已归档的 head 重新排序——导致后续若 head 翻归档+插入新当前，原 head 的归档项被推到 1 位，更早的归档项留在 2 位。
-
-**为什么不立即修**：F6 是观测项，不是阻塞 bug。当前 UI（`chat.store.js:1445-1447` 用 `archivedAt != null` 过滤未归档头）只关心"未归档头 vs 已归档"，不消费已归档项之间的顺序。但 list RPC 契约若被未来 UI 用作"按时间排序的历史索引"，会展示乱序。
-
-**修复方向**：
-- 路径一：splice 时按 `archivedAt` 二分插入，保证已归档段单调
-- 路径二：list RPC 返回前对 archived 段按 `archivedAt desc` 排序（输入侧不严格，输出侧规整）
-- 路径三：把 archived 段排序当作 manager 的 invariant，每次 persist 前重排（影响最小）
-
-**严重性**：低——纯顺序问题，不丢数据；用户也明确表示本机是测试环境，可在 F6 修法决策后回归测试。
 
 ## getById 大文件一次性 readFile + 全量解析的内存/CPU 压力
 
