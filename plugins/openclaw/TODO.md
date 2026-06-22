@@ -1,6 +1,6 @@
 # Plugin TODO
 
-## 覆盖率门禁偶发假性失败：c8 多进程聚合 race（已加 `--test-isolation=none` 止血，**非治本**）
+## 覆盖率门禁偶发假性失败：c8 多进程聚合 race（**未修，止血已回退**）
 
 **发现日期**：2026-06-22
 **关联**：`package.json` 的 `test` 脚本（`c8` 包 `node --test`）；被误判的文件随机（最近一次 `src/file-manager/handler.js:719-724`）
@@ -9,13 +9,13 @@
 
 **根因（2026-06-22 实测钉死）**：`node --test` 默认 `--test-isolation=process`，每个测试文件 fork 一个子进程并行（当前约 86 文件→约 86 份覆盖文件）；c8 给各子进程设 `NODE_V8_COVERAGE=tmpdir`，等顶层 `bash` 退出后 `readdir` 该目录、逐份 `JSON.parse` 合并；某份此刻还没刷盘可读时，c8 的 `try/catch` **静默整份丢弃**（`c8/lib/report.js`，仅 `NODE_DEBUG=c8` 可见）→ 只被那份覆盖到的行凭空变未覆盖。`pnpm verify`（check 紧接 test）的 IO 压力 + macOS APFS 放大可见性窗口。
 
-**当前止血**：`node --test` 加 `--test-isolation=none`（所有测试文件挤进同一进程→只产 1 份覆盖文件→消除跨进程合并→race 物理消失）。实测：计数一致（2172/2171/0/1）、零新失败、覆盖率稳定达标（Stmts/Funcs/Lines 100，Branch 96.59→96.53 仍 ≥95 阈值）、耗时 8s→13s。
+**止血已回退（2026-06-23）**：曾加 `--test-isolation=none` 让所有测试文件挤进同一进程（只产 1 份覆盖文件、race 物理消失），但该 flag 是 **Node 23+ 才有的**——本项目 CI 与生产都跑 **Node 22**（`node:22-slim`、OpenClaw 运行时 ≥22.19），`node:22-slim` 实测 `node: bad option: --test-isolation=none`。该改动只在本地 Node 24 验过、从未过 CI，随一批未推 commit 带上 main 后首次 push 即把 CI 打红。已回退回不带 flag 的原命令（Node 22 兼容、此前多次发版跑绿）。**race 偶发假失败因此回归**——遇到按"判据"识别、二跑即过；真治本走下面的对症方案。
 
-**⚠️ 这是止血、不是治本**（2026-06-22 业界证据调研定性）：`--test-isolation=none` 关掉的是"进程隔离"——一个**与覆盖率无关**的测试正确性担保（防测试间全局状态/模块单例串味）。社区无人背书用它稳覆盖率，在解法清单里排最后；它靠副作用恰好掩盖了 race。当下 2172 用例无串味，但**未来新增依赖独占进程的测试可能在单进程下被污染**。
+**⚠️ 当时也并非治本**（2026-06-22 业界证据调研定性）：`--test-isolation=none` 关掉的是"进程隔离"——一个**与覆盖率无关**的测试正确性担保（防测试间全局状态/模块单例串味），靠副作用恰好掩盖 race；社区无人背书用它稳覆盖率。故即便它能在 Node 22 跑，也不该长期依赖。
 
 **对症方案（待办，暂不做）**：切 node 内置覆盖——`node --test --experimental-test-coverage` + `node:test/reporters` 的 `lcov`，**退回默认 `process` 隔离**。优势：少一层进程（顶层 runner 亲自收割全部子进程后才读盘，刷盘窗口趋近消失）+ **不静默丢**（c8 那个 per-file `try/catch` 静默跳过它没有），直接拔掉静默丢弃失败模式。暂不做的原因：① node 24/26 仍 `--experimental-`、未转 stable，API 可能变；② **branch 覆盖口径比 istanbul 弱**（解构默认值等分支 V8 粒度不够、可能误报 100%，上游 `nodejs/node#57435` 仍 open），咱们门禁卡 `branches 95`，迁移可能让 branch 虚高、门禁失效，须重校基线、校不过就回退；③ 本问题严重度低（只门禁偶发误报、二跑就过、不伤生产代码与测试正确性），性价比暂不值大动。
 
-**纠正认知（防重蹈）**：commit `7b5ac8d`（2026-05-24）号称"collapse 成单进程修 race"是**错的**——裸 `node --test <多个 glob>` 不带 isolation flag 时默认仍是 `process` 隔离并行，race 从没消除、故复发。别再把任何"裸 `node --test` 多 glob"当单进程，也别把本次 `--test-isolation=none` 当治本。历史脉络：并行（原始）→ `cb77b574` WSL2 逐文件串行 → `7b5ac8d` 改回并行（误以为修了）→ 2026-06-22 加 `--test-isolation=none` 止血。
+**纠正认知（防重蹈）**：commit `7b5ac8d`（2026-05-24）号称"collapse 成单进程修 race"是**错的**——裸 `node --test <多个 glob>` 不带 isolation flag 时默认仍是 `process` 隔离并行，race 从没消除、故复发。别再把任何"裸 `node --test` 多 glob"当单进程，也别把本次 `--test-isolation=none` 当治本。历史脉络：并行（原始）→ `cb77b574` WSL2 逐文件串行 → `7b5ac8d` 改回并行（误以为修了）→ 2026-06-22 加 `--test-isolation=none` 止血 → 2026-06-23 回退（Node 22 不认该 flag、CI 红）。
 
 **诊断辅助**：复现时挂 `NODE_DEBUG=c8` 能把被丢的覆盖文件打出来坐实。
 
