@@ -7,6 +7,10 @@
  * 2. OPENCLAW_STATE_DIR 环境变量（worker 子进程，由 spawner 传入）
  * 3. ~/.openclaw（兜底默认值）
  *
+ * 注：第 3 档（homedir）实际够不着——gateway 进程内 runtime 必在（full mode 才启
+ * scheduler）、worker 进程 spawner 总会传 OPENCLAW_STATE_DIR，故不存在“worker 写错盘”。
+ * 曾被对抗式 review 当 bug 捞出，核实为不可达防御，记此免再捞。
+ *
  * 锁策略：state 文件的 read-modify-write 统一走 stateMutex；纯读不加锁。
  * 锁只能护住同进程内并发（gateway 与 worker 跨进程仍各写各的），但 worker /
  * scheduler 各自内部是串行流，进程内互斥已足够。

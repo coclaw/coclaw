@@ -1107,10 +1107,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 稳定 mismatch 态（有新版、L1 放行、但升级始终未完成且未 skip）下 `upgrade.available` 每周期重发一条 remoteLog——预存模式。修向：并入既有 `__gateSignalOnce` (原因, toVersion) 去重。（同模式的 `upgrade.skipped` 已随 2026-06-11 升级链修复并入去重销账。）
 
-### runtime 缺失时 spawner 传给 worker 的 env state-dir 兜底理论错位
-
-`updater-spawn.js` 经 `state.js` `resolveStateDir()`（runtime → env → `~/.openclaw` 三级）取值传 `OPENCLAW_STATE_DIR` 给 worker；runtime 不可用时兜底值可能与上游真实 state-dir（profile / CLI flag 派生）分叉，worker 的 state 文件写错位置。理论场景——scheduler 正常运行时 runtime 必在。
-
 ## 2026-06-11 auto-upgrade 升级链修复 follow-up（不阻塞发版）
 
 **发现日期**：2026-06-11（升级链缺陷修复方案评审收尾时商定；缺陷修复本体随同期 commit 落地、不在此留账，实测细节见 git 历史与 `tmp/upgrade-verify-20260611/` 留档）
