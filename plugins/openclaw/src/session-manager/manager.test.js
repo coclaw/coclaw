@@ -101,6 +101,14 @@ test('listAll/get should normalize bad inputs and missing dirs', async () => {
 	assert.equal(get1.cursor, '9999', 'cursor 在合法范围内透传，并字符串化');
 	assert.equal(get1.nextCursor, null);
 	assert.deepStrictEqual(get1.messages, []);
+
+	// 全量字段核对 4：正常 cursor=0 时解析后内容正向核对（防解析路径退化成静默返回空页）
+	const get2 = await manager.get({ agentId: 'a1', sessionId: 's1', limit: 10, cursor: 0 });
+	assert.equal(get2.total, 1);
+	assert.equal(get2.messages.length, 1, '正常 cursor 应真正解析出该行');
+	assert.deepStrictEqual(get2.messages[0], { x: 1 }, '解析后内容应与 transcript 行一致');
+	assert.equal(get2.cursor, '0');
+	assert.equal(get2.nextCursor, null);
 });
 
 test('listAll should include indexed sessions without transcript files', async () => {

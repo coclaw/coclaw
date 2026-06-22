@@ -276,6 +276,10 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 
 		// 确保父目录存在
 		await _mkdir(nodePath.dirname(resolved), { recursive: true });
+		// 并发同名创建走 last-writer-wins（后写胜出）：故意用普通 writeFile，不用排他创建 'wx'。
+		// 两个并发 create 都建空文件、都成功，结果一个空文件、无数据丢失（对"创建"语义更友好）。
+		// 已评估并弃用 'wx'+ALREADY_EXISTS（2026-06-22 用户裁定）。极窄残留：create 与同名上传
+		// 并发时 lstat→write 窗口内可能截断刚到的上传内容，同用户秒级交错才触发，低危、接受。
 		await (deps.writeFile ?? fsp.writeFile)(resolved, '');
 		return {};
 	}

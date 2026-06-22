@@ -15,6 +15,17 @@
 #
 # 重打条件：OpenClaw 升级后 bundled dist 重生成，需要重跑本脚本。
 # 上游修复后（issue #80697 合并并 release）应停止使用本补丁。
+#
+# ── 已知限制 / 健壮性待补强（原 TODO 迁入，2026-06-22）──────────────────────
+# 本脚本是手动 workaround，sentinel 提供基本幂等、有 --revert/--check 入口；#80697
+# 上游新版仅缓解未根除，故保留备查。下列为已知毛刺，非阻塞，日后真要加固再做：
+#   - patch 写入用裸 writeFileSync，无 tmp+rename 原子写：半截写崩溃会留破损 dist
+#     → 改 writeFileSync(tmp) + rename(tmp, target)
+#   - 用法注释提到 OPENCLAW_DIST 环境变量，但 find_openclaw_dist 实际未读它 → 补读取
+#   - rollback 仅在 node --check 语法校验失败时触发；"语法对但写错位置"的语义错误会直接生效
+#     → 加 trap EXIT 兜底 rollback
+#   - 无 OpenClaw 版本号 guard：升级后哨兵残留可能让 patch 静默跳过 → 哨兵串嵌版本号，失配即 re-patch
+#   - 无 --dry-run / --verify 模式
 
 set -euo pipefail
 

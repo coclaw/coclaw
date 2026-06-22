@@ -72,19 +72,6 @@
 
 ---
 
-## hasInlineKey 缺 empty-id 守卫（与 hasLedgerCred 不对称）
-
-**发现日期**：2026-05-30（listUsable oauth gate 修复的 deep-review 时识别）
-**关联**：`plugins/openclaw/src/model-default/resolve.js` `hasInlineKey`
-
-**问题**：`hasInlineKey` 计算 `targetId = resolveProviderIdForAuth(provider)` 后不校验 `targetId` 是否为空就与内联节点 id 的归一结果比较。若查询 provider 是 whitespace-only（如 `'  '`，长度>0 故过了 `computeProviderUsableByName` 的 `length===0` 守卫）归一到 `''`，且 `cfg.models.providers` 里恰有个同样归一到 `''` 的节点 id，会误命中返回 true。本次给新写的 `hasLedgerCred` 加了 `if (!targetId) return false`（对齐 `computeConfiguredProviders`），但 `hasInlineKey` 是预存代码未一并改，形成不对称。
-
-**为什么本次未一并修**：极度 contrived——要 openclaw.json 里出现 whitespace-only 的 provider 节点 key（正常永不发生）；且按"review 仅修本次引入"原则不动预存代码。影响面仅 `model.list` 的 providerUsable 显示信号（set 写门会 trim 拒绝、listUsable 枚举的 catalog provider 永非空白）。
-
-**修复方向**：给 `hasInlineKey` 在 `const targetId = ...` 后加同款 `if (!targetId) return false;`，与 `hasLedgerCred` / `computeConfiguredProviders` 一致；补一条 whitespace-only 节点 id 的回归测试。
-
----
-
 ## RPC handler 错误响应 `err.message` 透传可能泄露内部细节
 
 **发现日期**：2026-05-15（D1 model-default deep-review 时识别）
@@ -988,21 +975,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 **严重度**：Low（manager 层断言已经把核心行为锁住；handler 是薄包装，回归概率低）
 
-## session-manager 既有测试断言不严（预存）
-
-**发现日期**：2026-05-11（session-manager streaming jsonl deep-review）
-**关联**：`src/session-manager/manager.test.js` 的 `getById - limit 限制返回最后 N 条`、`listAll/get should normalize bad inputs and missing dirs`
-
-**问题**：
-- `getById limit` 用例只断言首尾两条 message 的 content，中间消息错位/重复无法被发现。
-- `normalize bad inputs` 用例靠超大 cursor 让 get 直接返回空页，旧 split 路径与新流式路径都会 pass，并未真正验证解析结果。
-
-**为什么本次未一并修**：本次 streaming 用例已加完整顺序断言保护新路径；这两个既有用例的弱断言是 streaming 之前就有的，属预存。
-
-**修复方向**：把首尾断言扩展为遍历所有 message 内容核对；`normalize` 用例增加一条"正常 cursor + 解析后内容正向核对"的断言。
-
-**严重度**：Low（manager 层主流程已被新增的"跨 yield 阈值"用例 + 既有 CRLF 用例覆盖，弱断言用例属补强项）
-
 ## await 让出窗口下 connId 复用 → response 投递到新 session（预存架构问题）
 
 **发现日期**：2026-05-11（session-manager streaming jsonl deep-review，codex-rescue R2 抓出）
@@ -1015,26 +987,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 **修复方向**：路由表存请求时同时记录"session 代数"标识；`sendTo` 前对比当前映射的 session 是否仍是发请求时那个，不匹配直接丢弃。或在 connId 对应 session 关闭/替换时主动清空该 connId 下所有 pending reqId。
 
 **严重度**：Low（窗口窄、复用条件苛刻；但要根治需要架构层改动，纳入 async-orphan 治本方案讨论）
-
-## OpenClaw issue #80697 本地补丁需在上游修复后撤销
-
-**发现日期**：2026-05-14（用户笔记本 chat 打开慢的排查）
-**关联脚本**：`scripts/patch-openclaw-issue-80697.sh`
-**上游 issue**：[#80697](https://github.com/openclaw/openclaw/issues/80697)
-**研究文档**：`docs/openclaw-research/plugin-manifest-cache-mismatch.md`
-
-**问题**：OpenClaw `getStatusSummary.buildSessionRows` 调用链不传 `workspaceDir`，进程级 plugin manifest snapshot cache 永久 mismatch，导致 `status / sessions.list / models.list / topics.list` 在 session 数多时每次卡 ~10-20s。CoClaw UI 启动 / RTC 重连时 `dashboard.store` 并发拉这几个 RPC，主线程被吃满，用户体验"点 chat 半天没数据"。
-
-**已落地的本地 workaround**：`scripts/patch-openclaw-issue-80697.sh` 在 bundled dist `manifest-model-id-normalization-*.js` 的 `loadManifestModelIdNormalizationPolicies` 加 60s 进程级 fallback cache。实测笔记本 (758 sessions) `status --json` 从 20.5s → ~7s。
-
-**OpenClaw 升级时的动作**：bundled dist 重生成、文件 hash 后缀会变（vite/rollup 输出）。脚本会自动定位新文件、检测幂等。但**升级版本如果改动了源码结构**（如重命名 `loadManifestModelIdNormalizationPolicies` 或调整 anchor 行），脚本会以 `[FAIL] 没找到 anchor` 退出，需要重对照研究文档调整 anchor 模板。
-
-**撤销条件**：上游已修——#80697 转为 #78461 跟踪，PR #82814 已合入 main（2026-05-17）并随 `v2026.5.20`（2026-05-21）起释出。升 OpenClaw 至 ≥ `2026.5.20` 即可彻底退役本补丁：npm 全局升级会全量覆盖 dist，patch 和 `.bak` 一并消失，无需也无法跑 `--revert`。撤销后清理：删脚本 `scripts/patch-openclaw-issue-80697.sh` + 研究文档 `docs/openclaw-research/plugin-manifest-cache-mismatch.md` + 本条 TODO。仅当不升级 OpenClaw 但想撤回手工 patch 时，才用 `./scripts/patch-openclaw-issue-80697.sh --revert` 从 `.bak` 恢复。
-
-**对终端用户的部署形态（尚未实施）**：当前脚本只在 CoClaw 仓库内，不会随 npm plugin 安装自动应用。若上游迟迟不修，可考虑：(a) 在 plugin `postinstall` 钩子里跑该脚本（但触碰用户 OpenClaw 安装目录有侵入性、需明确告知）；(b) 写到 `docs/troubleshooting.md` 让遇到同类问题的用户自助；(c) 维持现状，仅作为维护者排查手段。当前选择 (c)。
-
-
----
 
 ## helper chunk 边界检测在 pretty-print JSON 多 chunk 到达时可能误判
 
@@ -1064,28 +1016,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 ---
 
-## patch 脚本健壮性补强
-
-**发现日期**：2026-05-16（Phase D deep-review codex-rescue D 实例识别）
-**关联**：`plugins/openclaw/scripts/patch-openclaw-issue-80697.sh`
-
-**问题**：
-- 脚本第 185 行用裸 `writeFileSync`，无 rename 原子写——半截写崩溃会留破损文件
-- 第 109 行 usage 提到支持 `OPENCLAW_DIST` 环境变量，但 `find_openclaw_dist` 实际未读该 env
-- rollback 仅在第 193 行的语法检查失败后触发；语义错误（patch 写错位置但 node 仍能 parse）会直接生效
-- 无 OpenClaw 版本号 guard——升级后哨兵残留可能让 patch 静默跳过
-- 无 `--dry-run` / `--verify` 模式
-
-**严重性**：低——脚本是手动运行的 workaround；sentinel 提供基本幂等；有 `--revert` 入口。可在用户实际遇到升级失配时再补强。
-
-**修复方向**：
-- atomic write：`writeFileSync(tmp); rename(tmp, target)`
-- 实现 `OPENCLAW_DIST` 读取
-- 加 trap EXIT 兜底 rollback
-- 哨兵字符串嵌入 OpenClaw 版本号，升级后哨兵失配触发 re-patch
-
----
-
 ## provider-auth 测试组合不足
 
 **发现日期**：2026-05-16（Phase D deep-review codex-rescue B 实例识别）
@@ -1099,39 +1029,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 **严重性**：低——单点行为已覆盖；组合场景由 SDK 自身测试兜底。
 
 **修复方向**：补三个 fixture，用真实 SDK helper（非 mock）跑一遍。
-
----
-
-## model-default 测试 fixture 不真实
-
-**发现日期**：2026-05-16（Phase D deep-review codex-rescue A 实例识别）
-**关联**：`plugins/openclaw/src/model-default/persist.test.js:186-218` + `handlers.test.js:163-187 / :274-295`
-
-**问题**：
-- `persist.test.js:186-218` 清除单 agent override 的 fixture 初态不含 global default，与生产实态不符
-- handlers.test.js set 和 list 各自独立调用，无 set → list 端到端串联
-
-**严重性**：低——单点行为已覆盖；端到端有 cli-e2e-verify.sh 兜底。
-
-**修复方向**：补两个 fixture：① 带 global default + 单 agent override 的初态，执行清除 agent override，验证 default 保留；② set handler → list handler 串行调用，验证状态同步。
-
----
-
-## chat-history：孤儿 session 恢复时同 sid 可能在 list 中重复出现
-
-**发现日期**：2026-05-17（chat-history 双源归档第二轮 deep-review R1 识别，pre-existing）
-**关联**：`plugins/openclaw/src/chat-history-manager/manager.js:163-172`
-
-**问题**：当 list 的 head 已归档（即没有未归档活跃头），传入的 `currentSessionId` 又恰好等于 list 中某条已归档项的 sessionId（孤儿 session resume 场景），`recordSessionTransition` 会走到一般路径 → 直接 `unshift({ sessionId: currentSessionId })` → 同一 sessionId 在 list 中出现两次（首位未归档 + 中间已归档）。
-
-**严重性**：低——本轮双源归档化重构没有引入也没有加剧；仅在用户主动恢复一个早已归档的 session 后再次落到该路径才出现；list 是用户可见的 chat-history 索引，重复项会让 UI 出现一个孤儿 + 一个当前同 sid 的视觉重复，但功能不挂。
-
-**修复方向**：
-- `recordSessionTransition` 一般路径加 dedupe：unshift 前若 list 中已存在 `currentSessionId === currentSessionId` 的项，先 splice 掉那条已归档项再 unshift（保留时间戳？放弃归档时间？需想清楚）
-- 或在 list RPC 出口对重复 sessionId 做 dedupe（保留 head，丢弃后面的）
-- 配合一条 manager.test.js 的 T14 测试钉死该路径
-
-**更新**（2026-05-17 第三轮 review M1 修复）：`recordSessionTransition` 已加入 stale 事件防御——`currentSessionId` 已存在于 list 任意位置时直接丢弃事件（manager.js 一般路径前的新增分支 + 测试 T14）。该防御覆盖了上述重复场景：resume 旧 session 本身不触发 `session_start` hook / `sessions.changed`（OpenClaw 上游 resume 不创建新 sid），但万一上游演进出 resume 也 emit 的路径，stale 防御会让 history 保持不变（而不是错位翻 head 制造重复）。本条 TODO 可视为已消解，保留以备追溯。
 
 ---
 
@@ -1368,17 +1265,6 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——协议宽松；无安全影响。
 
-## `coclaw.files.create` lstat→writeFile 非原子，并发同名创建都"成功"
-
-**发现日期**：2026-05-25（read-only deep-review 2026-05-24 综合报告 #6）
-**关联**：`plugins/openclaw/src/file-manager/handler.js:265-280` 的 `coclaw.files.create` 路径
-
-**问题**：check-then-act 两步分离——先 `_lstat` 抛 ENOENT 才走 `writeFile('')`。两个并发 create 同名文件的请求都能通过 lstat（都 ENOENT），随后两次 `writeFile` 都返回成功，第二次悄悄覆盖第一次的内容；两个调用方都拿到 `{}` 成功响应、UI 看到"两次 create 都成功"，但实际只剩一个空文件。
-
-**修复方向**：用 `fsp.open(resolved, 'wx')` 走 exclusive create，第二个调用会拿到 `EEXIST` → 翻译为 `ALREADY_EXISTS` 错误码。
-
-**严重性**：低——业务影响小；正常 UI 不会真的并发 create 同一路径。
-
 ## providerAuth.list 返回原始 provider 拼写，未做上游别名归一化，UI 端 === 比对误判别名服务商
 
 **发现日期**：2026-05-26（model-config 发版前 deep-review 识别）
@@ -1489,10 +1375,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 ### V4：spec 钉死 no-op 端到端复现待专项验证
 
 "显式版本 install 记 exact spec → `plugins update` 跟随 spec 永远 no-op"的端到端复现未专项跑过（T7 仅间接观察到 update 未推进）。修复（裸包名 update 解钉）依赖的单匹配解钉行为另有发版 gate（V3）覆盖；本条是历史钉死形态的复现验证，补实验坐实即可销账。
-
-### isNewerVersion 对带 build metadata 的版本在 patch 位比出 NaN
-
-`updater-check.js` 的 `isNewerVersion` 比较 `1.0.1+b` vs `1.0.0` 时 patch 位 Number() 出 NaN、误判"不更新"（2026-06-11 修复实施中发现的预存问题；本次修复明令不动比较器故未修）。实际影响极小：npm latest 带 build metadata 罕见，且 minor/major 位差异不受影响。修向：剥 `+` 后缀后再逐位比较。
 
 ### V5：跨平台形态摸底（systemd system service 探针、macOS/Windows restart 行为）
 
