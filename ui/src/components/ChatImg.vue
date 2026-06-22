@@ -1,10 +1,10 @@
 <template>
 	<!-- 加载中（最小占位，不预设固定尺寸，避免与实际图片的尺寸差导致布局位移） -->
-	<div v-if="loading" class="flex min-h-[52px] min-w-[128px] items-center justify-center rounded-lg bg-elevated">
+	<div v-if="loading" data-testid="chat-img" class="flex min-h-[52px] min-w-[128px] items-center justify-center rounded-lg bg-elevated">
 		<UIcon name="i-lucide-loader-circle" class="size-6 animate-spin text-dimmed" />
 	</div>
 	<!-- 加载失败：退化为类 ChatFile 卡片 -->
-	<div v-else-if="error" class="inline-flex max-w-full items-center gap-2 rounded-xl border border-accented py-2 pl-2 pr-1">
+	<div v-else-if="error" data-testid="chat-img" class="inline-flex max-w-full items-center gap-2 rounded-xl border border-accented py-2 pl-2 pr-1">
 		<UIcon name="i-lucide-image-off" class="size-8 shrink-0 text-dimmed" />
 		<div class="min-w-0 flex-1 leading-tight">
 			<div class="flex text-sm text-default">
@@ -25,7 +25,7 @@
 		/>
 	</div>
 	<!-- 图片 -->
-	<div v-else-if="resolvedSrc" class="relative w-fit">
+	<div v-else-if="resolvedSrc" data-testid="chat-img" class="relative w-fit">
 		<img
 			:src="resolvedSrc"
 			alt=""

@@ -1,5 +1,5 @@
 <template>
-	<div v-if="!item._pending || isUser" data-testid="chat-msg-item" class="px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
+	<div v-if="!item._pending || isUser" data-testid="chat-msg-item" :data-role="isUser ? 'user' : 'assistant'" class="px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
 		<!-- user 消息 -->
 		<template v-if="isUser">
 			<div class="flex flex-col items-end">

@@ -181,6 +181,11 @@ test('ChatInput：桌面端 Shift+Enter 不发送 @chat', async ({ page }) => {
 	// 按 Shift+Enter（应插入换行，不发送）
 	await textarea.press('Shift+Enter');
 	await textarea.pressSequentially('line2', { delay: 20 });
+	// WSL2 高负载偶发掉尾字符：读回，缺失则补打 line2（纯尾部追加，无 \n，不会误触发 Enter 发送）
+	for (let i = 0; i < 3; i++) {
+		if ((await textarea.inputValue()).endsWith('line2')) break;
+		await textarea.pressSequentially('line2', { delay: 20 });
+	}
 
 	// 发送按钮应仍然可见（未发送）
 	await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 3000 });

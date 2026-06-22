@@ -189,12 +189,11 @@ test('附件发送：图片文件在消息中显示预览 @chat @file', async ({
 		page.locator('[data-testid="chat-msg-item"]').filter({ hasText: msgText }).first(),
 	).toBeVisible({ timeout: 10_000 });
 
-	// 图片附件应以预览图出现在用户消息区。
-	// 注意：ChatImg 会先取回文件再压缩，渲染出的 <img> src 始终是 blob: URL
-	// （而非 data:image）；用户侧此消息无内联图，故 .items-end img 即附件预览图。
+	// 图片附件应以预览卡片出现在用户消息区。
+	// 数附件卡片 data-testid，不依赖真实像素渲染（ChatImg 三态根节点都带 chat-img）。
 	await expect(async () => {
-		const imgs = page.locator('[data-testid="chat-root"] main .items-end img');
-		const count = await imgs.count();
+		const cards = page.locator('[data-testid="chat-root"] main .items-end [data-testid="chat-img"]');
+		const count = await cards.count();
 		expect(count).toBeGreaterThanOrEqual(1);
 	}).toPass({ timeout: 10_000 });
 

@@ -70,9 +70,6 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		}, chatInfo.clawId);
 		console.log(`Claw ${chatInfo.clawId} transportMode: ${mode}`);
 
-		// 记录消息数
-		const msgCountBefore = await page.locator('[data-testid="chat-root"] main [data-testid="chat-msg-item"]').count();
-
 		// 发送消息
 		const testMsg = `rtc e2e ${Date.now()}`;
 		await typeText(page.getByTestId('chat-textarea'), testMsg);
@@ -89,10 +86,8 @@ test.describe('WebRTC DataChannel 传输选择（Phase 2） @rtc', () => {
 		// 发送后输入框清空、canSend=false，btn-send 不渲染，须等 btn-stop 消失
 		await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
 
-		// 验证消息数增加
-		const msgCountAfter = await page.locator('[data-testid="chat-root"] main [data-testid="chat-msg-item"]').count();
-		expect(msgCountAfter).toBeGreaterThan(msgCountBefore);
-
-		console.log(`消息收发成功 (transport: ${mode}, msgs: ${msgCountBefore}→${msgCountAfter})`);
+		// 助手回复存在性：run 完成后最新一条消息应是助手侧（比"数量增量"健壮，不受 50 条渲染上限影响）
+		const lastItem = page.locator('[data-testid="chat-root"] main [data-testid="chat-msg-item"]').last();
+		await expect(lastItem).toHaveAttribute('data-role', 'assistant');
 	});
 });
