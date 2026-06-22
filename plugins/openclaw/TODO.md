@@ -408,15 +408,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **为什么 TODO**：触发面极窄（ws send 在 OPEN 状态抛错少见）；改动需要谨慎覆盖握手三态机。先放一放，等真实环境观察到该路径触发再修。
 
-### sessions.listAll 的 agentId 归一化是「半用」的（normalize 后未传给真正 listAll）
-
-**发现日期**：2026-06-22（agentId 归一化清理时 review 顺带发现）
-**关联**：`plugins/openclaw/index.js` `nativeui.sessions.listAll` handler / `src/session-manager/manager.js` `listAll`
-
-**问题**：`listAll` handler 入口已用 `normalizeAgentId(params)` 校验并归一化 agentId，但该归一化值只喂给 best-effort `ensureAgentSession`；真正的 `manager.listAll(params)` 内部自行再读 `params.agentId` 决定 workspace 目标，不复用归一化值。非字符串已被入口 `normalizeAgentId` 提前抛掉（校验有效），但 trim / 空串→main 这类归一化对真正的 list 目标不生效，存在潜在分叉（如 `'  main  '` 带空白的 agentId）。
-
-**为什么暂不修**：触发面极窄（官方 UI 传干净字符串）、无实际危害；根治应让 `manager.listAll` 接受归一化后的 agentId（或自身归一化），属小重构，留 follow-up。
-
 ### transport-adapter / message-model timestamp 静默回填
 
 **发现**：E5 codex-rescue。
