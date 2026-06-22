@@ -469,6 +469,9 @@ const plugin = {
 				// best-effort ensure：失败不阻断 listAll
 				try { await ensureAgentSession(agentId); }
 				catch {}
+				// listAll 刻意传原始 params：manager.listAll 内部用与 normalizeAgentId 同一套 trim 逻辑
+				// 自行解析 agentId（见 manager.js）——非字符串已被上面 normalizeAgentId 先抛 INVALID_INPUT
+				// 拦死，带空白的两侧都归一到同一 agent、返回同一列表，无分叉，故此处不另归一、无需守卫。
 				respond(true, await manager.listAll(params ?? {}));
 			}
 			catch (err) {
