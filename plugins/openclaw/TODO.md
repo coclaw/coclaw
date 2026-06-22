@@ -138,9 +138,6 @@
 
 ## 测试增强建议（阶段 1 deep-review 期间记录）
 
-- ICE restart 期间 in-flight 消息送达端到端验证（webrtc-peer.test.js 新增 case）
-- close 汇总日志的完整字面断言（含 dropped/droppedBytes/residualChunks/residualBytes 数值）
-- bypassAdmission 集成测试增强：断言被丢的非白名单帧确实没到 dc.sent
 - realtime-bridge.test.js:4098 的 5x setTimeout(0) flush 改成更确定的同步等待方式
 
 ## oversize 与 queue-full 的 drop 分类翻面（行为微变，不修）
@@ -445,12 +442,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **为什么 TODO**：预存、穿透概率低、webrtcPeer 内部 guard 已兜底。
 
-### G 阶段其它 Low 条目
-
-- **测试覆盖小缺口**（本次引入）：`dfdc277` 的 stale-PC 测试只覆盖 `onselectedcandidatepairchange`，未覆盖 `onicecandidate` / `onicegatheringstatechange`；`webrtc-peer.js:173` `sendTo` 的 enqueue-throw catch 路径未测。
-
-**为什么 TODO**：均不影响发版正确性，待后续清理批次统一处理。
-
 ### atomic-write 系统断电场景的 fsync 加固（M，预存）
 
 **发现**：G 阶段 deep-review 维度 4（codex-rescue）。
@@ -538,11 +529,14 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**：auto-upgrade/state.js 加守卫——发现 runtime 对象存在但 .state.resolveStateDir 缺失时，与 claw-paths.js 行为对齐（抛错或委托给 clawStateDir）。
 
-### session-manager 散落 c8 ignore 多条可补测（PRE-EXISTING 噪音）
+### session-manager readFile TOCTOU 分支无法 test-only 覆盖（PRE-EXISTING 噪音，余 1 项）
 
-**锚点**：`plugins/openclaw/src/session-manager/manager.js` 行 55 / 133 / 138 / 170 / 176 / 183 / 189 / 193 / 250 / 339
+**发现日期**：2026-05-05（2026-06-23 收口）
+**关联**：`src/session-manager/manager.js` `readTranscriptText` 的 readFile race 块
 
-**问题**：多处裸 `c8 ignore next` 或简单 `?? fallback` 注释覆盖了可测的默认构造、malformed 内容、无效 index 条目、分页边界等分支。逐条补针对性测试可摘 ignore；与本次 claw-paths 改造无直接关系。
+2026-06-23 测试补强：原条目列的 default-construct / malformed / invalid-index / 分页 分支前轮已覆盖；本轮又补测并删除了 5 处 c8-ignore（safeReaddir / safeAccess 非 ENOENT 上抛、listAll 与 resolveTranscriptFile 的 readdir→stat race 双子分支、sort tiebreaker），均用悬空/自环软链构造确定性 ENOENT/ELOOP，无 prod 逻辑改动。
+
+**剩 1 项无法 test-only 覆盖**：`readTranscriptText` 的 readFile race 块——`if (err.code === 'ENOENT') return ''` 子分支需真 TOCTOU（文件在 resolveTranscriptFile 校验通过后、readFile 前消失），非 mock `fsp` 或改 prod 不可确定复现；兄弟 throw 分支仅 EACCES 可达，删块 ignore 会暴露未覆盖的 `return ''` 语句、打破 `--lines 100 / --statements 100` 门禁。故保留该处 c8-ignore。
 
 ### sendPeerTransport 签名回滚后无重发触发器（PRE-EXISTING）
 
@@ -631,14 +625,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 **问题**：当前实现是固定圈数 `setImmediate`，consumeLoop 或 setup 内部任何位置多一个 `await` 都可能让相关测试假通过或假失败。
 
 **修复方向**：改成轮询具体可观测条件（如 `until queue.memBytes === 0` / `until session.rpcDcSender.flushed === true`）或等待事件 Promise，而非固定 tick 数。
-
-### 部分 peer/session 测试缺 `t.after()` 清理（PRE-EXISTING）
-
-**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.test.js` 多处构造 `peer` / 注入 `setupRpcDcSession` 但只在主路径调 `peer.closeAll()`；异常分支里 `closeAll` 可能被跳过。
-
-**问题**：测试间可能泄漏 unref 定时器或 sender flush 回调；目前没有触发明显的 cross-test 干扰，但符合"测试本身可靠性"的隐患。
-
-**修复方向**：每个创建 peer 的 test 用 `t.after(async () => { await peer.closeAll(); })` 统一兜底，无论主路径分支如何均能关闭。
 
 ## 2026-05-07 FBQ 本机实测中发现的诊断盲点
 
@@ -811,19 +797,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 **严重度**：Should fix（hub 发布前清干净一波，避免噪音随包扩散）
 
-## sessions RPC handler 层缺独立测试（预存）
-
-**发现日期**：2026-05-11（session-manager streaming jsonl deep-review）
-**关联**：`src/index.js` 内 `coclaw.sessions.getById` / `nativeui.sessions.get` / `nativeui.sessions.listAll` 注册处
-
-**问题**：当前 manager 层（`src/session-manager/manager.js`）有完整单测，但 plugin 通过 `registerGatewayMethod` 暴露给 server / UI 的 RPC handler 入口只验证了"已注册"，没覆盖：成功路径返回结构、参数缺失走 `respondInvalid`、manager 抛错时走 `respondError` 的 wrapping 行为。
-
-**为什么本次未一并修**：与本次 streaming 改动无关；handler 层缺口在 manager 改造之前就存在，属预存测试缺口。
-
-**修复方向**：在 `src/index.test.js` 或独立 `src/session-rpc.test.js` 内通过 `registerGatewayMethod` spy 调用各 handler，三类路径各覆盖一条。
-
-**严重度**：Low（manager 层断言已经把核心行为锁住；handler 是薄包装，回归概率低）
-
 ## await 让出窗口下 connId 复用 → response 投递到新 session（预存架构问题）
 
 **发现日期**：2026-05-11（session-manager streaming jsonl deep-review，codex-rescue R2 抓出）
@@ -862,22 +835,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 - **不推荐**：移除早判、纯靠 `child.on('close')` 触发 `parseResult`——会让"永不优雅退出的子进程"等到总超时 10s 才返回结果，破坏 helper 当初引入 grace 期的设计意图
 
 **实施前提**：写测试时务必同时覆盖场景 C（nested 假闭合 + grace 内补全）与场景 E（完整 JSON + 后续 chunk 追加），防止再次单面修法。
-
----
-
-## provider-auth 测试组合不足
-
-**发现日期**：2026-05-16（Phase D deep-review codex-rescue B 实例识别）
-**关联**：`plugins/openclaw/src/provider-auth/handlers.test.js`
-
-**问题**：测试用例都是独立 stub，缺端到端连用场景：
-- set → list 状态轮转（验证 set 完真的能在 list 里看到）
-- remove → list 消失（验证 remove 完真的从 list 消失）
-- 同一 profileId 并发 set（验证 SDK 锁正确性）
-
-**严重性**：低——单点行为已覆盖；组合场景由 SDK 自身测试兜底。
-
-**修复方向**：补三个 fixture，用真实 SDK helper（非 mock）跑一遍。
 
 ---
 
@@ -1170,10 +1127,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 ### runtime 缺失时 spawner 传给 worker 的 env state-dir 兜底理论错位
 
 `updater-spawn.js` 经 `state.js` `resolveStateDir()`（runtime → env → `~/.openclaw` 三级）取值传 `OPENCLAW_STATE_DIR` 给 worker；runtime 不可用时兜底值可能与上游真实 state-dir（profile / CLI flag 派生）分叉，worker 的 state 文件写错位置。理论场景——scheduler 正常运行时 runtime 必在。
-
-### updater-spawn↔worker 的 argv flag 字面量契约无共享锚
-
-6 个 flag（`--pluginDir/--fromVersion/--toVersion/--baselineVersion/--pluginId/--pkgName`）在 `updater-spawn.js` 拼 args 与 `worker.js` parseArgs options 各写一份字面量，两侧测试各测各的——一侧改名另一侧测试不红（strict parseArgs 会让 worker 启动即报错，但只有线上能发现）。修向：共享常量模块或加一条跨侧契约测试。
 
 ## 2026-06-11 auto-upgrade 升级链修复 follow-up（不阻塞发版）
 

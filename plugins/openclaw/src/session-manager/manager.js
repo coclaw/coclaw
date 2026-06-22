@@ -32,7 +32,6 @@ async function safeReaddir(dir) {
 	try { return await fsp.readdir(dir); }
 	catch (err) {
 		if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
-		/* c8 ignore next 2 -- 非 ENOENT/ENOTDIR 的 fs 错误按原样上抛 */
 		throw err;
 	}
 }
@@ -45,7 +44,6 @@ async function safeAccess(filePath) {
 	try { await fsp.access(filePath); return true; }
 	catch (err) {
 		if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return false;
-		/* c8 ignore next 2 -- 非 ENOENT/ENOTDIR 的 fs 错误按原样上抛 */
 		throw err;
 	}
 }
@@ -150,12 +148,10 @@ export function createSessionManager(options = {}) {
 			const full = nodePath.join(dir, file);
 			let stat;
 			try { stat = await fsp.stat(full); }
-			/* c8 ignore start -- readdir→stat race window：文件被并发删除时跳过 */
 			catch (err) {
 				if (err.code === 'ENOENT') continue;
 				throw err;
 			}
-			/* c8 ignore stop */
 			const row = {
 				sessionId: parsed.sessionId,
 				sessionKey: sessionKeyById.get(parsed.sessionId) ?? null,
@@ -224,12 +220,10 @@ export function createSessionManager(options = {}) {
 			const full = nodePath.join(dir, name);
 			let stat;
 			try { stat = await fsp.stat(full); }
-			/* c8 ignore start -- readdir→stat race window */
 			catch (err) {
 				if (err.code === 'ENOENT') continue;
 				throw err;
 			}
-			/* c8 ignore stop */
 			candidates.push({
 				path: full,
 				archiveStamp,
@@ -240,7 +234,6 @@ export function createSessionManager(options = {}) {
 			if (a.archiveStamp !== b.archiveStamp) {
 				return b.archiveStamp.localeCompare(a.archiveStamp);
 			}
-			/* c8 ignore next -- 同 sessionId 同 archiveStamp 的归档实测 0 case */
 			return b.updatedAt - a.updatedAt;
 		});
 		if (candidates.length > 0) {

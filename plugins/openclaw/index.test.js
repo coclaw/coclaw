@@ -547,7 +547,7 @@ test('gateway methods respond and catch errors', async () => {
 // --- sessions RPC handlers 专属用例：成功 / 参数缺失 / manager 抛错 ---
 
 // 构造一个真实 sessions 目录 + handler 调用工具：返回 handlers Map 与 cleanup
-async function setupSessionsHandlers({ throwOnResolve = false } = {}) {
+async function setupSessionsHandlers({ throwOnResolve = false, codelessThrow = false } = {}) {
 	const tmpStateDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'sessions-rpc-'));
 	const sessionsDir = nodePath.join(tmpStateDir, 'agents', 'main', 'sessions');
 	await fs.mkdir(sessionsDir, { recursive: true });
@@ -563,7 +563,12 @@ async function setupSessionsHandlers({ throwOnResolve = false } = {}) {
 	);
 	const handlers = new Map();
 	const resolveStateDir = throwOnResolve
-		? () => { const e = new Error('resolveStateDir blew up'); e.code = 'TEST_BLEW_UP'; throw e; }
+		? () => {
+			const e = new Error('resolveStateDir blew up');
+			// codelessThrow 时刻意不设 code，验 respondError 的 `?? 'INTERNAL_ERROR'` 默认兜底分支
+			if (!codelessThrow) e.code = 'TEST_BLEW_UP';
+			throw e;
+		}
 		: () => tmpStateDir;
 	plugin.register(createMockApi(handlers, {
 		runtime: {
@@ -790,6 +795,62 @@ test('coclaw.sessions.getById - manager 抛错 → 错误码透传', async () =>
 		});
 		assert.equal(out.ok, false);
 		assert.equal(out.error?.code, 'TEST_BLEW_UP');
+		assert.match(String(out.error?.message), /blew up/);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+// 补强：上面三条 manager 抛错用例都用带 code 的错误（TEST_BLEW_UP），只验了透传；
+// 这三条用「不带 code 的错误」专门钉死 respondError 的 `?? 'INTERNAL_ERROR'` 默认兜底分支。
+test('nativeui.sessions.listAll - manager 抛无 code 错 → 默认 INTERNAL_ERROR', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers({ throwOnResolve: true, codelessThrow: true });
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.listAll')({
+			params: { agentId: 'main' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.payload, undefined);
+		assert.equal(out.error?.code, 'INTERNAL_ERROR');
+		assert.match(String(out.error?.message), /blew up/);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('nativeui.sessions.get - manager 抛无 code 错 → 默认 INTERNAL_ERROR', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers({ throwOnResolve: true, codelessThrow: true });
+	try {
+		let out = null;
+		await handlers.get('nativeui.sessions.get')({
+			params: { agentId: 'main', sessionId: 'sid-a' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.payload, undefined);
+		assert.equal(out.error?.code, 'INTERNAL_ERROR');
+		assert.match(String(out.error?.message), /blew up/);
+	}
+	finally {
+		await fs.rm(tmpStateDir, { recursive: true, force: true });
+	}
+});
+
+test('coclaw.sessions.getById - manager 抛无 code 错 → 默认 INTERNAL_ERROR', async () => {
+	const { handlers, tmpStateDir } = await setupSessionsHandlers({ throwOnResolve: true, codelessThrow: true });
+	try {
+		let out = null;
+		await handlers.get('coclaw.sessions.getById')({
+			params: { agentId: 'main', sessionId: 'sid-a' },
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		assert.equal(out.ok, false);
+		assert.equal(out.payload, undefined);
+		assert.equal(out.error?.code, 'INTERNAL_ERROR');
 		assert.match(String(out.error?.message), /blew up/);
 	}
 	finally {

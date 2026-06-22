@@ -1004,3 +1004,127 @@ test('listAllEntries: sessionKey 为空字符串的异常行被跳过', async ()
 	const entries = await manager.listAllEntries('main');
 	assert.deepEqual(entries, [{ sessionKey: 'agent:main:main', sessionId: 'sid-ok' }]);
 });
+
+// --- c8 ignore 削减：readdir→stat race window / fs 错误原样上抛 / sort tiebreaker ---
+// 用软链构造确定性的 fs 错误：悬空软链 stat/access → ENOENT；自环软链 stat/access/readdir → ELOOP
+
+function mkResolvers(root) {
+	return {
+		resolveSessionsDir: (id) => nodePath.join(root, id, 'sessions'),
+		resolveStorePath: (id) => nodePath.join(root, id, 'sessions', 'sessions.json'),
+		resolveTranscriptPath: (sid, id) => nodePath.join(root, id, 'sessions', `${sid}.jsonl`),
+		logger: { warn() {} },
+	};
+}
+
+test('listAll - readdir 列出但 stat 命中 ENOENT（并发删除/悬空软链）→ 跳过该 session', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-statrace-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 真实 transcript
+	await fs.writeFile(nodePath.join(sessionsDir, 'real.jsonl'), '{"x":1}\n', 'utf8');
+	// 悬空软链：readdir 会列出它，但 stat 跟随软链 → ENOENT，应被 continue 跳过
+	await fs.symlink(nodePath.join(sessionsDir, 'no-such-target'), nodePath.join(sessionsDir, 'gone.jsonl'));
+
+	const manager = createSessionManager(mkResolvers(root));
+	const res = await manager.listAll({});
+	// gone 被跳过，仅剩 real（若 continue 失效则 stat 为 undefined、读 stat.mtimeMs 崩溃）
+	assert.equal(res.total, 1, 'stat ENOENT 的悬空软链应被跳过');
+	assert.equal(res.items[0].sessionId, 'real');
+});
+
+test('listAll - stat 命中非 ENOENT 错误（ELOOP 自环软链）按原样上抛', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-statloop-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 自环软链：readdir 列出，stat 跟随 → ELOOP（非 ENOENT），应原样上抛
+	const loop = nodePath.join(sessionsDir, 'loop.jsonl');
+	await fs.symlink(loop, loop);
+
+	const manager = createSessionManager(mkResolvers(root));
+	await assert.rejects(manager.listAll({}), (err) => err.code === 'ELOOP');
+});
+
+test('resolveTranscriptFile - reset 文件 stat 命中 ENOENT（悬空软链）跳过后回退 deleted', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-rt-statrace-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// reset 为悬空软链且 archiveStamp 更新（若未被跳过会被选中或导致崩溃）
+	await fs.symlink(
+		nodePath.join(sessionsDir, 'no-such-target'),
+		nodePath.join(sessionsDir, 'rr.jsonl.reset.2026-06-01T00-00-00.000Z'),
+	);
+	// deleted 为真实文件、archiveStamp 较旧 → 唯一存活候选
+	await fs.writeFile(
+		nodePath.join(sessionsDir, 'rr.jsonl.deleted.2026-01-01T00-00-00.000Z'),
+		'{"type":"message","message":{"role":"user","content":"from deleted real"}}\n',
+		'utf8',
+	);
+
+	const manager = createSessionManager(mkResolvers(root));
+	const res = await manager.getById({ sessionId: 'rr' });
+	// 悬空 reset 被 continue 跳过 → 回退到真实 deleted
+	assert.equal(res.messages.length, 1);
+	assert.equal(res.messages[0].message.content, 'from deleted real');
+});
+
+test('resolveTranscriptFile - reset 文件 stat 命中非 ENOENT（ELOOP）按原样上抛', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-rt-statloop-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// 无 live 文件 → 进入 reset/deleted 扫描；自环软链 stat → ELOOP，应原样上抛
+	const loop = nodePath.join(sessionsDir, 'rl.jsonl.reset.2026-03-01T00-00-00.000Z');
+	await fs.symlink(loop, loop);
+
+	const manager = createSessionManager(mkResolvers(root));
+	await assert.rejects(manager.getById({ sessionId: 'rl' }), (err) => err.code === 'ELOOP');
+});
+
+test('safeReaddir - sessions 目录是 ELOOP 自环软链 → 错误原样上抛（非 ENOENT/ENOTDIR）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-readdirloop-'));
+	await fs.mkdir(nodePath.join(root, 'main'), { recursive: true });
+	// 把 sessions 目录做成自环软链 → readdir 跟随 → ELOOP
+	const loopDir = nodePath.join(root, 'main', 'sessions');
+	await fs.symlink(loopDir, loopDir);
+
+	const manager = createSessionManager({
+		resolveSessionsDir: () => loopDir,
+		// store 指向另一不存在路径，readIndex 走 readJsonSafe → {}，不干扰
+		resolveStorePath: () => nodePath.join(root, 'no-store.json'),
+		resolveTranscriptPath: (sid) => nodePath.join(loopDir, `${sid}.jsonl`),
+		logger: { warn() {} },
+	});
+	await assert.rejects(manager.listAll({}), (err) => err.code === 'ELOOP');
+});
+
+test('safeAccess - livePath 是 ELOOP 自环软链 → 错误原样上抛（非 ENOENT/ENOTDIR）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-accessloop-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// livePath 做成自环软链 → resolveTranscriptFile 内 safeAccess(livePath) → access ELOOP → 上抛
+	const loop = nodePath.join(sessionsDir, 'al.jsonl');
+	await fs.symlink(loop, loop);
+
+	const manager = createSessionManager(mkResolvers(root));
+	await assert.rejects(manager.getById({ sessionId: 'al' }), (err) => err.code === 'ELOOP');
+});
+
+test('resolveTranscriptFile - reset 与 deleted 同 archiveStamp 时按 mtime 取新（sort tiebreaker）', async () => {
+	const root = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'smgr-tiebreak-'));
+	const sessionsDir = nodePath.join(root, 'main', 'sessions');
+	await fs.mkdir(sessionsDir, { recursive: true });
+	// reset 与 deleted 的 archiveStamp 完全相同 → a.archiveStamp === b.archiveStamp → 落到 mtime tiebreaker
+	const STAMP = '2026-03-01T00-00-00.000Z';
+	const resetFile = nodePath.join(sessionsDir, `tb.jsonl.reset.${STAMP}`);
+	const deletedFile = nodePath.join(sessionsDir, `tb.jsonl.deleted.${STAMP}`);
+	await fs.writeFile(resetFile, '{"type":"message","message":{"role":"user","content":"reset-older"}}\n', 'utf8');
+	await fs.writeFile(deletedFile, '{"type":"message","message":{"role":"user","content":"deleted-newer"}}\n', 'utf8');
+	// reset mtime 旧、deleted mtime 新 → tiebreaker(b.updatedAt - a.updatedAt) 应选 deleted
+	await fs.utimes(resetFile, new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+	await fs.utimes(deletedFile, new Date('2026-06-01T00:00:00Z'), new Date('2026-06-01T00:00:00Z'));
+
+	const manager = createSessionManager(mkResolvers(root));
+	const res = await manager.getById({ sessionId: 'tb' });
+	assert.equal(res.messages.length, 1);
+	assert.equal(res.messages[0].message.content, 'deleted-newer', 'mtime 较新的归档应胜出');
+});
