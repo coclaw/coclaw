@@ -3483,3 +3483,79 @@ test('handleFileChannel GET: dc.onerror 在已关闭后幂等', async () => {
 		await fs.rm(dir, { recursive: true });
 	}
 });
+
+// --- agentId 非字符串归一化（normalizeAgentId 护栏） ---
+
+test('deleteFile: 非字符串 agentId → INVALID_INPUT，不解析 workspace、不删文件', async () => {
+	const dir = await makeTmpDir();
+	try {
+		await fs.writeFile(nodePath.join(dir, 'keep.txt'), 'data');
+		const wsCalls = [];
+		const handler = createFileHandler({
+			resolveWorkspace: async (id) => { wsCalls.push(id); return dir; },
+			logger: silentLogger(),
+		});
+		await assert.rejects(
+			() => handler.deleteFile({ agentId: 123, path: 'keep.txt' }),
+			(err) => err.code === 'INVALID_INPUT',
+		);
+		assert.equal(wsCalls.length, 0, 'agentId 校验失败应在 resolveWorkspace 之前，未以 main 解析 workspace');
+		// 文件未被删除
+		const stat = await fs.stat(nodePath.join(dir, 'keep.txt'));
+		assert.ok(stat.isFile(), '删除不应发生');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('listFiles: 非字符串 agentId（对象）→ INVALID_INPUT', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const wsCalls = [];
+		const handler = createFileHandler({
+			resolveWorkspace: async (id) => { wsCalls.push(id); return dir; },
+			logger: silentLogger(),
+		});
+		await assert.rejects(
+			() => handler.listFiles({ agentId: {}, path: '.' }),
+			(err) => err.code === 'INVALID_INPUT',
+		);
+		assert.equal(wsCalls.length, 0);
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('listFiles: 合法 agentId 原样传给 resolveWorkspace（不误伤）', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const wsCalls = [];
+		const handler = createFileHandler({
+			resolveWorkspace: async (id) => { wsCalls.push(id); return dir; },
+			logger: silentLogger(),
+		});
+		await handler.listFiles({ agentId: 'foo', path: '.' });
+		assert.deepStrictEqual(wsCalls, ['foo'], 'workspace 应以 foo 解析');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
+test('handleGet (DC): 非字符串 agentId → sendError INVALID_INPUT，不解析 workspace', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const wsCalls = [];
+		const handler = createFileHandler({
+			resolveWorkspace: async (id) => { wsCalls.push(id); return dir; },
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:get-badagent');
+		await handler.__handleGet(dc, { method: 'GET', path: 'x.txt', agentId: 42 }, 'c_badagent');
+		const errMsg = dc.__sent.map((s) => JSON.parse(s)).find((m) => m.ok === false);
+		assert.ok(errMsg, '应发出 error 帧');
+		assert.equal(errMsg.error.code, 'INVALID_INPUT');
+		assert.equal(wsCalls.length, 0, 'agentId 校验失败应在 resolveWorkspace 之前');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});

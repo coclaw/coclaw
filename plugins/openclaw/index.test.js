@@ -2279,3 +2279,38 @@ test('cron_changed: full 模式下 api.on 不存在时不抛 / 不注册（典�
 	// gatewayMethod / service 等 full 模式副作用应正常发生
 	assert.ok(calls.gatewayMethod > 0, '不应因 api.on 缺失就跳过 gatewayMethod 注册');
 });
+
+// --- agentId 非字符串归一化（normalizeAgentId 护栏，覆盖全部 6 个 index 站点） ---
+
+test('index 站点：非字符串 agentId → INVALID_INPUT（不静默落 main）', async () => {
+	const handlers = new Map();
+	plugin.register(createMockApi(handlers));
+
+	const call = async (name, params) => {
+		let out = null;
+		await handlers.get(name)({
+			params,
+			respond(ok, payload, error) { out = { ok, payload, error }; },
+		});
+		return out;
+	};
+
+	// 6 个站点：对 topicId/sessionId 先校验的站点补足合法值，确保命中 agentId 护栏而非别的校验
+	const cases = [
+		['nativeui.sessions.listAll', { agentId: 123 }],
+		['coclaw.topics.create', { agentId: {} }],
+		['coclaw.topics.list', { agentId: true }],
+		['coclaw.topics.getHistory', { topicId: 'abc', agentId: 123 }],
+		['coclaw.chatHistory.list', { agentId: ['x'], sessionKey: 'agent:main:main' }],
+		['coclaw.sessions.getById', { sessionId: 'sid1', agentId: 123 }],
+	];
+	for (const [name, params] of cases) {
+		const out = await call(name, params);
+		assert.equal(out.ok, false, `${name} 非字符串 agentId 应失败`);
+		assert.equal(out.error?.code, 'INVALID_INPUT', `${name} 应 INVALID_INPUT`);
+	}
+
+	// 反向：合法 agentId 不被误伤
+	const okOut = await call('nativeui.sessions.listAll', { agentId: 'main' });
+	assert.equal(okOut.ok, true, '合法 agentId 应正常成功');
+});

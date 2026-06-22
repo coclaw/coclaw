@@ -16,6 +16,7 @@ import { createFileHandler } from './src/file-manager/handler.js';
 import { abortAgentRun } from './src/agent-abort.js';
 import { decideCancelResponse } from './src/agent-cancel-heuristic.js';
 import { remoteLog } from './src/remote-log.js';
+import { normalizeAgentId } from './src/utils/agent-id.js';
 import { registerProviderAuthHandlers } from './src/provider-auth/index.js';
 import { reconcilePortalModels } from './src/provider-auth/reconcile.js';
 import { registerModelDefaultHandlers } from './src/model-default/index.js';
@@ -461,7 +462,7 @@ const plugin = {
 
 		api.registerGatewayMethod('nativeui.sessions.listAll', async ({ params, respond }) => {
 			try {
-				const agentId = params?.agentId?.trim?.() || 'main';
+				const agentId = normalizeAgentId(params);
 				// best-effort ensure：失败不阻断 listAll
 				try { await ensureAgentSession(agentId); }
 				catch {}
@@ -536,7 +537,7 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.topics.create', async ({ params, respond }) => {
 			try {
-				const agentId = params?.agentId?.trim?.() || 'main';
+				const agentId = normalizeAgentId(params);
 				// 确保该 agent 的 topics 已加载
 				if (!topicManager.__cache.has(agentId)) {
 					await topicManager.load(agentId);
@@ -551,7 +552,7 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.topics.list', async ({ params, respond }) => {
 			try {
-				const agentId = params?.agentId?.trim?.() || 'main';
+				const agentId = normalizeAgentId(params);
 				if (!topicManager.__cache.has(agentId)) {
 					await topicManager.load(agentId);
 				}
@@ -583,7 +584,7 @@ const plugin = {
 					respondInvalid(respond, 'topicId required');
 					return;
 				}
-				const agentId = params?.agentId?.trim?.() || 'main';
+				const agentId = normalizeAgentId(params);
 				// 直接复用 session-manager 的 get()，topicId 即 sessionId
 				respond(true, await manager.get({ agentId, sessionId: topicId }));
 			}
@@ -661,7 +662,7 @@ const plugin = {
 
 		api.registerGatewayMethod('coclaw.chatHistory.list', async ({ params, respond }) => {
 			try {
-				const agentId = params?.agentId?.trim?.() || 'main';
+				const agentId = normalizeAgentId(params);
 				const sessionKey = params?.sessionKey?.trim?.();
 				if (!sessionKey) {
 					respondInvalid(respond, 'sessionKey required');
@@ -686,7 +687,7 @@ const plugin = {
 					respondInvalid(respond, 'sessionId required');
 					return;
 				}
-				const agentId = params?.agentId?.trim?.() || 'main';
+				const agentId = normalizeAgentId(params);
 				const limit = params?.limit;
 				respond(true, await manager.getById({ agentId, sessionId, limit }));
 			}

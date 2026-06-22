@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import nodePath from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { remoteLog } from '../remote-log.js';
+import { normalizeAgentId } from '../utils/agent-id.js';
 
 // --- 常量 ---
 
@@ -142,7 +143,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	}
 
 	async function listFiles(params) {
-		const agentId = params?.agentId?.trim?.() || 'main';
+		const agentId = normalizeAgentId(params);
 		const userPath = params?.path ?? ''; /* c8 ignore next -- ?? fallback */
 		const workspaceDir = await resolveWorkspace(agentId);
 		const resolved = await validatePath(workspaceDir, userPath || '.', pathDeps);
@@ -194,7 +195,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	}
 
 	async function deleteFile(params) {
-		const agentId = params?.agentId?.trim?.() || 'main';
+		const agentId = normalizeAgentId(params);
 		const userPath = params?.path;
 		if (!userPath) {
 			const err = new Error('path is required');
@@ -237,7 +238,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	}
 
 	async function mkdirOp(params) {
-		const agentId = params?.agentId?.trim?.() || 'main';
+		const agentId = normalizeAgentId(params);
 		const userPath = params?.path;
 		if (!userPath) {
 			const err = new Error('path is required');
@@ -251,7 +252,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	}
 
 	async function createFile(params) {
-		const agentId = params?.agentId?.trim?.() || 'main';
+		const agentId = normalizeAgentId(params);
 		const userPath = params?.path;
 		if (!userPath) {
 			const err = new Error('path is required');
@@ -393,7 +394,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 
 		let workspaceDir, resolved;
 		try {
-			const agentId = req.agentId?.trim?.() || 'main'; /* c8 ignore next -- ?./?? fallback */
+			const agentId = normalizeAgentId(req);
 			workspaceDir = await resolveWorkspace(agentId);
 			resolved = await validatePath(workspaceDir, req.path, pathDeps);
 		} catch (err) {
@@ -532,7 +533,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	async function handlePut(dc, req, connId) {
 		let workspaceDir, resolved;
 		try {
-			const agentId = req.agentId?.trim?.() || 'main';
+			const agentId = normalizeAgentId(req);
 			workspaceDir = await resolveWorkspace(agentId);
 			resolved = await validatePath(workspaceDir, req.path, pathDeps);
 		} catch (err) {
@@ -545,7 +546,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 	async function handlePost(dc, req, connId) {
 		let workspaceDir, dirResolved;
 		try {
-			const agentId = req.agentId?.trim?.() || 'main';
+			const agentId = normalizeAgentId(req);
 			workspaceDir = await resolveWorkspace(agentId);
 			dirResolved = await validatePath(workspaceDir, req.path || '.', pathDeps);
 		} catch (err) {
