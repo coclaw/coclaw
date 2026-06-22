@@ -5,14 +5,13 @@
 
 		<!-- 桌面端 header -->
 		<header class="z-10 hidden shrink-0 min-h-12 items-center gap-1 border-b border-default bg-default pl-2 pr-4 py-1 md:flex">
-			<!-- 注意：icon-only 返回按钮无 aria-label——与 FileManagerPage 等姊妹页面一致；
-			     a11y 改进作为统一项见仓库 TODO -->
 			<UButton
 				class="cc-icon-btn-lg shrink-0"
 				size="xl"
 				variant="ghost"
 				color="neutral"
 				icon="i-lucide-arrow-left"
+				:aria-label="$t('common.back')"
 				@click="goBack"
 			/>
 			<h1 class="text-base">{{ pageTitle }}</h1>

@@ -6,6 +6,7 @@
 			color="neutral"
 			class="cc-icon-btn-lg shrink-0"
 			icon="i-lucide-arrow-left"
+			:aria-label="$t('common.back')"
 			@click="goBack"
 		/>
 		<h1 class="min-w-0 truncate text-base font-medium">

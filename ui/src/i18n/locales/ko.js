@@ -11,6 +11,7 @@ export const koMessages = {
 		loadFailed: '불러오기 실패',
 		retry: '다시 시도',
 		moreActions: '추가 작업',
+		back: '뒤로',
 		showPassword: '비밀번호 표시',
 		hidePassword: '비밀번호 숨기기',
 	},

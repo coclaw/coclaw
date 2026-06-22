@@ -11,6 +11,7 @@ export const enMessages = {
 		loadFailed: 'Failed to load',
 		retry: 'Retry',
 		moreActions: 'More actions',
+		back: 'Back',
 		showPassword: 'Show password',
 		hidePassword: 'Hide password',
 	},

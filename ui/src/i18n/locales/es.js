@@ -11,6 +11,7 @@ export const esMessages = {
 		loadFailed: 'Error al cargar',
 		retry: 'Reintentar',
 		moreActions: 'Más acciones',
+		back: 'Atrás',
 		showPassword: 'Mostrar contraseña',
 		hidePassword: 'Ocultar contraseña',
 	},

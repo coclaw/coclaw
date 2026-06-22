@@ -140,15 +140,6 @@
 - 修复方向：区分瞬时 vs 终态——瞬时分支**不**推进 `__historyLoadedCount`，留待下次触发重试；但需防"持续失败导致历史加载卡死不前进"，可加重试上限或退避。
 - 范围：仅 UI；改动牵涉历史分页推进语义，需配套测试覆盖"瞬时失败后重连回补"。
 
-## 子页面顶部"返回"icon button 缺 aria-label（a11y）
-
-**发现日期**：2026-05-25
-**来源**：model-config T1 deep-review（codex-rescue 综合实例）
-
-- 现状：`MobilePageHeader.vue` 及多处子页面顶部用 icon-only 的"返回"按钮（`i-lucide-arrow-left`），没有 `aria-label` / 可读名字，屏幕阅读器只能读出图标 unicode。模型设置子页 desktop header 的返回按钮同样。
-- 修复方向：在 `common.*` 加 `back` key（all 12 locales），各处 `UButton aria-label="$t('common.back')"`。
-- 范围：跨页面 a11y 统一改造，与 model-config 功能无关，本期未修。
-
 ## ManageClawsPage unbind 修复 review 后续
 
 **发现日期**：2026-05-25

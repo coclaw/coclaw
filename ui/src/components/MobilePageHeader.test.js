@@ -23,6 +23,7 @@ function createWrapper(props = {}, opts = {}) {
 				UButton: UButtonStub,
 			},
 			mocks: {
+				$t: (key) => key,
 				$router: {
 					back: routerBackMock,
 					replace: routerReplaceMock,
@@ -47,6 +48,15 @@ test('should render back button', () => {
 	const wrapper = createWrapper();
 	const btn = wrapper.find('button');
 	expect(btn.exists()).toBe(true);
+});
+
+test('back button exposes a translated accessible name (aria-label)', () => {
+	const wrapper = createWrapper();
+	const btn = wrapper.find('button');
+	const label = btn.attributes('aria-label');
+	// locale 安全：断言存在且等于组件取的 $t('common.back')（mock 回传 key），不硬编码英文
+	expect(label).toBeTruthy();
+	expect(label).toBe('common.back');
 });
 
 test('should call router.back when history.state.back exists', async () => {

@@ -11,6 +11,7 @@ export const jaMessages = {
 		loadFailed: '読み込みに失敗しました',
 		retry: '再試行',
 		moreActions: 'その他の操作',
+		back: '戻る',
 		showPassword: 'パスワードを表示',
 		hidePassword: 'パスワードを非表示',
 	},

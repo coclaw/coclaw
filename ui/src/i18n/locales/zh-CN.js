@@ -11,6 +11,7 @@ export const zhCNMessages = {
 		loadFailed: '加载失败',
 		retry: '重试',
 		moreActions: '更多操作',
+		back: '返回',
 		showPassword: '显示密码',
 		hidePassword: '隐藏密码',
 	},

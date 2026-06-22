@@ -11,6 +11,7 @@ export const hiMessages = {
 		loadFailed: 'लोड करने में विफल',
 		retry: 'पुनः प्रयास करें',
 		moreActions: 'अधिक क्रियाएँ',
+		back: 'वापस',
 		showPassword: 'पासवर्ड दिखाएं',
 		hidePassword: 'पासवर्ड छिपाएं',
 	},

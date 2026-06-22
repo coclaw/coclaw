@@ -11,6 +11,7 @@ export const viMessages = {
 		loadFailed: 'Tải thất bại',
 		retry: 'Thử lại',
 		moreActions: 'Tác vụ khác',
+		back: 'Quay lại',
 		showPassword: 'Hiện mật khẩu',
 		hidePassword: 'Ẩn mật khẩu',
 	},

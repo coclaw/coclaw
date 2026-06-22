@@ -11,6 +11,7 @@ export const ruMessages = {
 		loadFailed: 'Ошибка загрузки',
 		retry: 'Повторить',
 		moreActions: 'Дополнительные действия',
+		back: 'Назад',
 		showPassword: 'Показать пароль',
 		hidePassword: 'Скрыть пароль',
 	},

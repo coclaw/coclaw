@@ -19,6 +19,7 @@
 				variant="ghost"
 				color="neutral"
 				icon="i-lucide-arrow-left"
+				:aria-label="$t('common.back')"
 				@click="goBack"
 			/>
 			<h1 class="text-base">{{ pageTitle }}</h1>

@@ -11,6 +11,7 @@ export const frMessages = {
 		loadFailed: 'Échec du chargement',
 		retry: 'Réessayer',
 		moreActions: 'Plus d\'actions',
+		back: 'Retour',
 		showPassword: 'Afficher le mot de passe',
 		hidePassword: 'Masquer le mot de passe',
 	},

@@ -11,6 +11,7 @@ export const deMessages = {
 		loadFailed: 'Laden fehlgeschlagen',
 		retry: 'Wiederholen',
 		moreActions: 'Weitere Aktionen',
+		back: 'Zurück',
 		showPassword: 'Passwort anzeigen',
 		hidePassword: 'Passwort verbergen',
 	},

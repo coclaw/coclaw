@@ -11,6 +11,7 @@ export const zhTWMessages = {
 		loadFailed: '載入失敗',
 		retry: '重試',
 		moreActions: '更多操作',
+		back: '返回',
 		showPassword: '顯示密碼',
 		hidePassword: '隱藏密碼',
 	},

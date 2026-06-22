@@ -11,6 +11,7 @@ export const ptMessages = {
 		loadFailed: 'Falha ao carregar',
 		retry: 'Tentar novamente',
 		moreActions: 'Mais ações',
+		back: 'Voltar',
 		showPassword: 'Mostrar senha',
 		hidePassword: 'Ocultar senha',
 	},
