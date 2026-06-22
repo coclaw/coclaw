@@ -1,5 +1,39 @@
 # Plugin TODO
 
+## 覆盖率门禁偶发假性失败：c8 多进程聚合 race（已加 `--test-isolation=none` 止血，**非治本**）
+
+**发现日期**：2026-06-22
+**关联**：`package.json` 的 `test` 脚本（`c8` 包 `node --test`）；被误判的文件随机（最近一次 `src/file-manager/handler.js:719-724`）
+
+**判据（极易辨认）**：覆盖率塌（可微塌如 lines 99.96%、缺口落在本次根本没碰的文件）但**同次 `# fail=0` 且用例数正常**、**二跑即干净** = c8 跨子进程覆盖聚合 race，**非真退化**、非本批回归。
+
+**根因（2026-06-22 实测钉死）**：`node --test` 默认 `--test-isolation=process`，每个测试文件 fork 一个子进程并行（当前约 86 文件→约 86 份覆盖文件）；c8 给各子进程设 `NODE_V8_COVERAGE=tmpdir`，等顶层 `bash` 退出后 `readdir` 该目录、逐份 `JSON.parse` 合并；某份此刻还没刷盘可读时，c8 的 `try/catch` **静默整份丢弃**（`c8/lib/report.js`，仅 `NODE_DEBUG=c8` 可见）→ 只被那份覆盖到的行凭空变未覆盖。`pnpm verify`（check 紧接 test）的 IO 压力 + macOS APFS 放大可见性窗口。
+
+**当前止血**：`node --test` 加 `--test-isolation=none`（所有测试文件挤进同一进程→只产 1 份覆盖文件→消除跨进程合并→race 物理消失）。实测：计数一致（2172/2171/0/1）、零新失败、覆盖率稳定达标（Stmts/Funcs/Lines 100，Branch 96.59→96.53 仍 ≥95 阈值）、耗时 8s→13s。
+
+**⚠️ 这是止血、不是治本**（2026-06-22 业界证据调研定性）：`--test-isolation=none` 关掉的是"进程隔离"——一个**与覆盖率无关**的测试正确性担保（防测试间全局状态/模块单例串味）。社区无人背书用它稳覆盖率，在解法清单里排最后；它靠副作用恰好掩盖了 race。当下 2172 用例无串味，但**未来新增依赖独占进程的测试可能在单进程下被污染**。
+
+**对症方案（待办，暂不做）**：切 node 内置覆盖——`node --test --experimental-test-coverage` + `node:test/reporters` 的 `lcov`，**退回默认 `process` 隔离**。优势：少一层进程（顶层 runner 亲自收割全部子进程后才读盘，刷盘窗口趋近消失）+ **不静默丢**（c8 那个 per-file `try/catch` 静默跳过它没有），直接拔掉静默丢弃失败模式。暂不做的原因：① node 24/26 仍 `--experimental-`、未转 stable，API 可能变；② **branch 覆盖口径比 istanbul 弱**（解构默认值等分支 V8 粒度不够、可能误报 100%，上游 `nodejs/node#57435` 仍 open），咱们门禁卡 `branches 95`，迁移可能让 branch 虚高、门禁失效，须重校基线、校不过就回退；③ 本问题严重度低（只门禁偶发误报、二跑就过、不伤生产代码与测试正确性），性价比暂不值大动。
+
+**纠正认知（防重蹈）**：commit `7b5ac8d`（2026-05-24）号称"collapse 成单进程修 race"是**错的**——裸 `node --test <多个 glob>` 不带 isolation flag 时默认仍是 `process` 隔离并行，race 从没消除、故复发。别再把任何"裸 `node --test` 多 glob"当单进程，也别把本次 `--test-isolation=none` 当治本。历史脉络：并行（原始）→ `cb77b574` WSL2 逐文件串行 → `7b5ac8d` 改回并行（误以为修了）→ 2026-06-22 加 `--test-isolation=none` 止血。
+
+**诊断辅助**：复现时挂 `NODE_DEBUG=c8` 能把被丢的覆盖文件打出来坐实。
+
+---
+
+## realtime-bridge 测试在 CPU/IO 饥饿下偶发断言失败（时序敏感，重压才复现）
+
+**发现日期**：2026-06-22（c8 覆盖 race 的重 IO 加压验证副产物）
+**关联**：`src/realtime-bridge.test.js:353` 用例「RealtimeBridge should handle rpc/unbound/close/send-fail branches」，断言在 `:458`
+
+**现象**：在 6 路 `dd` fsync 的重 IO 拥塞下连跑并行测试，约 160 次中**偶发一次**该用例断言失败：`AssertionError: 't2' !== undefined`（`:458` 期望 undefined、实得 `'t2'`，strictEqual）。该用例耗时偏长（~700ms，其余多为微秒级），涉及多步异步。**覆盖率全程达标——这是真测试失败、与 c8 覆盖 race 无关**（别和上一条混淆）。
+
+**根因初判（未深究）**：用例对异步事件完成顺序/状态时序敏感；CPU/IO 饥饿打乱调度时序时，某个本应仍为 undefined 的值（疑似 transport/timer 标识 `t2`）被提前置上 → 断言失败。疑似测试依赖真实调度时序而非完全确定化的 mock，非生产代码缺陷。
+
+**为什么暂不修**：① 仅在人为极端加压（6 路 dd）下观察到一次，正常 / CI 实际负载是否触发未验证；② 未定位 `:458` 断言依赖的具体异步顺序，修前需读 `realtime-bridge.test.js:353-458` 钉清 `t2` 的来源时序；③ severity 低（测试侧 flaky，不涉生产）。但 CI 慢 / 忙 runner 上同类时序敏感测试可能偶发崩、是潜在的 CI 变红源，值得后续做确定化（fake timer / 显式 await 排序）。
+
+---
+
 ## worktree 重构建并跑时主网关偶发被 SIGTERM 重启（隔离网关基础设施落地时发现）
 
 **发现日期**：2026-05-31（worktree 插件验证基础设施 `scripts/worktree-gateway.sh` 落地实测时发现）
@@ -1283,15 +1317,17 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 **发现日期**：2026-05-19（cron 顶替止血任务实施前 dump 整理）
 **关联**：`plugins/openclaw/src/chat-history-manager/manager.test.js` 末尾 REPRO_LOST_ARCHIVED 用例（已 `{ skip: ... }`）
 
-**现象**：在 A→B→C 三跳快速连翻的极端时序下（两条 `sessions.changed` 先到、两条 `session_start` hook 后到），第三条到达的 hook (current=B, archived=A) 因 currentSessionId 已不再是 list head，命中 `recordSessionTransition` 内的 stale 防御直接 return，**A 这一段从未被任何写盘路径记录**，永久缺失。
+**现象**：在 A→B→C 三跳快速连翻的极端时序下（两条 `sessions.changed` 先到、两条 `session_start` hook 后到），第三条到达的 hook (current=B, archived=A) 因 currentSessionId 已不再是 list head，命中 `recordSessionTransition` 内的 stale 防御直接 return，**A 这一段从未被任何写盘路径记录**，永久缺失。段 A 的唯一来源是那条被吞 hook 的 `resumedFrom`（一次性事件、不回放）；`reconcileAll`（只喂 sessions.json 当前 head 且从不传 archived）、`__sanitizeAllSessionKeys`（只给已存在项补 archivedAt）、重启均补不回——不自愈。丢的是历史列表里的一段**指针**，A 的 transcript 正文文件本身未被删。
 
 **为什么本期未修**：cron 顶替止血只覆盖 user A → cron B 单跳场景（现有"老 head 翻 archived + 新 sid unshift"路径正常工作）；A→B→C 三跳是更深层、独立于 cron 路径的双源 race，修法要重新设计 stale 判定 + 归档信号的去重链路，工作量与 cron 止血不在同一量级。
 
 **修复方向**：让 stale 防御在 `archivedSessionId` 信号上下文中至少补登被漏归档的中间段（即便 head 已翻过）；可能需要在到达 `recordSessionTransition` 时合并 sessions.changed 与 hook 的乱序事件流，而不是直接 return。
 
+**修复障碍（T14 语义冲突）**：naive fix（stale 分支不直接 return、而是把 `archivedSessionId` 插进 list）会**直接撞翻 T14 测试**（`manager.test.js:300`）——T14 的 stale 事件同样带 `archivedSessionId`，却断言"整体丢弃、该 archived 不入、不写盘"，与 REPRO 的期望正好相反。两条测试对同一代码路径编码了矛盾期望，从 `recordSessionTransition` 即时入参根本分不出哪个该补哪个该丢。根治必须先裁定"stale 事件的 archived 载荷是否回填"的规范语义并重写或废掉 T14，不是改几行。
+
 **复测**：根因修复后 `unskip` 测试 `recordSessionTransition - REPRO 双源乱序：A→B→C ...`，期望 list = [C, B@arch, A@arch]。
 
-**严重性**：低——需要极端时序（毫秒级三跳 + 双源到达顺序倒置）才触发，生产环境未观察到实例；红测仅作为根因修复的 fixture 保留。
+**严重性**：低——需要极端时序（毫秒级三跳 + 双源到达顺序倒置）才触发。"生产未观察到实例"背后是近乎不可达：reset 路径只发 session_start hook（有序不串）；agent.send 只发 sessions.changed（不带 archived）；唯一能双发的 sessions.create 通常又没有 resumedFrom——标准触发器几乎构造不出此交错时序；红测是直接调 `recordSessionTransition` 人为摆顺序绕过了可达性问题。红测仅作为根因修复的 fixture 保留。
 
 ## chat-history 启动期对账快照与并发事件路径的时序假设
 
