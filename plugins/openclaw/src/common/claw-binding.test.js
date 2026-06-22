@@ -6,7 +6,6 @@ import os from 'node:os';
 import test from 'node:test';
 
 import { bindClaw, unbindClaw, enrollClaw, waitForClaimAndSave } from './claw-binding.js';
-import { saveHomedir, setHomedir, restoreHomedir } from '../homedir-mock.helper.js';
 import { setRuntime } from '../runtime.js';
 
 async function withServer(handler) {
@@ -409,10 +408,7 @@ test('bindClaw should still surface original write error when rollback also fail
 
 test('unbindClaw should throw NOT_BOUND when no token', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-');
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	await writeBindings(dir, { clawId: 'b1', token: '' });
@@ -425,16 +421,12 @@ test('unbindClaw should throw NOT_BOUND when no token', async () => {
 	}
 	finally {
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
 test('unbindClaw should clear config when server returns 401 (claw already gone)', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-401-');
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	await writeBindings(dir, { clawId: 'b1', token: 'bad', serverUrl: 'http://127.0.0.1:1' });
@@ -451,7 +443,6 @@ test('unbindClaw should clear config when server returns 401 (claw already gone)
 	}
 	finally {
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 		await server.close();
 	}
 });
@@ -520,10 +511,7 @@ test('unbindClaw should throw when server is unreachable', async () => {
 
 test('unbindClaw should clear local bindings when serverUrl is missing', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-unbind-nourl-new-');
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	// token 存在但 serverUrl 缺失 — 跳过 server 通知，直接清理本地
@@ -537,7 +525,6 @@ test('unbindClaw should clear local bindings when serverUrl is missing', async (
 	}
 	finally {
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 	}
 });
 
@@ -844,10 +831,7 @@ test('waitForClaimAndSave should throw on unexpected response', async () => {
 
 test('bind/unbind should support env and config server url fallbacks', async () => {
 	const prevCwd = process.cwd();
-	const prevHome = saveHomedir();
 	const dir = await setupDir('coclaw-fallback-');
-	setHomedir(nodePath.join(dir, 'home'));
-	await fs.mkdir(process.env.HOME, { recursive: true });
 	process.chdir(dir);
 
 	const oldServer = process.env.COCLAW_SERVER_URL;
@@ -876,7 +860,6 @@ test('bind/unbind should support env and config server url fallbacks', async () 
 	finally {
 		process.env.COCLAW_SERVER_URL = oldServer;
 		process.chdir(prevCwd);
-		restoreHomedir(prevHome);
 		await server.close();
 	}
 });

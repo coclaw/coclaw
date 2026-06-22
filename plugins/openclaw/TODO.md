@@ -138,7 +138,7 @@
 
 ## 测试增强建议（阶段 1 deep-review 期间记录）
 
-- realtime-bridge.test.js:4098 的 5x setTimeout(0) flush 改成更确定的同步等待方式
+- realtime-bridge.test.js:6073/6096 的 5x setTimeout(0) drain —— 已评估（2026-06-23）：两处都是否定断言（断言「不应 broadcast」），drain N 个 tick 等「缺席」是标准写法，无更确定的可观测条件可替代；保留现状、低优先。
 
 ## oversize 与 queue-full 的 drop 分类翻面（行为微变，不修）
 
@@ -462,15 +462,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - 给 auto-upgrade 路径加专项测试覆盖 fsync 抛错场景
 - 单独发一个补丁版本（不与 release 节奏混在一起）
 
-## setupDir() 全局污染 process.env / runtime（PRE-EXISTING，记录）
-
-**发现日期**：2026-05-03（rpc-queue-startup deep-review dim C）
-**关联**：`plugins/openclaw/src/realtime-bridge.test.js:65`
-
-**问题**：`setupDir()` helper 修改 `process.env.OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` / 删除 `COCLAW_TUNNEL_CONFIG_PATH`、调用 `setRuntime(null)`，但没有成对 restore；当前靠每个用例重设维持稳定，未来新增用例容易踩污染。
-
-**修复方向**：helper 返回 restore fn，或抽 envSnapshot/restore 工具集中处理。属于测试基础设施层面，需要批量重构现有所有调用点。
-
 ## A1 异步装配引入的"handler 已挂、字段未挂"理论窗口（Phase B 切 FBQ 时一并补 warn）
 
 **发现日期**：2026-05-03（rpc-dc Phase A1+A2 deep-review）
@@ -512,14 +503,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **为什么 PRE-EXISTING**：旧代码也没读 OpenClaw 配置；本次只是把"目标永远是默认布局"显式化、文档化。
 
 **修复方向**：在 plugin runtime 拿 agent 配置（如 `runtime.config.loadConfig()?.agents?.[agentId]?.store`），传给 helper。需先核对 OpenClaw 暴露 agent 配置的稳定 API。
-
-### setHomedir 测试 mock 大量变成"死 mock"（PRE-EXISTING 噪音）
-
-**锚点**：`plugins/openclaw/src/realtime-bridge.test.js`、`src/common/claw-binding.test.js`、`src/plugin-mode.test.js`（共上百处 setHomedir 调用）
-
-**问题**：claw-paths runtime 改造后生产代码不再读 `os.homedir()`，但测试里仍大量 `setHomedir(...)`。多数实例已是 mock 一个生产代码不再读取的全局 —— 噪音 + 误导。auto-upgrade worker 路径仍读 homedir，那部分 mock 仍有效。
-
-**修复方向**：逐个排查，仅保留 auto-upgrade worker fallback 测试场景的 setHomedir，其余移除。需小心不破现有断言。
 
 ### auto-upgrade vs claw-paths 部分注入不对称（防御性，本次新引入但不可达）
 
