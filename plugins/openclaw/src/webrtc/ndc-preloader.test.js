@@ -177,6 +177,22 @@ test('preloadNdc: resolvePaths throws → werift fallback', async () => {
 	assert.ok(logs.some((l) => l.includes('resolve failed')));
 });
 
+test('preloadNdc: resolvePaths throws MODULE_NOT_FOUND → ndc.skip reason=ndc-not-installed', async () => {
+	const { deps, logs } = successDeps({
+		resolvePaths: () => {
+			const err = new Error("Cannot find module 'node-datachannel'");
+			err.code = 'MODULE_NOT_FOUND';
+			throw err;
+		},
+	});
+	const result = await preloadNdc(deps);
+
+	assert.equal(result.impl, 'werift');
+	assert.ok(logs.some((l) => l === 'ndc.skip reason=ndc-not-installed'));
+	assert.ok(!logs.some((l) => l.includes('ndc.fallback reason=unexpected')));
+	assert.ok(logs.some((l) => l.includes('webrtc.fallback-to-werift')));
+});
+
 test('preloadNdc: cleanup from ndc.default.cleanup', async () => {
 	const mockCleanup = () => {};
 	const { deps } = successDeps({
@@ -608,5 +624,6 @@ test('preloadNdc: default resolvePaths (no injection) — node-datachannel not i
 	});
 
 	assert.equal(result.impl, 'werift');
-	assert.ok(logs.some((l) => l.includes('ndc.fallback reason=unexpected') || l.includes('ndc.fallback reason=')));
+	assert.ok(logs.some((l) => l === 'ndc.skip reason=ndc-not-installed'));
+	assert.ok(logs.some((l) => l.includes('webrtc.fallback-to-werift')));
 });

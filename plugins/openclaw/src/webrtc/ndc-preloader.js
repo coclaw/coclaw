@@ -213,8 +213,13 @@ export async function preloadNdc(deps = {}) {
 		log(`ndc.loaded platform=${platformKey}`);
 		return { PeerConnection: wrapNdcCredentials(RTCPeerConnection), cleanup, impl: 'ndc' };
 	} catch (err) {
-		// resolvePaths 或其他未预期异常的兜底
-		log(`ndc.fallback reason=unexpected error=${err.message}`);
+		// node-datachannel 依赖已摘除：require.resolve 抛 MODULE_NOT_FOUND 是过渡期
+		// 预期路径，记为 skip 而非误导性的 unexpected。其余才是真正未预期异常。
+		if (err?.code === 'MODULE_NOT_FOUND') {
+			log('ndc.skip reason=ndc-not-installed');
+		} else {
+			log(`ndc.fallback reason=unexpected error=${err.message}`);
+		}
 		return weriftFallback(dynamicImport, log, importTimeout);
 	}
 }
