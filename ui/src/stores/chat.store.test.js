@@ -541,6 +541,35 @@ describe('useChatStore', () => {
 			}, { timeout: 120_000 });
 		});
 
+		test('silent 加载声明 quietCodes:[NOT_FOUND]；非 silent 时为 undefined', async () => {
+			const clawsStore = useClawsStore();
+			clawsStore.setClaws([{ id: '1', online: true }]);
+
+			const conn = mockConn();
+			conn.request.mockImplementation((method) => {
+				if (method === 'coclaw.sessions.getById') {
+					return Promise.resolve({ messages: [] });
+				}
+				return Promise.resolve(null);
+			});
+			setConn('1', conn);
+
+			const store = createChatStore('topic:tq', { clawId: '1', agentId: 'main' });
+			store.sessionId = 'tq';
+
+			// 非 silent（用户打开死 topic）：quietCodes 为 undefined，NOT_FOUND 仍照常上报 + 提示
+			await store.loadMessages();
+			const nonSilentCall = conn.request.mock.calls.find((c) => c[0] === 'coclaw.sessions.getById');
+			expect(nonSilentCall[2].quietCodes).toBeUndefined();
+
+			conn.request.mockClear();
+
+			// silent（topic 首发 pre-persist 加载）：声明 NOT_FOUND 可静默，不刷远程诊断噪音
+			await store.loadMessages({ silent: true });
+			const silentCall = conn.request.mock.calls.find((c) => c[0] === 'coclaw.sessions.getById');
+			expect(silentCall[2].quietCodes).toEqual(['NOT_FOUND']);
+		});
+
 		test('topic 模式下 sessionId 为空时返回 false', async () => {
 			const store = useChatStore();
 			store.topicMode = true;

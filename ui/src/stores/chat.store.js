@@ -519,10 +519,12 @@ export function createChatStore(storeKey, opts = {}) {
 					this.errorText = '';
 				}
 				try {
+					// silent 加载（首发 pre-persist / 重连 reconcile）的 NOT_FOUND 本就被容忍、不向用户暴露（仅 !silent 才设 errorText），
+					// 故 quietCodes 静音其 rpc.failed 远程诊断噪音；非 silent（用户主动打开）的 NOT_FOUND 仍照常上报 + 提示。
 					const result = await conn.request('coclaw.sessions.getById', {
 						sessionId: this.sessionId,
 						agentId: this.topicAgentId || 'main',
-					}, { timeout: 120_000 });
+					}, { timeout: 120_000, quietCodes: silent ? ['NOT_FOUND'] : undefined });
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
 					console.debug('[chat] loadTopicMessages raw messages topicId=%s count=%d %o',

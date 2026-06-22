@@ -173,6 +173,7 @@ export class ClawConnection {
 	 * @param {(payload: object) => void} [options.onAccepted] - 两阶段模式回调
 	 * @param {number} [options.timeout] - 请求超时 ms（0 = 永不超时），默认 30s
 	 * @param {number} [options.connectTimeout] - 连接等待超时 ms，默认 DEFAULT_CONNECT_TIMEOUT_MS
+	 * @param {string[]} [options.quietCodes] - 调用方可容忍的失败 code 列表；命中时不发 rpc.failed 远程诊断（reject 行为不变）
 	 * @param {AbortSignal} [options.signal] - 可选取消信号，覆盖 waitReady 排队 + pending 两段；abort → reject ERR_CANCELED
 	 * @returns {Promise<object>}
 	 */
@@ -195,6 +196,7 @@ export class ClawConnection {
 			return new Promise((resolve, reject) => {
 				const waiter = { resolve, reject, signal: null, onAbort: null, method };
 				if (options.onAccepted) waiter.onAccepted = options.onAccepted;
+				if (options.quietCodes) waiter.quietCodes = options.quietCodes;
 				const timeoutMs = options.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS;
 				if (timeoutMs > 0) {
 					waiter.timer = setTimeout(() => {
@@ -317,7 +319,10 @@ export class ClawConnection {
 			this.__cleanupWaiter(waiter);
 			const err = new Error(payload?.error?.message ?? 'rpc failed');
 			err.code = payload?.error?.code ?? 'RPC_FAILED';
-			remoteLog(`rpc.failed claw=${this.clawId} code=${err.code} err=${err.message}`);
+			// 调用方声明可容忍的 code(如 silent 加载的 NOT_FOUND)不上报远程诊断噪音
+			if (!waiter.quietCodes?.includes(err.code)) {
+				remoteLog(`rpc.failed claw=${this.clawId} code=${err.code} err=${err.message}`);
+			}
 			waiter.reject(err);
 			return;
 		}

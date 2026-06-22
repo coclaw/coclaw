@@ -592,6 +592,50 @@ describe('ClawConnection – request() 通过 DataChannel 发送', () => {
 	});
 });
 
+describe('ClawConnection – quietCodes 抑制 rpc.failed 远程诊断', () => {
+	// silent topic 首发 pre-persist 加载会必然 NOT_FOUND，声明 quietCodes 后不应刷远程诊断噪音；
+	// 但 reject 行为（code/message）必须照旧，调用方错误处理不变。
+	test('quietCodes 命中失败 code → 不发 rpc.failed 远程日志，但仍正常 reject（行为不变）', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('coclaw.sessions.getById', {}, { quietCodes: ['NOT_FOUND'] });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: false, error: { code: 'NOT_FOUND', message: 'transcript not found' } });
+		// reject 行为不变：仍以原始 code/message reject
+		await expect(p).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'transcript not found' });
+		// 不上报 rpc.failed 噪音
+		const failed = remoteLog.mock.calls.filter((c) => String(c[0]).startsWith('rpc.failed'));
+		expect(failed).toHaveLength(0);
+	});
+
+	test('对照：不带 quietCodes 的 NOT_FOUND → 仍发 rpc.failed 远程日志', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('coclaw.sessions.getById');
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: false, error: { code: 'NOT_FOUND', message: 'transcript not found' } });
+		await expect(p).rejects.toMatchObject({ code: 'NOT_FOUND' });
+		const failed = remoteLog.mock.calls.filter((c) => String(c[0]).startsWith('rpc.failed'));
+		expect(failed).toHaveLength(1);
+		expect(failed[0][0]).toContain('code=NOT_FOUND');
+	});
+
+	test('quietCodes 不含该失败 code → 仍发 rpc.failed（守卫按 code 精确匹配，非"有 quietCodes 就全跳"）', async () => {
+		const { remoteLog } = await import('./remote-log.js');
+		remoteLog.mockClear();
+		const { conn, mockRtc } = makeRtcReady();
+		const p = conn.request('coclaw.sessions.getById', {}, { quietCodes: ['NOT_FOUND'] });
+		const reqId = mockRtc.send.mock.calls[0][0].id;
+		conn.__onRtcMessage({ type: 'res', id: reqId, ok: false, error: { code: 'RPC_FAILED', message: 'boom' } });
+		await expect(p).rejects.toMatchObject({ code: 'RPC_FAILED' });
+		const failed = remoteLog.mock.calls.filter((c) => String(c[0]).startsWith('rpc.failed'));
+		expect(failed).toHaveLength(1);
+		expect(failed[0][0]).toContain('code=RPC_FAILED');
+	});
+});
+
 describe('ClawConnection – request() 两阶段 (onAccepted)', () => {
 	test('收到 accepted 后调用 onAccepted，不 resolve', async () => {
 		const { conn, mockRtc } = makeRtcReady();
