@@ -1429,12 +1429,16 @@ export class RealtimeBridge {
 			// 保留 webrtcPeer / fileHandler 实例供重连后复用，避免雪崩式 PC 重建。
 			const isAuthClose = event?.code === 4001 || event?.code === 4003;
 			if (isAuthClose) {
+				// 先等在飞的 lazy init 落地：close 撞上 __initWebrtcPeer 在飞时 webrtcPeer 仍是 null，
+				// 不等就会漏掉对那个即将诞生的 peer/fileHandler 的清理，留下无主 PC。
+				await this.__webrtcPeerReady?.catch(() => {});
+				// 无条件清空：覆盖 init 已完成但 peer 仍可能为 null 的所有分支（init 失败、无 impl 等）。
+				this.__webrtcPeerReady = null;
 				if (this.webrtcPeer) {
 					try { await this.webrtcPeer.closeAll(); }
 					/* c8 ignore next 3 -- 防御性兜底，werift close 异常时不可崩溃 gateway */
 					catch (e) { this.logger.warn?.(`[coclaw/rtc] closeAll failed: ${e?.message}`); }
 					this.webrtcPeer = null;
-					this.__webrtcPeerReady = null;
 				}
 				if (this.__fileHandler) {
 					this.__fileHandler.cancelCleanup();

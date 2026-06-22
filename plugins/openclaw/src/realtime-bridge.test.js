@@ -3253,6 +3253,101 @@ test('RealtimeBridge should cleanup webrtcPeer on serverWs auth-close (4003 forb
 	}
 });
 
+// --- 懒加载竞态：销毁式 auth-close 撞 __initWebrtcPeer 在飞 ---
+// __initWebrtcPeer 被 c8-ignore，这里用 spy 替换 + Deferred 闸门确定性复现窗口。
+
+test('auth-close 撞 lazy init 在飞：先等 init 落地再清理（核心回归锁）', async () => {
+	const { bridge, server } = await setupConnectedBridge();
+	try {
+		let closeAllCalls = 0;
+		let cancelCleanupCalls = 0;
+		const fakePeer = {
+			handleSignaling: async () => {},
+			closeAll: async () => { closeAllCalls += 1; },
+		};
+		const fakeHandler = { cancelCleanup: () => { cancelCleanupCalls += 1; } };
+		let gateResolve;
+		const gate = new Promise((res) => { gateResolve = res; });
+		// 替换 lazy init 为闸门控制的赋值（赋值落地前一直 pending，peer 保持 null）
+		bridge.__initWebrtcPeer = async () => {
+			await gate;
+			bridge.__fileHandler = fakeHandler;
+			bridge.webrtcPeer = fakePeer;
+		};
+		const messageListener = server.listeners.get('message')[0];
+		const closeListener = server.listeners.get('close')[0];
+
+		// 投 rtc:offer 让 init 进 pending
+		const msgP = messageListener({
+			data: JSON.stringify({ type: 'rtc:offer', fromConnId: 'c_race', payload: { sdp: 'sdp' } }),
+		});
+		assert.equal(bridge.webrtcPeer, null, 'init 在飞时 peer 仍 null');
+		assert.ok(bridge.__webrtcPeerReady, '__webrtcPeerReady 应为 pending promise');
+
+		// 闸门 pending 时投 auth-close 4001，拿其返回 promise（先别 await 完）
+		const closeP = closeListener({ code: 4001, reason: 'unauthorized' });
+		// 放行 init → 赋值 peer/fileHandler
+		gateResolve();
+		// 等两条续体收敛
+		await Promise.all([msgP, closeP]);
+
+		assert.equal(closeAllCalls, 1, 'closeAll 应对落地的 peer 调用 1 次');
+		assert.equal(cancelCleanupCalls, 1, 'cancelCleanup 应对落地的 fileHandler 调用 1 次');
+		assert.equal(bridge.webrtcPeer, null, 'webrtcPeer 应被清空（无无主 PC）');
+		assert.equal(bridge.__fileHandler, null, 'fileHandler 应被清空');
+		assert.equal(bridge.__webrtcPeerReady, null, '__webrtcPeerReady 应被清空');
+	} finally {
+		await bridge.stop();
+	}
+});
+
+test('auth-close 无 lazy init 在飞：await null?.catch 安全 no-op', async () => {
+	const { bridge, server } = await setupConnectedBridge();
+	try {
+		assert.equal(bridge.__webrtcPeerReady, null, '前置：无 init 在飞');
+		const closeListener = server.listeners.get('close')[0];
+		// 不应抛
+		await closeListener({ code: 4001, reason: 'unauthorized' });
+		assert.equal(bridge.webrtcPeer, null);
+		assert.equal(bridge.__fileHandler, null);
+		assert.equal(bridge.__webrtcPeerReady, null);
+	} finally {
+		await bridge.stop();
+	}
+});
+
+test('auth-close 撞 lazy init 在飞且 init reject：仍清理已赋值的 fileHandler、不抛', async () => {
+	const { bridge, server } = await setupConnectedBridge();
+	try {
+		let cancelCleanupCalls = 0;
+		const fakeHandler = { cancelCleanup: () => { cancelCleanupCalls += 1; } };
+		let gateResolve;
+		const gate = new Promise((res) => { gateResolve = res; });
+		bridge.__initWebrtcPeer = async () => {
+			await gate;
+			bridge.__fileHandler = fakeHandler; // reject 前已赋 fileHandler
+			throw new Error('init failed');
+		};
+		const messageListener = server.listeners.get('message')[0];
+		const closeListener = server.listeners.get('close')[0];
+
+		const msgP = messageListener({
+			data: JSON.stringify({ type: 'rtc:offer', fromConnId: 'c_reject', payload: { sdp: 'sdp' } }),
+		});
+		const closeP = closeListener({ code: 4001, reason: 'unauthorized' });
+		gateResolve();
+		// 两续体都不应抛（msgP 的 init reject 被 rtc 块 try/catch 兜住，closeP 的 ?.catch 吞掉）
+		await assert.doesNotReject(Promise.all([msgP, closeP]));
+
+		assert.equal(cancelCleanupCalls, 1, 'init 抛前已赋的 fileHandler 仍应被 cancelCleanup');
+		assert.equal(bridge.webrtcPeer, null);
+		assert.equal(bridge.__fileHandler, null);
+		assert.equal(bridge.__webrtcPeerReady, null);
+	} finally {
+		await bridge.stop();
+	}
+});
+
 test('RealtimeBridge __forwardToServer should log when ws not ready', async () => {
 	const { bridge } = await setupConnectedBridge();
 	const warns = [];
