@@ -207,17 +207,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**（不修）：等阶段 2 切 FBQ 时一并重审 dump 字段语义；也可考虑改名为 `queueMsgs=` 以提示语义。
 
-## 同 session 第二条 rpc DC 覆盖三件套未关旧实例（cold path，不修）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
-**关联**：webrtc-peer.js __setupDataChannel
-
-**问题**：`__setupDataChannel` 没有先 close 旧 rpcDcSender / destroy 旧 rpcQueue / await 旧 rpcConsumeLoop 就直接覆盖三个 session 字段。如果同 session 的 ondatachannel 又收到一条 `rpc` label 的 DC（UI 重建 DC），旧三件套变孤儿——consumeLoop 仍在 await 旧 queue 的 iterator，sender 仍持有旧 dc 引用。
-
-**影响**：理论上的资源泄漏 + BAL 回调通过 `session.rpcDcSender` 动态取，新旧实例混用风险。但 UI 当前不会在同 PC 上重建 rpc DC，且 ICE restart 不重建 DC——属预防性问题。
-
-**修复方向**（不修）：覆盖前先 close 旧三件套；或在 ondatachannel 内拒绝重复 rpc label。需结合 dc.onclose race（已记录）一起评估。
-
 ## __setupDataChannel 装配代码无 try/catch（防御性，不修）
 
 **发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
@@ -407,17 +396,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **影响**：可能并发 spawn 多个 pion-ipc Go 子进程；被覆盖的那次 preload 结果没有 cleanup 归属。bridge 正常生命周期下不触发。
 
 **修复方向**：`preloadPion` 内维护 in-flight Promise 引用，重入直接返回同一 Promise。
-
-### ndc-preloader 残留路径产生误导日志
-
-**发现日期**：2026-05-02（D 阶段 dim 2）
-**关联**：plugins/openclaw/src/webrtc/ndc-preloader.js + realtime-bridge.js 调用点
-
-**问题**：pion 不可用时 bridge 仍调 `preloadNdc()`，但 `node-datachannel` npm 依赖已摘除，`require.resolve('node-datachannel')` 走入 `reason=unexpected` 分支，日志显示 ndc "unexpected 失败"，干扰排错。
-
-**影响**：仅日志噪音，不影响 fallback 到 werift 的实际路径。
-
-**修复方向**：删除 ndc-preloader.js 模块 + 调用点，让 fallback 直接走 werift。或 ndc 路径检测到包不存在时降级为 info。
 
 ### claw-binding 并发 bind/unbind R-M-W 跨调用竞态
 
@@ -716,8 +694,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 另一条语义依赖（按设计稿 P5 核实结论注记，2026-06-11）：`plugins update` 对 path/archive 装置与**缺安装记录**的行为是"干净 skip + exit 0"（先于任何磁盘写）——L2 no-op 分支（record 未推进 → 立即 skipVersion）依赖此语义；上游若把 skip 改成报错或部分写盘，worker 结局矩阵需重审。
 
 **应对**：升级 OpenClaw 时关注 `src/cli/gateway-cli/call.ts` 与 `plugins-*.ts` 是否变更子命令名/参数 schema/输出格式；尤其留意 `gateway call --json` 是否加 envelope（如加包装，worker-verify 的解析需兼容两种形态）、`plugins inspect --json` 的 exit code 与 `install` 字段透传是否变化。
-
-## 2026-05-06 deep-review（claw-config host adapter）抓出的预存问题
 
 ## 2026-05-06 deep-review（file-manager test setTimeout→waitFor 改造）抓出的预存问题
 
