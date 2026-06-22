@@ -171,6 +171,8 @@ export async function saveBlobToFile(blob, filename) {
 			document.body.removeChild(a);
 		}
 	}
+	// 外层 finally 仅 revokeObjectURL：按规范传字符串恒不抛（非/已撤销 URL 均静默 no-op），
+	// 不可能掩盖内层 finally 的错误，故意不加 catch+rethrow（「双层 finally 错误掩盖」不可达）。
 	finally {
 		URL.revokeObjectURL(url);
 	}

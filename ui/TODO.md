@@ -661,11 +661,6 @@ X4 触及面比 X1 广，需要重新评估：
    - 修法：给 dot 旁加文字状态标签，或在 dot 内叠加图标（如 ✓ / – / ! 形状区分）
    - 优先级：低；预存 a11y 缺陷，影响色盲用户
 
-3. **file-helper `saveBlobToFile` 双层 finally 错误掩盖**
-   - 现状：`src/utils/file-helper.js` 现版本嵌套两层 try/finally；外层 finally 若也抛错会把内层错误吞掉（诊断保真度损失）；本次重构引入
-   - 修法：合并 finally 逻辑或显式 catch + 再 throw 内层错误（参考 V8 `AggregateError` 模式）
-   - 优先级：低；现网仅影响错误诊断深度，不影响功能
-
 4. **ManageClawsPage 窄屏 320px 下 claw 名称 h2 被挤窄**
    - 现状：`ManageClawsPage.vue` claw 卡片标题 h2 在 320px 极窄屏下被同行操作按钮挤窄，依赖 `truncate` 兜底；视觉降级但不破损
    - 修法：调整窄屏 flex/grid 布局让标题独占一行，或为 320px 加专属断点处理
