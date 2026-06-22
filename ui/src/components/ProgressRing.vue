@@ -11,7 +11,7 @@
 		<svg
 			:viewBox="`0 0 ${viewBoxSize} ${viewBoxSize}`"
 			class="size-full"
-			:class="indeterminate ? 'animate-spin' : ''"
+			:class="indeterminate ? 'animate-spin motion-reduce:animate-none' : ''"
 		>
 			<!-- 轨道 -->
 			<circle
@@ -26,7 +26,7 @@
 				fill="none"
 				:stroke-width="strokeWidth"
 				stroke-linecap="round"
-				:class="[strokeClass, indeterminate ? '' : 'transition-[stroke-dashoffset] duration-200']"
+				:class="[strokeClass, indeterminate ? 'animate-pulse motion-reduce:animate-none' : 'transition-[stroke-dashoffset] duration-200 motion-reduce:transition-none']"
 				:stroke-dasharray="dashArray"
 				:stroke-dashoffset="dashOffset"
 				:transform="`rotate(-90 ${center} ${center})`"

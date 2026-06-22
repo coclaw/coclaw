@@ -95,6 +95,8 @@ describe('ProgressRing', () => {
 		test('value=null → svg 有 animate-spin', () => {
 			const w = mountRing({ value: null });
 			expect(w.find('svg').classes()).toContain('animate-spin');
+			// reduced-motion 守卫：旋转动画须可被 prefers-reduced-motion 关停
+			expect(w.find('svg').classes()).toContain('motion-reduce:animate-none');
 		});
 
 		test('value 不传 → 同样为不确定态', () => {
@@ -156,11 +158,29 @@ describe('ProgressRing', () => {
 			expect(arc.attributes('stroke-dasharray')).toBe(expected);
 		});
 
+		test('不确定态进度弧带 animate-pulse(呼吸动画,叠在旋转上)', () => {
+			const arc = mountRing({ value: null }).findAll('circle')[1];
+			expect(arc.classes()).toContain('animate-pulse');
+			// reduced-motion 守卫：呼吸动画须可被 prefers-reduced-motion 关停
+			expect(arc.classes()).toContain('motion-reduce:animate-none');
+		});
+
+		test('确定态进度弧不带 animate-pulse(仅不确定态呼吸)', () => {
+			const arc = mountRing({ value: 0.5 }).findAll('circle')[1];
+			expect(arc.classes()).not.toContain('animate-pulse');
+		});
+
 		test('确定态有 transition class,不确定态无', () => {
 			expect(mountRing({ value: 0.5 }).findAll('circle')[1].classes())
 				.toContain('transition-[stroke-dashoffset]');
 			expect(mountRing({ value: null }).findAll('circle')[1].classes())
 				.not.toContain('transition-[stroke-dashoffset]');
+		});
+
+		test('确定态 transition 带 reduced-motion 守卫', () => {
+			// prefers-reduced-motion 下进度过渡须可关停
+			expect(mountRing({ value: 0.5 }).findAll('circle')[1].classes())
+				.toContain('motion-reduce:transition-none');
 		});
 
 		test('不确定态不渲染百分比 span', () => {
