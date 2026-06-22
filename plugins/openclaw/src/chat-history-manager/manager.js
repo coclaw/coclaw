@@ -326,8 +326,10 @@ export class ChatHistoryManager {
 	 * RPC 契约：`coclaw.chatHistory.list` 直接透传本返回值，不做服务端过滤；调用方
 	 * （UI / 其它消费者）按 `archivedAt != null` 自行过滤未归档头与孤儿历史段。
 	 *
-	 * **返回值是 cache 引用，调用方禁止 mutate**（不要 splice / sort / 改 item 字段）；
-	 * RPC handler 立刻 JSON 序列化所以无副作用，进程内消费者若需要修改请先 deep copy。
+	 * 输出按「活跃头（archivedAt 为空）保序居首 + 已归档段按 archivedAt 降序（新→旧）」重排。
+	 * **返回的是新数组（filter 产生的副本），不是 cache 引用**，故重排不污染 cache；但数组内
+	 * 的 item 仍是 cache 共享对象，**调用方禁止改 item 字段**。RPC handler 立刻 JSON 序列化
+	 * 所以无副作用，进程内消费者若需要修改 item 请先 deep copy。
 	 *
 	 * @param {{ agentId: string, sessionKey: string }} params
 	 * @returns {Promise<{ history: { sessionId: string, archivedAt?: number }[] }>}
@@ -336,7 +338,16 @@ export class ChatHistoryManager {
 		await this.__reloadFromDisk(agentId);
 		const store = this.__getStore(agentId);
 		const history = Array.isArray(store[sessionKey]) ? store[sessionKey] : [];
-		return { history };
+		// 分区：宽松判空 == null 把活跃头（archivedAt 实测是 undefined）与已归档段分开。
+		// filter 保序且产生新数组——绝不原地 sort 污染 cache（list 是无锁读路径，被污染的
+		// cache 可能被后续写盘误持久化）。
+		const heads = history.filter((it) => it.archivedAt == null);
+		const archived = history.filter((it) => it.archivedAt != null);
+		// 全序安全比较器：任意值规整成有限数，坏值（NaN/非数字串/对象/Infinity）一律沉到 0、
+		// 落最旧端。哨兵必须用 0 不能用 -Infinity（两个 -Infinity 相减 = NaN 会复活乱序 bug）。
+		const ms = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
+		archived.sort((a, b) => ms(b.archivedAt) - ms(a.archivedAt));
+		return { history: [...heads, ...archived] };
 	}
 
 	/**

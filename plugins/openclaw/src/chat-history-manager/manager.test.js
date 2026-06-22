@@ -466,7 +466,7 @@ test('recordSessionTransition - T7 hook 先到，sessions.changed 后到幂等 n
 test('recordSessionTransition - T8 archivedSessionId 与 head 不匹配：保险不丢前任', async () => {
 	const tmpDir = await makeTmpDir();
 	try {
-		const { mgr } = await setupManager(tmpDir);
+		const { mgr, rootDir } = await setupManager(tmpDir);
 		await mgr.load('main');
 		// 先建 head Y（未归档）
 		await mgr.recordSessionTransition({
@@ -477,14 +477,19 @@ test('recordSessionTransition - T8 archivedSessionId 与 head 不匹配：保险
 			agentId: 'main', sessionKey: 'agent:main:main',
 			currentSessionId: 'A', archivedSessionId: 'X',
 		});
-		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
-		assert.equal(history.length, 3, 'A + Y@arch + X@arch 都要在');
-		assert.equal(history[0].sessionId, 'A');
-		assert.equal(history[0].archivedAt, undefined);
-		assert.equal(history[1].sessionId, 'Y');
-		assert.ok(typeof history[1].archivedAt === 'number');
-		assert.equal(history[2].sessionId, 'X');
-		assert.ok(typeof history[2].archivedAt === 'number');
+		// 直接读磁盘存储顺序（insertion order），与 list() 的展示排序解耦：本用例验证
+		// recordSessionTransition 的插入语义（翻 head + splice 前任 + 头插），不验证 list()
+		// 的归档段降序展示——Y/X 在同一次操作内归档、archivedAt 近乎相等，list 的相对序由
+		// Date.now() 抢占决定，不应在此断言。
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		const list = JSON.parse(await fs.readFile(filePath, 'utf8'))['agent:main:main'];
+		assert.equal(list.length, 3, 'A + Y@arch + X@arch 都要在');
+		assert.equal(list[0].sessionId, 'A');
+		assert.equal(list[0].archivedAt, undefined);
+		assert.equal(list[1].sessionId, 'Y');
+		assert.ok(typeof list[1].archivedAt === 'number');
+		assert.equal(list[2].sessionId, 'X');
+		assert.ok(typeof list[2].archivedAt === 'number');
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
@@ -496,7 +501,7 @@ test('recordSessionTransition - T8 archivedSessionId 与 head 不匹配：保险
 test('recordSessionTransition - T8b 一般路径 splice 位置（list≥2 fixture，捕获 splice→push 漂移）', async () => {
 	const tmpDir = await makeTmpDir();
 	try {
-		const { mgr } = await setupManager(tmpDir);
+		const { mgr, rootDir } = await setupManager(tmpDir);
 		await mgr.load('main');
 		// 1) 起手 hook 路径建 [A, X@arch]：head=A 未归档，X 在位置 1 归档
 		await mgr.recordSessionTransition({
@@ -511,16 +516,19 @@ test('recordSessionTransition - T8b 一般路径 splice 位置（list≥2 fixtur
 			agentId: 'main', sessionKey: 'agent:main:main',
 			currentSessionId: 'B', archivedSessionId: 'Z',
 		});
-		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
-		assert.equal(history.length, 4, 'list 应为 4 项');
-		assert.equal(history[0].sessionId, 'B');
-		assert.equal(history[0].archivedAt, undefined, 'B 是新 head 未归档');
-		assert.equal(history[1].sessionId, 'A', 'A 应在第二位（前任头翻归档）');
-		assert.ok(typeof history[1].archivedAt === 'number');
-		assert.equal(history[2].sessionId, 'Z', 'Z 应在第三位（splice 插入位置）');
-		assert.ok(typeof history[2].archivedAt === 'number');
-		assert.equal(history[3].sessionId, 'X', 'X 应在末位（更早的历史）');
-		assert.ok(typeof history[3].archivedAt === 'number');
+		// 读磁盘存储顺序断言 splice 落点：本用例验证 splice→push 漂移，是 recordSessionTransition
+		// 的插入语义；list() 的归档段降序展示会按 archivedAt 重排、掩盖 splice 落点，故必须读原始存储。
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		const list = JSON.parse(await fs.readFile(filePath, 'utf8'))['agent:main:main'];
+		assert.equal(list.length, 4, 'list 应为 4 项');
+		assert.equal(list[0].sessionId, 'B');
+		assert.equal(list[0].archivedAt, undefined, 'B 是新 head 未归档');
+		assert.equal(list[1].sessionId, 'A', 'A 应在第二位（前任头翻归档）');
+		assert.ok(typeof list[1].archivedAt === 'number');
+		assert.equal(list[2].sessionId, 'Z', 'Z 应在第三位（splice 插入位置）');
+		assert.ok(typeof list[2].archivedAt === 'number');
+		assert.equal(list[3].sessionId, 'X', 'X 应在末位（更早的历史）');
+		assert.ok(typeof list[3].archivedAt === 'number');
 	} finally {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	}
@@ -1349,4 +1357,141 @@ test('classifyChatHistorySessionKey - 非字符串 / 空串 / null → ok=false 
 	assert.deepStrictEqual(classifyChatHistorySessionKey(null), { ok: false, reason: null });
 	assert.deepStrictEqual(classifyChatHistorySessionKey(''), { ok: false, reason: null });
 	assert.deepStrictEqual(classifyChatHistorySessionKey(123), { ok: false, reason: null });
+});
+
+// --- list() 已归档段排序（按 archivedAt 降序，活跃头钉首） ---
+
+const ids = (history) => history.map((r) => r.sessionId);
+
+// L1: 乱序合法 archivedAt → 已归档段重排为新→旧（杀「根本没排」变异）
+test('list - 已归档段按 archivedAt 降序重排（乱序合法值）', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir);
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' }, // 活跃头：archivedAt undefined
+				{ sessionId: 'old', archivedAt: 1000 },
+				{ sessionId: 'new', archivedAt: 3000 },
+				{ sessionId: 'mid', archivedAt: 2000 },
+			],
+		}));
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history[0].sessionId, 'head');
+		assert.equal(history[0].archivedAt, undefined, '活跃头 archivedAt 仍是 undefined');
+		assert.deepStrictEqual(ids(history.slice(1)), ['new', 'mid', 'old'], '归档段应新→旧');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// L2: 活跃头（archivedAt undefined）始终 index 0，不被卷进排序（杀「整数组一起 sort」变异）
+test('list - 活跃头钉死 index 0，不参与归档段排序', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir);
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' }, // archivedAt undefined → 应居首
+				{ sessionId: 'a', archivedAt: 5000 },
+				{ sessionId: 'b', archivedAt: 1000 },
+				{ sessionId: 'c', archivedAt: 9000 },
+			],
+		}));
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history[0].sessionId, 'head', '活跃头必须在 index 0');
+		assert.equal(history[0].archivedAt, undefined);
+		assert.deepStrictEqual(ids(history.slice(1)), ['c', 'a', 'b'], '归档段按 9000>5000>1000 降序');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// L3: NaN/字符串/对象/Infinity 等坏 archivedAt 不崩、沉到最旧端、length 不变（杀比较器变异）。
+// NaN/Infinity 无法经 JSON 落盘（会变 null），故直接注入 cache + 让 readFile ENOENT 保留 cache。
+test('list - 坏 archivedAt（NaN/字符串/对象/Infinity）沉底、不污染、不崩', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr } = await setupManager(tmpDir, {
+			readFile: async () => { const e = new Error('no file'); e.code = 'ENOENT'; throw e; },
+		});
+		mgr.__cache.set('main', {
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' },
+				{ sessionId: 'good1', archivedAt: 2000 },
+				{ sessionId: 'badNaN', archivedAt: NaN },
+				{ sessionId: 'badStr', archivedAt: 'abc' },
+				{ sessionId: 'badObj', archivedAt: {} },
+				{ sessionId: 'badInf', archivedAt: Infinity },
+				{ sessionId: 'good2', archivedAt: 5000 },
+			],
+		});
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(history.length, 7, 'length 不变');
+		assert.equal(history[0].sessionId, 'head');
+		assert.equal(history[1].sessionId, 'good2', '合法降序：5000 在前');
+		assert.equal(history[2].sessionId, 'good1', '合法降序：2000 次之');
+		// 坏值全部沉到末尾（保持 filter 原序），且合法值都在它们之前
+		assert.deepStrictEqual(ids(history.slice(3)), ['badNaN', 'badStr', 'badObj', 'badInf']);
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// L4: 老数据的数字串 archivedAt 仍被尊重（钉死 Number(x) 取舍）
+test('list - 数字串 archivedAt 被尊重（Number 解析）', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir);
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' },
+				{ sessionId: 'older', archivedAt: 1600000000000 },
+				{ sessionId: 'newerStr', archivedAt: '1700000000000' }, // 数字串，应被尊重排更前
+			],
+		}));
+		const { history } = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.deepStrictEqual(ids(history.slice(1)), ['newerStr', 'older'], '数字串 1.7e12 > 数字 1.6e12');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
+});
+
+// L5: list 返回新数组、不原地排序污染 cache（杀原地 sort 变异）
+test('list - 返回新数组，cache 内部数组保持磁盘原序不被原地排序', async () => {
+	const tmpDir = await makeTmpDir();
+	try {
+		const { mgr, rootDir } = await setupManager(tmpDir);
+		const filePath = nodePath.join(rootDir, 'main', 'sessions', 'coclaw-chat-history.json');
+		await fs.writeFile(filePath, JSON.stringify({
+			version: 1,
+			'agent:main:main': [
+				{ sessionId: 'head' },
+				{ sessionId: 'a', archivedAt: 1000 },
+				{ sessionId: 'b', archivedAt: 3000 },
+				{ sessionId: 'c', archivedAt: 2000 },
+			],
+		}));
+		const first = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.deepStrictEqual(ids(first.history.slice(1)), ['b', 'c', 'a'], '首次输出已排序');
+		// 返回的是新数组 ≠ cache 引用；cache 内部数组保持磁盘原序
+		const cached = mgr.__cache.get('main')['agent:main:main'];
+		assert.notEqual(cached, first.history, 'list 应返回新数组而非 cache 引用');
+		assert.deepStrictEqual(ids(cached), ['head', 'a', 'b', 'c'], 'cache 数组应保磁盘原序，未被原地 sort');
+		// 改动第一次结果不应影响第二次
+		first.history.reverse();
+		first.history.push({ sessionId: 'junk' });
+		const second = await mgr.list({ agentId: 'main', sessionKey: 'agent:main:main' });
+		assert.equal(second.history[0].sessionId, 'head');
+		assert.deepStrictEqual(ids(second.history.slice(1)), ['b', 'c', 'a'], '第二次仍为正确序');
+	} finally {
+		await fs.rm(tmpDir, { recursive: true, force: true });
+	}
 });
