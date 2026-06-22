@@ -778,6 +778,9 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 					if (pendingQueue.length === 0 && !draining) finishUpload();
 				}
 			} else {
+				// done 已收到后到达的迟到 binary 分片必须拒收：否则越界字节会被累加进
+				// receivedBytes 并落盘，让本应 size-mismatch 的传输蒙混过 size 校验、生成错误文件。
+				if (doneReceived) return;
 				// binary 数据帧 — 入队，由 drainLoop 按节奏写入
 				const chunk = event.data;
 				const len = chunk.byteLength ?? chunk.length ?? 0;

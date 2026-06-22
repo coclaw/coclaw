@@ -1167,6 +1167,47 @@ test('handleFileChannel PUT: size mismatch 被拒绝', async () => {
 	}
 });
 
+test('handleFileChannel PUT: done 后迟到 binary 分片被拒收（不补足 size、不生成文件）', async () => {
+	const dir = await makeTmpDir();
+	try {
+		const handler = createFileHandler({
+			resolveWorkspace: async () => dir,
+			logger: silentLogger(),
+		});
+		const dc = createMockDC('file:late-binary');
+		handler.handleFileChannel(dc);
+
+		// 声明 10 字节
+		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'late.txt', size: 10 }) });
+		await dc.__waitForSent((sent) => sent.length > 0);
+		assert.equal(JSON.parse(dc.__sent[0]).ok, true);
+
+		// 发 6 字节（不足 declaredSize=10）→ done → 再发 4 字节迟到分片。
+		// 迟到分片在数值上恰好把 receivedBytes 补到 10；若被吸纳则 size 校验通过、文件生成。
+		dc.onmessage({ data: Buffer.from('123456') });
+		dc.onmessage({ data: JSON.stringify({ done: true, bytes: 6 }) });
+		dc.onmessage({ data: Buffer.from('7890') });
+
+		await dc.__waitForSent((sent) => sent.some((s) => { try { return JSON.parse(s).ok === false; } catch { return false; } }));
+
+		// 修复后：迟到 binary 被拒收 → receivedBytes 停在 6 → size-mismatch → WRITE_FAILED
+		const strings = dc.__sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+		const errMsg = strings.find((s) => s.ok === false);
+		assert.ok(errMsg, 'expected a WRITE_FAILED error response');
+		assert.equal(errMsg.error.code, 'WRITE_FAILED');
+		assert.match(errMsg.error.message, /Size mismatch/);
+		// 不得有成功响应
+		assert.ok(!strings.some((s) => s.ok === true && s.bytes !== undefined), 'must not produce a success response');
+
+		// 目标文件不应生成
+		await waitForNoTmpFiles(dir);
+		const files = await fs.readdir(dir);
+		assert.ok(!files.includes('late.txt'), 'target file must not be created');
+	} finally {
+		await fs.rm(dir, { recursive: true });
+	}
+});
+
 test('handleFileChannel PUT: 接收字节数超限 → SIZE_EXCEEDED', async () => {
 	const dir = await makeTmpDir();
 	try {
@@ -3254,7 +3295,7 @@ test('handleFileChannel PUT: doneReceived=true 但 finishing=false 时 ws emit e
 // 直接 return，并不会再调 attachTmpCleanupOnce。这条 case 唯一的兜底是 ws.end(cb)
 // 在 ws 被 destroy 后用 err 调 cb → 走 finishUpload 里的 attachTmpCleanupOnce 分支。
 // 若未来有人把"err 分支 attach"摘掉，本测试会以孤儿 tmp 暴露
-test('handleFileChannel PUT: done 后到 SIZE_EXCEEDED 帧仍清理孤儿 tmp', async () => {
+test('handleFileChannel PUT: done 后迟到超大 binary 被忽略（不触发 SIZE_EXCEEDED），premature-close 仍清理孤儿 tmp', async () => {
 	const dir = await makeTmpDir();
 	try {
 		const unlinkCalls = [];
@@ -3315,13 +3356,20 @@ test('handleFileChannel PUT: done 后到 SIZE_EXCEEDED 帧仍清理孤儿 tmp', 
 		dc.onmessage({ data: JSON.stringify({ method: 'PUT', path: 'r.txt', size: 5 }) });
 		await dc.__waitForSent((sent) => sent.length > 0);
 		dc.onmessage({ data: JSON.stringify({ done: true }) });
-		// 然后晚到一帧明显超 declaredSize 的 binary → SIZE_EXCEEDED 同步链
+		// 然后晚到一帧明显超 declaredSize 的 binary —— 修复后被 doneReceived 守卫直接忽略，
+		// 不再累加 receivedBytes、不触发 SIZE_EXCEEDED（未修代码会发 SIZE_EXCEEDED → 本断言失败）
 		dc.onmessage({ data: Buffer.from('123456789') });
+		// DC 在 flush 完成前 error → premature close：ws.destroy 让 finishUpload 的 ws.end(cb)
+		// 收到 err 走 err 分支 attachTmpCleanupOnce（与 dc.onerror 的 attach 叠加 → 命中 dedup 守卫）
+		dc.onerror(new Error('boom'));
 
-		// 等 fopen 落盘 + ws.end(cb) 兜底 attach 触发 listener 清理
+		// 等 fopen 落盘 + 'close' listener 触发兜底清理
 		await fopenDonePromise;
 		await waitForNoTmpFiles(dir, { timeoutMs: 2000 });
 
+		// 新行为：迟到 binary 被忽略，不得发出 SIZE_EXCEEDED
+		const sizeExceeded = dc.__sent.filter((s) => typeof s === 'string').map((s) => { try { return JSON.parse(s); } catch { return {}; } }).some((o) => o.error?.code === 'SIZE_EXCEEDED');
+		assert.ok(!sizeExceeded, 'late binary after done must not trigger SIZE_EXCEEDED');
 		// 关键不变式：必须有一次 unlink 抓到 post-fopen 的真文件（兜底链生效）
 		assert.ok(unlinkCalls.some((c) => c.existed), `safeUnlink should target existing tmp file (post-fopen), got: ${JSON.stringify(unlinkCalls)}`);
 		// dedup 不变式：close listener 仅一个
