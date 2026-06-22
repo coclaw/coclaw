@@ -1,5 +1,17 @@
 # @coclaw/openclaw-coclaw
 
+## 0.26.5
+
+### Patch Changes
+
+- c28e9c3: fix(plugin): a non-string `agentId` on session, topic, chat-history and file RPC/DC methods now fails loudly with `INVALID_INPUT` instead of being silently coerced to `'main'`, which could leak another workspace's file listing/content or misdirect writes. Omitted/empty/whitespace `agentId` still falls back to `'main'` as before.
+- bed50d1: fix(chat-history): `chatHistory.list` now sorts the archived segment by `archivedAt` descending (newest first) before returning, keeping the active head pinned at index 0. The reorder is done on a fresh copy so the in-memory cache is never mutated; non-numeric `archivedAt` values are coerced to the oldest end, and malformed (null/non-object) entries are dropped rather than passed through, so the list never throws and never hands a null entry to consumers.
+- 73a1fb7: Harden closeAll loop-safety: in closeByConnId, move \_\_sessions.delete before the throwable synchronous teardown steps (detach handlers / clear timers) so a mid-block throw cannot leave the session in the map and spin closeAll's per-session-catch drain forever.
+- a4a9c1f: fix(webrtc): closeAll now tolerates an individual session's close failure (per-session error downgraded to a warn) instead of aborting the cleanup of the remaining sessions.
+- 97c3a3a: fix(webrtc): on an auth-close (4001/4003) the realtime bridge now awaits an in-flight lazy WebRtcPeer init before tearing down, so a close that races a pending `__initWebrtcPeer` no longer leaks an orphan PeerConnection and file handler. The `__webrtcPeerReady` latch is also cleared unconditionally. The `stop()`/`refresh()` teardown path is now covered by the same guard.
+- 6a4eaf7: fix(webrtc): log the ndc preloader's post-removal fallback as `ndc.skip reason=ndc-not-installed` when `node-datachannel` resolves to MODULE_NOT_FOUND, instead of the misleading `ndc.fallback reason=unexpected`; genuine unexpected errors still report `unexpected`.
+- 9d7e1ee: fix(file-manager): reject late binary chunks that arrive after an upload's `done` frame so out-of-bounds bytes can no longer be absorbed into the written file.
+
 ## 0.26.4
 
 ### Patch Changes

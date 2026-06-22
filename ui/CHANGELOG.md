@@ -1,5 +1,13 @@
 # @coclaw/ui
 
+## 0.32.9
+
+### Patch Changes
+
+- 0e98381: Improve screen-reader accessibility: icon-only back buttons now expose an accessible "Back" label, and list "more actions" buttons announce which row they act on (so users can tell entries apart). Also removes an unused internal demo page.
+- 184c162: Fix Zhipu AI (GLM) missing from the "popular" group in the add-provider dialog. The popularity metadata was keyed by `zhipuai`, but OpenClaw's real provider id is `zai`, so it never matched the catalog and the provider fell into the "other" group. Key the entry by `zai`.
+- 63a1403: Fix the desktop (Electron) toast notification position double-counting the top safe-area inset on notched Macs in fullscreen; the inset is now applied once, via the toast viewport margin.
+
 ## 0.32.8
 
 ### Patch Changes
