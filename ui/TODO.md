@@ -61,15 +61,6 @@
 - 修法方向：加自定义 NSIS 脚本（`nsis.include` 指向 `.nsh`，`!macro customInstall` 里 `WriteRegStr HKCU "Software\Classes\coclaw" ...`、`customUnInstall` 删）。perMachine:false 故写 HKCU 不需提权。
 - 为何暂不做：需 Windows 构建环境实测安装包注册表写入，本环境无法验证；盲写未测 NSIS 脚本有破坏 Windows 构建风险。待 Windows/打包环境就绪后实现+验证。
 
-## deep-link.js flushPendingDeepLink 在窗口 null/destroyed 时不清 pendingUrl（陈旧链接可能滞留）
-
-**发现日期**：2026-06-06
-**来源**：同上 deep-review（`ui/electron/deep-link.js:65-70`）；预存边角，非本次引入
-
-- 现状：`flushPendingDeepLink` 仅在 win 存在且未 destroyed 时 send + 清空；若此刻窗口已销毁，`pendingUrl` 滞留，下个窗口加载后会投递这条可能已过期的 deep-link。
-- 影响：极边角（需"有 pending 时窗口恰好销毁"再开新窗口），且"留着等下个窗口"也可视作有意行为。严重度低。
-- 修法方向（若要治）：窗口 closed/销毁路径上按需丢弃过期 pending，或给 pendingUrl 加时效。
-
 ## 账号授权 starting 态取消后"在飞 login"治理：晚到 accepted 主动拨后端 + 新 login 竞态（增强，待评审）
 
 **发现日期**：2026-06-01
@@ -368,12 +359,6 @@
     - 这是 Vue Options API + async router 的通用模式问题，不仅限于本次修复，但本次新增 router.replace 让它更明显
     - 修法方向：beforeUnmount 设 `this.__unmounted = true`，每个 await 后早返回 + 已发起的 newStore 主动 dispose
 
-4. **`procRecordedVoice` 绕过 MAX_UPLOAD_SIZE 校验** — **已评估保持现状（2026-05-24 复核）**
-    - 现状：`ChatInput.vue:449-460` 录音文件直接 `chatStore.addFiles([item])`，跳过 `addFiles` 入口的 MAX_UPLOAD_SIZE 检查
-    - 实际影响：录音受 MAX_RECORD_DURATION + audioBitsPerSecond 双重限制，理论上限约 1.2MB，远低于 1GB 上限，不会触发
-    - 评估结论：改走 `this.addFiles([file])` 会丢 `durationMs` 字段（录音侧专有标注，`this.addFiles` 入口签名不透传 extras）；继续保留当前实现
-    - 备忘（若将来想统一）：在 `procRecordedVoice` 内部内联 `if (file.size > MAX_UPLOAD_SIZE) ...` 三行判断即可，不改 `this.addFiles` 入口
-
 ## toolCall 数据已留住，渲染 + 配对 + 增量结果待补（2026-05-03）
 
 **背景**：本次只补齐了"数据层不阉割"——直播路径（`agent-stream.js`）和回放路径（`session-msg-group.js`）现在都把 `toolCallId` / `args`（`tool_use.input` 归一化）、toolResult 的 `toolCallId` / `isError` 透传到 step。但渲染层完全没动，下面三件事共用同一份"按 `toolCallId` 索引到原 toolCall step"的能力，登记后续一并设计落地。
@@ -405,38 +390,13 @@
     - 修法方向：把 store identity 比对换成 per-call token：`__loadMoreHistory` 入口 bump `__loadToken`，await 后比对 token，finally 也只在 token 匹配时清锁；可彻底覆盖"切走切回 / 同 store 多次重入"等所有路径
     - 本次只补到"切走 → 不动新视图 + 不误清新锁"层面（占绝大多数真实场景）；token 改造留待后续
 
-## 一阶段 RPC 调用方对 ok=true+payload.status='error' 的协议演进保险（2026-05-07）
+## agent run 取消 (cancellation) 与"自然完成"语义混淆（2026-05-07）
 
 **发现日期**：2026-05-07
-**关联 commit**：fix(ui): notify on accepted-then-failed agent run（"模型不可用静默失败" 修复）
 
-来源：本次"agent run accepted 后失败静默吞掉"修复时，调研 + codex-rescue 评估出的同类潜在 bug。OpenClaw 协议允许一阶段 RPC 下发 `ok=true + payload.status='error'/'timeout'`（业务级失败终态），但 UI 当前 `conn.request` 一律 resolve，让消费者直接当成功处理。
-
-**当前实测不会触发**：上游 `agent` 主 RPC 是"双保险"（同时下发 `ok=false + payload.status='error'`），其它 OpenClaw 上游 method 大概率也是同样的设计风格。本次只在 `__onRpcDone` 里加了防御性分支，覆盖 `agent` 单点。下面这些是"协议未来演进或上游漏发 ok=false 时" UI 才会踩到的潜在隐患——影响是消费者把 status='error' 当成"空结果"静默处理。
-
-修复方向：调用点 resolve 后增加 `if (result?.status === 'error') throw new Error(...)` 或类似分支；或者后续重构 `conn.request` 加白名单机制（仅对真正依赖 status 的 method 如 `agent.wait` 保留 resolve 语义）。
-
-1. **`chat.history`** — `chat.store.js:353`。status='error' 时 `currentSessionId` 被静默置空，影响后续历史加载和 sid 比较判定
-2. **`sessions.get`** — `chat.store.js:314, 404`。status='error' 视为空成功，会把已有 messages 清空
-3. **`sessions.list`** — `sessions.store.js:225`、`dashboard.store.js:190`。status='error' 让会话列表/dashboard 数据归零
-4. **`coclaw.chatHistory.list`** — `chat.store.js:1389`。status='error' 截断/清空历史分页
-5. **`coclaw.sessions.getById`** — `chat.store.js:460, 1448`。status='error' 把 topic 消息清空
-6. **`coclaw.topics.list/delete`** — `topics.store.js:81/206`。delete 只校验 `result.ok`，status='error' 下会误删本地 topic
-7. **`coclaw.files.*`** — `services/file-transfer.js:85/99/110/121`。列表和写操作都不校验 payload 中的错误状态
-8. **`coclaw.info.patch`** — `views/ManageClawsPage.vue:393`。重命名在任何 resolved payload 后都乐观应用
-9. **`agents.list`** — `agents.store.js:128`。status='error' 把 agent 列表标为"已加载但为空"
-
-**关联 deep design**：可考虑由 `claw-connection.js` 在协议层加 status 识别 + 通过 method 白名单豁免（`agent.wait` 必须保留），把这套逻辑收拢到一处而非散布在各调用点。
-
-10. **`agent` run 取消 (cancellation) 与"自然完成"语义混淆**
-    - 现状：上游对"用户取消"走 `ok=true + payload.status='ok' + result.meta.aborted=true`（见 openclaw-repo `agent.ts:330` 用 `result?.meta?.aborted` 判断）。UI 当前 `__onRpcDone` 走 `endReason='rpc'` 不读 meta.aborted，"用户主动取消"和"自然完成"被混为一谈
-    - 影响：诊断日志、analytics、UI 状态展示无法区分两类终态
-    - 修复方向：`__onRpcDone` 读 `rpcResult.result?.meta?.aborted`，true → endReason='rpc-aborted'；ChatPage 不 notify 但日志区分
-
-11. **协议偏离时 error/summary 是 object 形态显示成 `[object Object]`**
-    - 现状：`agent-runs.store.js:404` 与 `chat.store.js:1133` 的 `String(raw)` 兜底能保证 toast 不丢 description，但若 `summary`/`error` 是 object（协议偏离），用户看到的是 `[object Object]` 而非可读内容
-    - 触发条件：当前 OpenClaw `chat.ts` / `agent.ts` 的 error/summary 都是 string，不会触发
-    - 修复方向：换 JSON.stringify 兜底（含循环引用 try/catch），让协议偏离时至少给出 raw JSON 而非 `[object Object]`。属"可读性增强"，非阻塞
+- 现状：上游对"用户取消"走 `ok=true + payload.status='ok' + result.meta.aborted=true`（见 openclaw-repo `agent.ts:330` 用 `result?.meta?.aborted` 判断）。UI 当前 `__onRpcDone` 走 `endReason='rpc'` 不读 meta.aborted，"用户主动取消"和"自然完成"被混为一谈
+- 影响：诊断日志、analytics、UI 状态展示无法区分两类终态
+- 修复方向：`__onRpcDone` 读 `rpcResult.result?.meta?.aborted`，true → endReason='rpc-aborted'；ChatPage 不 notify 但日志区分
 
 ## 测试场景补强 review 中发现的预存 / UX 增强项（2026-05-07）
 

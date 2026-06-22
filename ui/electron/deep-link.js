@@ -63,6 +63,10 @@ export function bootstrapDeepLinkFromArgv(argv) {
  * @param {Electron.BrowserWindow} win
  */
 export function flushPendingDeepLink(win) {
+	// 窗口缺失/已销毁时不清 pendingUrl 是有意的：无活窗口时保留，待下个窗口 did-finish-load 补发
+	// （macOS 托盘/无窗口态点链接的正常投递）。当前两个调用点都在窗口存活时同步调用，"不清"分支生产
+	// 不可达；即便到达（如将来新增调用方），渲染层也仅 router.push（query 在路由解析时剥离、不消费绑定
+	// 码），最坏即自恢复的页内跳转，无害。
 	if (pendingUrl && win && !win.isDestroyed()) {
 		win.webContents.send('deep-link', pendingUrl);
 		pendingUrl = null;

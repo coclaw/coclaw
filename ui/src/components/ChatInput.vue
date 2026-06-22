@@ -460,6 +460,8 @@ export default {
 			const item = formatFileBlob(file);
 			item.isVoice = true;
 			item.durationMs = durationMs || null;
+			// 录音时长硬上限 10min（MAX_RECORD_DURATION），即便编码码率提示被无视，任何麦克风音频体积也远低于 MAX_UPLOAD_SIZE(1GiB)；
+			// 且上传层 __doUpload 会再校验大小，故此处故意不重复 MAX_UPLOAD_SIZE 检查
 			this.chatStore?.addFiles([item]);
 			this.recorderStatus = 'IDLE';
 		},

@@ -344,6 +344,13 @@ export class ClawConnection {
 		// - 单阶段（无 onAccepted）：任何 ok=true 即终态
 		// - 两阶段：除 accepted 外的任何 status（'ok' / 'error' / 'timeout' /
 		//   上游未来新增的任何字符串）都不会再有后续帧，提前清条目并 resolve 透传
+		// 下列读类 method（chat.history / sessions.* / agents.list / coclaw.*）的调用点刻意不防御
+		// ok:true + payload.status='error'：已逐个核对上游 handler——它们的成功 payload 不带顶层 status
+		// 字段、失败一律走 ok:false（上方已 reject），故该组合不可达；即便触发，各调用点最坏也只是视图
+		// 清空/乐观值，重拉即自恢复。
+		// 注意：chat.send 是另一类单阶段 method，确实回传顶层 status，已在其调用点单独读取处理（见
+		// chat.store.js 的 slash-command 分支），不在上述"不带 status"之列；若未来某读类 method 新增
+		// 顶层 status 字段，需重审其调用点。
 		this.__pending.delete(payload.id);
 		this.__cleanupWaiter(waiter);
 		waiter.resolve(payload.payload ?? {});

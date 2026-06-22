@@ -399,8 +399,10 @@ export const useAgentRunsStore = defineStore('agentRuns', {
 			const isFailed = status === 'error' && !run.cancelled;
 			const isTimeout = status === 'timeout' && !run.cancelled;
 			if (isFailed || isTimeout) {
-				// stringify 兜底：协议偏离时 summary/error 可能是 object（如 { code, message }），
-				// 不强制成字符串会让 ChatPage 截断逻辑判 typeof !== 'string' 直接丢掉 description。
+				// String 兜底是廉价保险：上游 payload 的 summary/error 恒为 string（formatForLog 签名即 :string、
+				// 其余走 String(err)）；object 形态的 error 仅存在于帧级 errorShape，已在 claw-connection 转成
+				// Error reject，故此处 object 分支不可达；故意不升级成 JSON.stringify（那是对不可达分支的纯观感增强），
+				// 但保留 String 兜底防御。
 				const raw = rpcResult?.summary ?? rpcResult?.error;
 				const errMsg = (typeof raw === 'string' && raw)
 					? raw
