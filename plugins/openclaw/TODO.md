@@ -142,12 +142,14 @@
 
 ## __sendPeerTransport 失败后无重试调度（预存）
 
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
-**关联**：webrtc-peer.js __sendPeerTransport
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）；2026-05-06 B-stage2 B10 复记为同一问题，2026-06-23 Round 14 合并去重（原另有 `### sendPeerTransport 签名回滚后无重发触发器（PRE-EXISTING）` 一条已并入此处）。
+**锚点（符号，行号会漂按 grep 定位）**：`webrtc-peer.js` `__sendPeerTransport`；两个调用点 `dc.onopen` 与 `onselectedcandidatepairchange`（均经 queueMicrotask 调）。
 
-**问题**：sendTo 返回 false 时回滚 sig 允许重试，但重试依赖下次 dc.onopen 或 onselectedcandidatepairchange 事件。若 pair 已稳定、DC 已 open 过、此后这些事件不再触发，transport info 永远不重发。
+**问题**：`__sendPeerTransport` 在 sendTo 失败时回滚 `__lastPeerTransportSig`、靠后续事件重发，但 `dc.onopen` 在 dc 生命周期内只触发一次。两个调用点里只有 `onselectedcandidatepairchange` 可多次触发，故"永不重发"只在 selected pair 永久稳定后才成立；此后该 session 的 peer-transport 诊断（candidate type / protocol / relay protocol）永不上报到 UI。失败触发条件之一：dc.onopen 触发时 `session.rpcQueue` 尚未就绪（`sendTo` 检查 `if (!q || ...) return false`），FBQ 的 `init()`（mkdir + readdir + cleanupResiduals + open writeStream）把窗口从 microtask 级放大到数十毫秒级。
 
-**修复方向**（不修）：sendTo 失败后挂一个延迟重试，或在 onbufferedamountlow 恢复时检查 sig 为 null 再发。预存——sendTo 改 async 不引入新问题，仅在原本就失败的场景下不重试。
+**影响**：仅 UI 诊断信息（peer transport 信号）丢失，不影响 RPC 业务（诊断-only）。
+
+**修复方向**（不修）：装配 rpcQueue 后主动调一次 `__sendPeerTransport(connId)`（条件：`selectedCandidatePair` 已 nominate），或在 sendTo 失败回滚 sig 后注册"等 rpcQueue 就绪重试"的钩子。
 
 ## bridge 不被通知 conn 关闭 → server 侧 pending request map 残留（预存）
 
@@ -323,15 +325,6 @@
 
 **为什么 TODO**：是否保留兼容旧格式属于设计决策（用户场景待确认）。需先和用户对齐：`serverUrl` 缺失时是直接报错，还是兜底用 default url。
 
-### gateway pre-handshake send-fail 不入退避重试
-
-**发现**：E2 codex-rescue。
-**锚点**：`plugins/openclaw/src/realtime-bridge.js:669-672`（`__sendGatewayConnectRequest` catch）
-
-**问题**：握手 connect 请求 send 抛错时只 warn + 清 reqId，未关 ws、未调 `__onGatewayAttemptFailed`，握手前 close handler 又被 `wasReady||connectFailReported` 守卫拦下，最终不入退避。
-
-**为什么 TODO**：触发面极窄（ws send 在 OPEN 状态抛错少见）；改动需要谨慎覆盖握手三态机。先放一放，等真实环境观察到该路径触发再修。
-
 ### bind 进行中可被新 enroll 插入覆盖 config
 
 **发现**：E 阶段 round-2 复查（codex-rescue High）。
@@ -370,17 +363,6 @@
 **实际影响**：server DB 长尾死记录直到自然过期/server 自己清理；plugin 端业务无感；user-facing 影响极小。
 
 **为什么 TODO**：origin/main 没有 cancelActiveEnroll，enroll 长轮询不会被中途取消，mobile 任何时候 claim 都有人取——所以是本次引入的 regression，但 user-facing 影响小。修法 A（server 加 invalidate-claim-code RPC）跨工作区；修法 B（plugin 端保留终态 watcher）增加复杂度。属 H2/H3 同家族，待统一规划 bind/enroll 状态机锁时一并处理。
-
-### server message handler await 后未重验 sock identity（M，预存）
-
-**发现**：G 阶段 deep-review 维度 3（codex-rescue）。
-**锚点**：`plugins/openclaw/src/realtime-bridge.js:1213-1220` `rtc:` 分支 `await __webrtcPeerReady` + `await webrtcPeer.handleSignaling`
-
-**问题**：入口 1197 行有 stale guard，但 1213-1220 两次 await 期间 `serverWs` 可能被 close handler 设 null 或换成新 sock。await 返回后会用旧消息内容调用当前 webrtcPeer。webrtcPeer 自身有大量 identity guard 兜底，实际穿透概率低。
-
-**修复方向**：每次 await 后重验 `this.serverWs === sock && !this.intentionallyClosed`。
-
-**为什么 TODO**：预存、穿透概率低、webrtcPeer 内部 guard 已兜底。
 
 ### atomic-write 系统断电场景的 fsync 加固（M，预存）
 
@@ -432,20 +414,6 @@
 2026-06-23 测试补强：原条目列的 default-construct / malformed / invalid-index / 分页 分支前轮已覆盖；本轮又补测并删除了 5 处 c8-ignore（safeReaddir / safeAccess 非 ENOENT 上抛、listAll 与 resolveTranscriptFile 的 readdir→stat race 双子分支、sort tiebreaker），均用悬空/自环软链构造确定性 ENOENT/ELOOP，无 prod 逻辑改动。
 
 **剩 1 项无法 test-only 覆盖**：`readTranscriptText` 的 readFile race 块——`if (err.code === 'ENOENT') return ''` 子分支需真 TOCTOU（文件在 resolveTranscriptFile 校验通过后、readFile 前消失），非 mock `fsp` 或改 prod 不可确定复现；兄弟 throw 分支仅 EACCES 可达，删块 ignore 会暴露未覆盖的 `return ''` 语句、打破 `--lines 100 / --statements 100` 门禁。故保留该处 c8-ignore。
-
-### sendPeerTransport 签名回滚后无重发触发器（PRE-EXISTING）
-
-**发现日期**：2026-05-06（B-stage2 B10 deep-review 抓出）
-
-**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.js:905-932`（`__sendPeerTransport`）+ `:635-644`（`dc.onopen` queueMicrotask 调用点）
-
-**问题**：`__sendPeerTransport` 在 sendTo 失败时回滚 `__lastPeerTransportSig` 并注释"以便 dc.onopen 再次触发时重发"，但 `dc.onopen` 在 dc 生命周期内只触发一次——没有任何机制让它"再次触发"。失败后该 session 的 peer-transport 信息（candidate type / protocol / relay protocol）永久不会上报到 UI 诊断。
-
-**触发条件**：dc.onopen 触发时 `session.rpcQueue` 尚未就绪——`sendTo` line 190 检查 `if (!q || ...) return false`。MemoryQueue 时代 `init()` 是异步 no-op-but-callable（plan-1 round-2 引入），微秒级完成；切到 FBQ 后 `init()` 包含 mkdir + readdir + cleanupResiduals + open writeStream，时间窗从 microtask 级放大到数十毫秒级。**B-stage2 B9b 让 PRE-EXISTING bug 从理论暴露变成实际易复现**，但 race 本身在 plan-1 round-2 引入 `init()` 后就已存在。
-
-**影响**：仅 UI 诊断信息（peer transport 信号）丢失，不影响 RPC 业务。
-
-**修复方向**：装配 rpcQueue 后主动调一次 `__sendPeerTransport(connId)`（条件：`session.pc.selectedCandidatePair` 已 nominate 完成），或在 sendTo 失败回滚 sig 后注册一个"等 rpcQueue 就绪重试"的钩子。（2026-06-11 归位：本段原误插在下方"上游契约演进"条目内）
 
 ## 跟踪 OpenClaw 上游契约演进对 auto-upgrade 的影响
 
@@ -515,22 +483,17 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 - monitor 不必参与（monitor 是 drop 视角，bypass 不是 drop）；bypass 统计放 FBQ 自身 stats 即可
 - close-log 加 bypass 累计字段（与 dropped / residual 并列），让降级期间的 bypass 救援量级可观测
 
-## gateway WS transport-level error 握手前发生时重试调度静默卡死
+## gateway 握手前 send-fail 不入退避重试 → ws 不关致按需重建被堵（预存，窄化 KEEP）
 
-**发现日期**：2026-05-09（Round 2 step 2 deep-review 由 codex-rescue 综合实例 surface）
+**发现日期**：2026-05-09（Round 2）；2026-05-02 E 阶段 codex-rescue 已记同一类问题（原 `### gateway pre-handshake send-fail 不入退避重试`）。2026-06-23 Round 14 合并去重并校准。
 
-**锚点**：
-- `plugins/openclaw/src/realtime-bridge.js:975-987` `ws.addEventListener('error', ...)` handler — 仅打日志 + 主动 close，没有标"connect-failed"
-- `plugins/openclaw/src/realtime-bridge.js:963-973` close handler 重试调度的判定 `if (this.started && !this.__gatewayGaveUp && (wasReady || connectFailReported))`
-- `connectFailReported` 仅在 `:812` 设置 true（v3 握手 res 的协议错误分支）
+**锚点（符号，行号会漂按 grep 定位）**：`realtime-bridge.js` `__sendGatewayConnectRequest` 的 catch；重试调度判定 `if (this.started && !this.__gatewayGaveUp && (wasReady || connectFailReported))`；`connectFailReported`（闭包局部，仅 v3 握手协议错误分支置 true）；`__ensureGatewayConnection` 的 `if (this.gatewayWs) return` 守卫。
 
-**问题**：gateway WS 在握手前发生 transport-level error（连接被拒、DNS 失败等）时，error handler 主动 ws.close(1011)，但 `connectFailReported` 没人设 true、`wasReady` 也是 false。close handler 的重试调度判定两个条件都不满足 → **静默不重试**，gatewayWs 卡在 null，新一轮 `__ensureGatewayConnection` 也不会自动调度。bridge 看似活着但内线永久断。
+**问题（窄化后的真实残余）**：握手 connect 请求的 `ws.send` 抛错时，`__sendGatewayConnectRequest` 的 catch 只 warn + 清 `gatewayConnectReqId`，**不关 ws**；于是 `gatewayWs` 仍非 null，`__ensureGatewayConnection` 因 `if (this.gatewayWs) return` 持续提前返回，按需重建被堵到 gateway 自己关掉这条握手未完成的 socket 为止。是否持久取决于嵌入网关有无握手超时（未验证）；触发面极窄（OPEN 态 ws.send 抛错少见）。
 
-**当前不易触发**：本机 OpenClaw gateway 是同进程嵌入，本地 WS 连接极少 transport error。但 IPC over WS / 容器化场景下可能撞到。
+**已证伪、不再列**：原条目宣称的另一路径——transport-level error（连接被拒 / DNS 失败）会"永久静默卡死"——Round 14 核实为**按需自恢复**：ws error handler 总会 close ws、close handler 把当前 `gatewayWs` 置 null，下一次 agent-RPC 经 `__waitGatewayReady → __ensureGatewayConnection` 即重建。无重试 timer 是事实，但 `gatewayWs` 已 null → 下次 RPC 必重建，不构成永久 wedge。
 
-**修复方向**：error handler 内主动设 `connectFailReported = true` + `__gatewayLastReason = 'ws_error'`，让 close handler 走重试路径；或独立调用 `__onGatewayAttemptFailed('ws-error')`。
-
-**预存问题**：step 1 之前就存在（step 1 仅移除了外线 gate `serverWs && serverWs.readyState === 1`），不是 Round 2 引入，但 Round 2 让内线独立后这个长尾问题会更显眼（外线无法兜底重启内线了）。
+**修复方向（不修，KEEP）**：send-fail 的 catch 内主动 close ws（或置 `connectFailReported` / 调 `__onGatewayAttemptFailed`），让 `gatewayWs` 归 null 走按需重建。残余持久性 rare-but-uncertain（网关握手超时行为未验证）→ 拿不准 KEEP。
 
 ## pion-ipc SIGTERM 退出码 + watchdog 误打 schedule restart 噪声
 
@@ -861,27 +824,6 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——需要上游主动加新形态才会触发；可观测信号有 `chat-history.skip-*` 缺失。
 
-## providerAuth.list 返回原始 provider 拼写，未做上游别名归一化，UI 端 === 比对误判别名服务商
-
-**发现日期**：2026-05-26（model-config 发版前 deep-review 识别）
-**关联**：问题出在 UI 端比对（`ui/src/stores/dashboard.store.js` `computePrimaryEffective` / `ui/src/views/ModelConfigPage.vue` / `ui/src/components/model-config/PrimaryModelPickerDialog.vue`），但更干净的修法落在插件侧 `plugins/openclaw/src/provider-auth/handlers.js` 的 `list` handler。
-
-**问题**：CoClaw 把两份 OpenClaw 出参在前端用 `===` 直接比 provider 名：
-- `models.list view:'all'` 出参的 `provider` 是注册表规范名（只小写、不折叠别名），如 `moonshot`；
-- `coclaw.providerAuth.list` 出参的 `provider` 是**存进去时的原始拼写**（`buildApiKeyCredential` 不动 provider、`toListEntry` 原样返回 `cred.provider`），如外部用 `moonshotai` 配的就是 `moonshotai`。
-
-OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderId`（`openclaw-repo/src/agents/provider-id.ts`：`moonshotai→moonshot`、`modelstudio/qwencloud→qwen`、`z.ai→zai` 等）折叠别名 + 小写。CoClaw 前端复制了读写、漏了这步归一化，于是两份未对齐的原始拼写硬比 → 主模型被误报"失效"（橙条）、picker 里看不到该 provider 的模型。
-
-**影响**：很窄。只在该 provider 是**绕开 CoClaw 界面**（`openclaw` onboard 命令 / 手改 auth-profiles / 外部 CLI 导入）用别名形或非规范大小写配置时才触发。通过 CoClaw 界面添加时，发出去的 provider 名取自 catalog 规范名（`AddProviderDialog` 可选列表来自 catalog 的 `m.provider`，`provider-meta.js` 也只有规范的 `moonshot` 无 `moonshotai`），存进去 = 规范名 = 与 catalog 一致，永不触发。无数据损坏、不崩、不影响其它 provider。
-
-**2026-06-22 复核：两个症状已被 model.list/listAvailable 别名感知重构架空（症状休眠，根因仍在）**。橙条改吃 `coclaw.model.list` 的 `hasAnyUsableCredential`/`default.providerUsable`（`ui/src/stores/dashboard.store.js:298-299`）+ `listAvailable.byProvider`（`ui/src/views/ModelConfigPage.vue:268-284,358`），picker 改吃 `listAvailable.byProvider`（`PrimaryModelPickerDialog.vue:172,181-196`），`providerAuth.list` 现仅喂纯展示的 `ProviderAuthRow`（`ModelConfigPage.vue:119-125`）、无 `===` 误判。**根因仍在**——`handlers.js` list 三源（账本 `:169-171`/内联 `:688-691`/env `:715-729`）原样透传不归一，仅 catalog 路径归一（`:594-602`）。故降级为备忘：当前无活跃有害消费者，若 UI 日后再以 `providerAuth.list` 的 provider 做语义判断会复活；修法 B（list 出参侧归一）仍是正解。
-
-**为什么发版前不修**：
-- 修法 A（前端复刻上游别名映射表，比对前先折叠）会让前端持有一份与上游可能脱节的映射，上游新增别名时无声错位；临发版加投机性复杂度不划算。
-- 修法 B（插件侧在 `list` handler 返回前用上游自己的归一化函数把 `cred.provider` 折叠成规范名再给前端）更干净——映射只在上游一份、前端保持简单。但前提是 plugin-sdk 暴露了 `normalizeProviderId`（待核实；当前插件未 import 该函数），且仍是跨工作区的发版前改动。
-
-**修复方向**：优先走修法 B——先核实 `openclaw/plugin-sdk` 是否暴露 `normalizeProviderId`（或等价 `normalizeProviderIdForAuth`）；若暴露，在 `provider-auth/handlers.js` `list` 的 `toListEntry` 出参处把 `provider` 归一化，并同步给 UI 一条"profiles[].provider 已规范化"的契约说明。若 SDK 未暴露，再评估前端兜底或推动上游导出。
-
 ## MiniMax OAuth：global 区域登录流未真机验证
 
 **发现日期**：2026-05-26（MiniMax OAuth e2e 验证时识别）
@@ -900,23 +842,14 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 **为什么暂不立刻修**：两步写盘的顺序与本次方案 B 无关（方案 B 只把写入的 `models` 从 `[]` 换成静态表）；重新登录即可恢复，发生概率低（写配置失败本就罕见）。治本需让对账在"有凭据但无节点"时补建节点（即把 `not-bound` 细分出"凭据在、节点缺"分支并 create-on-reconcile），属功能增强而非缺陷修复，单独评估。
 
-## 通用设备码登录（B1）deep-review 留存项（4 条，2026-05-27）
+## 通用设备码登录（B1）deep-review 留存项（1 条，2026-05-27）
 
 **发现日期**：2026-05-27（B1 插件后端 deep-review 时识别）
 **关联**：`plugins/openclaw/src/provider-auth/index.js` + `handlers.js` + `device-code-login.js` + `utils/deep-merge.js`
 
-本轮 deep-review 核实到、按"仅修本次引入的明确缺陷 + 不过度设计"原则暂未一并修的 4 条。codex/copilot 当前两家均不触发，均为**面向未来任意 device_code provider 的健壮性**或**预存模式一致性**：
+本轮 deep-review 核实到、按"仅修本次引入的明确缺陷 + 不过度设计"原则暂未一并修，2026-06-23 Round 14 重审后保留的 1 条（原列 4 条，其余 3 条经只读核实证伪为名不副实记录已删：『取消后上游轮询跑到自然到期』系自陈的设计取舍非缺陷；『makeDeviceCodeCtx 的 runtime.exit 空操作』『note 解析 + configPatch 合并健壮性』均纯未来式、当前 codex/copilot 两家全不触发）：
 
 1. **SDK 子入口 import 失败被永久缓存（预存模式，非本次新增）**：`provider-catalog-runtime` 的惰性加载用 `??=` 缓存 import promise；若该 import 一次 reject（如插件升级窗口的瞬时 fs/loader 抖动），rejected promise 留缓存，之后所有通用设备码登录都拿到 IO_FAILED 直到 gateway 重启。这与既有 `_sdkPromise` / `_configMutationPromise` 同款——治本应**统一**给三个 loader 加"reject 时清空缓存允许下次重试"，而非只补新加的这个（避免不一致）。不崩 gateway，仅单个 RPC 退化，且静态 import 失败多为非瞬时（包在/不在），故低优先。
-
-2. **取消后上游后台轮询仍跑到自然到期（设计取舍，非缺陷）**：`run(ctx)` 无 abort 钩子，`cancelOauth` 只翻本地标志，上游轮询继续到设备码过期（约 15 分钟）才停。反复"取消→重试"会累积僵尸轮询。本通道刻意不强停（终态必达 + 清理）。若要收口，**在 UI 那轮**加客户端重试节流 / 每 provider 在途登录上限，比插件侧强停更合适。
-
-3. **`makeDeviceCodeCtx` 的 `runtime.exit` 是空操作（面向未来的隐患）**：codex/copilot 的 device_code run 都不调 `runtime.exit`，今天安全。但未来若有 provider 用 `runtime.exit` 表达致命错误，空操作会让 run 继续往下跑、可能 resolve 出垃圾。可考虑让 `runtime.exit` 抛错（与 ctx 里 text/select 被调即抛同philosophy），使其落进 `OAUTH_FAILED`——但有反向风险（某 provider 成功后良性 `exit(0)` 会被误判失败），故先观察、接入新 device_code provider 时再定。
-
-4. **note 解析 + configPatch 合并对"任意未来 provider"的健壮性（今天安全，未对齐上游）**：
-   - `extractVerification`：无 `Code:` 行时 `DEVICE_CODE_RE` 扫全文（含 URL），理论上可能从 URL 里抠错码；裸 URL 回退 `[^\s)]+` 可能带上尾随标点。codex/copilot 都有显式 `URL:`/`Code:` 行不触发。硬化方向：码回退前先剥掉文中 URL；URL 捕获后剪尾随 `.,;:`。
-   - `isVerificationNote`：靠 `faq|help|trouble|docs.openclaw` 英文词排除帮助 note。未来某 provider 的真验证 note 若 URL 路径含 `help` 等词，会被误判非验证 note → phase-1 不发、URL 不展示。今天两家 note 无此词。
-   - `deepMergeInto` vs 上游 `mergeConfigPatch`：上游额外（a）递归净化数组元素内的原型污染键；（b）合并后跑 `normalizeConfigModelRefsForWrite` 规范化模型别名。本实现都没做。今天不咬人——codex 的 configPatch 是不含数组/别名的 plain `agents.defaults.models` 对象，copilot 无 configPatch。接入会下发数组/别名 configPatch 的 provider 前补齐。
 
 ## 返回 session 正文时区分"文件没了"与"其他情况"
 
