@@ -486,6 +486,7 @@ class FileBackedQueue {
 			/* c8 ignore next 2 -- rm with force rarely fails */
 			this.logger?.warn?.('fbq.handleFsError rm error', rmErr);
 		}
+		// 故意不 __dispatchSpillEnd：webrtc 只 destroy 不 clear + fsBroken 粘性不再 spill，spillActive 卡 true 不可达；即便发生也仅 monitor 观测标志失真，不丢消息
 		this.spilled = false;
 		this.writtenBytes = 0;
 		this.readOffset = 0;

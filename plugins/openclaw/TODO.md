@@ -482,36 +482,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 ## claw-paths runtime 改造遗留（2026-05-05 deep-review 抓出，预存）
 
-### session-manager 不传 entry.sessionFile（PRE-EXISTING）
-
-**发现日期**：2026-05-05（claw-paths-unify deep-review）
-**锚点**：`plugins/openclaw/src/session-manager/manager.js:283-288` `resolveTranscriptFile`
-
-**问题**：调 `resolveTranscriptPath(sessionId, agentId)` 时第三参数 `entry` 始终不传。OpenClaw 上游 `resolveSessionFilePath(sid, entry, opts)` 会先用 `entry.sessionFile` 字段决定 transcript 文件名，再回退到 `<sid>.jsonl`。当用户 / OpenClaw 把 `sessions.json` 索引里的 `sessionFile` 改名（reset 重命名、自定义命名）时，我们永远只看默认名，会读到空。
-
-**为什么 PRE-EXISTING**：claw-paths runtime 改造前的旧代码 `nodePath.join(dir, '${sessionId}.jsonl')` 同样不感知 entry，本次重构未引入也未扩大。
-
-**修复方向**：从 `readIndex(agentId)` 拿到 `entry`，传给 `resolveTranscriptPath` 第三参数。
-
-### 上游 agents.<id>.store 自定义配置不被支持（PRE-EXISTING）
-
-**发现日期**：2026-05-05
-**锚点**：`plugins/openclaw/src/claw-paths.js:48-54` `sessionStorePath`
-
-**问题**：调上游 `runtime.agent.session.resolveStorePath(undefined, { agentId })` 时 `store` 参数始终传 `undefined`，上游收到 undefined 走默认布局，agent 配置的 `agents.<id>.store` 自定义路径（绝对路径 / `{agentId}` 模板）被无视。
-
-**为什么 PRE-EXISTING**：旧代码也没读 OpenClaw 配置；本次只是把"目标永远是默认布局"显式化、文档化。
-
-**修复方向**：在 plugin runtime 拿 agent 配置（如 `runtime.config.loadConfig()?.agents?.[agentId]?.store`），传给 helper。需先核对 OpenClaw 暴露 agent 配置的稳定 API。
-
-### auto-upgrade vs claw-paths 部分注入不对称（防御性，本次新引入但不可达）
-
-**锚点**：`plugins/openclaw/src/auto-upgrade/state.js:23-30` vs `src/claw-paths.js:24-29`
-
-**问题**：runtime 是非空对象但 `runtime.state` 缺失这种"部分注入"形态下，claw-paths.js 抛错而 auto-upgrade/state.js 静默 fallback env/homedir，同一进程可能写到不同 state-dir。生产路径不可达（index.js 只在 full mode 调 setRuntime + 上游 runtime 形态固定），属防御性。
-
-**修复方向**：auto-upgrade/state.js 加守卫——发现 runtime 对象存在但 .state.resolveStateDir 缺失时，与 claw-paths.js 行为对齐（抛错或委托给 clawStateDir）。
-
 ### session-manager readFile TOCTOU 分支无法 test-only 覆盖（PRE-EXISTING 噪音，余 1 项）
 
 **发现日期**：2026-05-05（2026-06-23 收口）
@@ -631,24 +601,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 - close-log 加 bypass 累计字段（与 dropped / residual 并列），让降级期间的 bypass 救援量级可观测
 
 ## 2026-05-08 FBQ/MemoryQueue 收口 deep-review 发现的预存问题
-
-### `__handleFsError` 不 emit `onSpillEnd` → monitor `spillActive` 永远 true
-
-**发现日期**：2026-05-08（发版 0.21.0 前最终兜底 deep-review 由 codex-rescue 实例 5 surface）
-
-**锚点**：
-- `plugins/openclaw/src/utils/file-backed-queue.js:478-495` `__handleFsError` 内 `this.spilled = false` 后没调 `__dispatchSpillEnd`
-- `plugins/openclaw/src/utils/file-backed-queue.js:284` `clear()` 内 `wasSpilled` snapshot 后调 `__dispatchSpillEnd`（A2 修法），但读的是已被 `__handleFsError` 清掉的 `spilled` 字段——若先经 `__handleFsError` 再 `clear()`，`wasSpilled=false`，不再 dispatch
-- `plugins/openclaw/src/webrtc/rpc-drop-monitor.js:131` `onSpillStart` 幂等守卫（`spillActive=true` 时直接 return）
-
-**问题**：FS 故障粘性降级路径上，`__handleFsError` 把 `spilled` 翻 false 但**不通知 monitor**。monitor 的 `spillActive` 仍是 true。后续若调 `clear()` 也救不回（snapshot 看到 `wasSpilled=false`）。结果：monitor 的 `spillActive` 永远卡在 true，下一次"真实"`onSpillStart` 被幂等守卫吃掉。
-
-**当前不触发**：webrtc 路径下 FBQ 实例不调 `clear()`（peer 重建走 `destroy` 不走 `clear`），所以这条契约破坏不会被触发。但破坏了 FBQ ↔ monitor 的公共状态契约——一旦未来有路径在 FS 降级后调 `clear()` 恢复，monitor 状态机就错乱。
-
-**修复方向**（如未来真触发再做）：
-- `__handleFsError` 在 `this.spilled = false` 之后立即 `__dispatchSpillEnd(0)`（drainedBytes=0 因为 FS 故障删档不算 drain）
-- 或者让 `clear()` 不依赖 `wasSpilled` 直接无条件 dispatch（但会破坏"未 spilled 时 emit onSpillEnd 是 bug"语义）
-- 推荐前者——故障删档明确语义为"spill 中断"，与 drain/clear 的"spill 自然结束"并列
 
 ### 装配段 `new FileBackedQueue()` / `init()` 抛错时的静默缝隙
 
