@@ -395,6 +395,7 @@ export const esMessages = {
 		errFileTooLarge: 'El archivo es demasiado grande para enviarlo.',
 		errUnknown: 'Algo salió mal. Por favor intenta más tarde.',
 		errRunFailed: 'Error en la ejecución del agente',
+		errWithSource: '[{name}] {msg}',
 		connecting: 'Conectando al Claw…',
 		connBuilding: 'Estableciendo conexión…',
 		connRecovering: 'Reconectando…',

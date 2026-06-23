@@ -395,6 +395,7 @@ export const enMessages = {
 		errFileTooLarge: 'File is too large to send.',
 		errUnknown: 'Something went wrong. Please try again later.',
 		errRunFailed: 'Agent run failed',
+		errWithSource: '[{name}] {msg}',
 		connecting: 'Connecting to Claw…',
 		connBuilding: 'Establishing connection…',
 		connRecovering: 'Reconnecting…',

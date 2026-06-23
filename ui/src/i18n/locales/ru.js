@@ -395,6 +395,7 @@ export const ruMessages = {
 		errFileTooLarge: 'Файл слишком большой для отправки.',
 		errUnknown: 'Что-то пошло не так. Пожалуйста, попробуйте позже.',
 		errRunFailed: 'Ошибка выполнения агента',
+		errWithSource: '[{name}] {msg}',
 		connecting: 'Подключение к Claw…',
 		connBuilding: 'Установка соединения…',
 		connRecovering: 'Переподключение…',

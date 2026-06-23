@@ -395,6 +395,7 @@ export const viMessages = {
 		errFileTooLarge: 'Tệp quá lớn để gửi.',
 		errUnknown: 'Đã xảy ra lỗi. Vui lòng thử lại sau.',
 		errRunFailed: 'Agent thực thi thất bại',
+		errWithSource: '[{name}] {msg}',
 		connecting: 'Đang kết nối đến Claw…',
 		connBuilding: 'Đang thiết lập kết nối…',
 		connRecovering: 'Đang kết nối lại…',

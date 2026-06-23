@@ -395,6 +395,7 @@ export const deMessages = {
 		errFileTooLarge: 'Datei ist zu groß zum Senden.',
 		errUnknown: 'Etwas ist schiefgelaufen. Bitte später erneut versuchen.',
 		errRunFailed: 'Agent-Ausführung fehlgeschlagen',
+		errWithSource: '[{name}] {msg}',
 		connecting: 'Verbinde mit Claw…',
 		connBuilding: 'Verbindung wird aufgebaut…',
 		connRecovering: 'Verbindung wird wiederhergestellt…',

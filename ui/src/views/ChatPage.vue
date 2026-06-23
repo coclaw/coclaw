@@ -776,7 +776,7 @@ export default {
 					targetStore.restoreFiles(files);
 				}
 				else {
-					this.__notifyRunFailed(result);
+					this.__notifyRunFailed(result, targetStore);
 					this.__tryGenerateTitle(targetStore);
 				}
 			}
@@ -784,7 +784,7 @@ export default {
 				console.error('[chat] send in established-chat flow failed', err);
 				// 根据 err.code 映射友好文案
 				const errMsg = this.__sendErrorMessage(err);
-				this.notify.error(errMsg);
+				this.notify.error(this.__withSourcePrefix(errMsg, targetStore));
 				if (!targetStore.__accepted) {
 					if (draftKey) this.draftStore.setDraft(draftKey, savedText);
 					targetStore.clearInputFiles();
@@ -798,12 +798,49 @@ export default {
 		 * description 用 OpenClaw 原始错误文案，截断 + 取首行避免 stack-like 噪音。
 		 * @param {{ endReason?: string, errorMessage?: string|null }} result
 		 */
-		__notifyRunFailed(result) {
+		__notifyRunFailed(result, srcStore) {
 			if (result?.endReason !== 'failed' && result?.endReason !== 'rpc-timeout') return;
 			this.notify.error({
-				title: this.$t('chat.errRunFailed'),
+				title: this.__withSourcePrefix(this.$t('chat.errRunFailed'), srcStore),
 				description: this.__formatRunErrorMessage(result.errorMessage),
 			});
+		},
+
+		/**
+		 * 条件给失败 toast 文案加来源 chat/topic 标题前缀：仅当失败来源 ≠ 当前正看的 chat 时加，
+		 * 来源取自发送入口快照 srcStore、不随当前路由漂移（修「await 期间切走后失败 toast 看着
+		 * 像当前 chat 失败」的误导）。同一 chat 或来源解析为空时回退原文案、不加前缀。
+		 * @param {string} msg - 原始文案
+		 * @param {object} [srcStore] - 发送入口快照的 chat store
+		 * @returns {string}
+		 */
+		__withSourcePrefix(msg, srcStore) {
+			// 只在「失败来源 ≠ 当前正看的 chat」时加前缀——消歧限定符只在有歧义时露出，
+			// 给常态（没切走）加 [agent名] 是自指噪音。chatStoreManager 按 key memoize，
+			// srcStore 与 this.chatStore 同实例即同一 chat。this.chatStore 为 null（用户已离开
+			// chat 区）时与真实 srcStore 必不等 → 加前缀，正确（用户没在看来源）。
+			if (!srcStore || srcStore === this.chatStore) return msg;
+			const name = this.__resolveSourceName(srcStore);
+			if (!name) return msg;
+			return this.$t('chat.errWithSource', { name, msg });
+		},
+
+		/**
+		 * 从入口快照 srcStore 解析来源标题：chat 模式取 agent 显示名，topic 模式取 topic 标题。
+		 * ⚠️ 必须用传入的快照、不能用按当前路由算的 chatTitle/agentDisplay，否则会复刻
+		 * 「切走后归因到当前 chat」的 bug。返回 '' 仅发生在「无 srcStore」或「topic 模式未命名」；
+		 * chat 模式 agent 名有多级兜底（clawName/id/'Agent'）始终非空，未加载时退化为占位 id 而非空。
+		 * @param {object} [srcStore] - 发送入口快照的 chat store
+		 * @returns {string}
+		 */
+		__resolveSourceName(srcStore) {
+			if (!srcStore) return '';
+			if (srcStore.topicMode) {
+				return this.topicsStore.findTopic(srcStore.sessionId)?.title || '';
+			}
+			// chat 模式 agentId 不在 store 顶层字段、藏在 chatSessionKey；用 store 自带的
+			// __resolveAgentId() 取，与 store 其它路径口径一致，别自行 split。
+			return this.agentsStore.getAgentDisplay(srcStore.clawId, srcStore.__resolveAgentId())?.name || '';
 		},
 
 		/** 错误文案截断：取首行 + 限 200 字符（覆盖典型 FailoverError ~240 字符的实质提示部分） */
@@ -891,7 +928,7 @@ export default {
 					targetStore.restoreFiles(files);
 				}
 				else {
-					this.__notifyRunFailed(result);
+					this.__notifyRunFailed(result, targetStore);
 					this.__tryGenerateTitle(targetStore);
 				}
 			}
@@ -899,7 +936,7 @@ export default {
 				console.error('[chat] send in new-topic flow failed', err);
 				this.__creatingTopic = false;
 				const errMsg = this.__sendErrorMessage(err);
-				this.notify.error(errMsg);
+				this.notify.error(this.__withSourcePrefix(errMsg, targetStore));
 				// targetStore 可能是 null（promote 失败前），也可能是 newStore（promote 成功但 send 失败）
 				if (!targetStore?.__accepted) {
 					if (newDraftKey) this.draftStore.setDraft(newDraftKey, text);

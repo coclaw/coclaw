@@ -101,6 +101,7 @@ const i18nMap = {
 	'chat.errRtcSendFailed': 'Send failed (rtc)',
 	'chat.errUnknown': 'Something went wrong',
 	'chat.errRunFailed': 'Agent run failed',
+	'chat.errWithSource': '[{name}] {msg}',
 	'chat.cancelNotSupported': 'Cancel not supported',
 	'chat.upgradeOpenClawHint': 'Upgrade OpenClaw',
 	'chat.historyUnavailable': 'This conversation is no longer available',
@@ -137,8 +138,10 @@ function createWrapper(opts = {}) {
 		global: {
 			plugins: [pinia],
 			mocks: {
-				$t: (key) => {
-					return i18nMap[key] ?? key;
+				$t: (key, args) => {
+					const tpl = i18nMap[key] ?? key;
+					if (!args) return tpl;
+					return tpl.replace(/\{(\w+)\}/g, (m, k) => (k in args ? String(args[k]) : m));
 				},
 				$route: {
 					name: routeName,
@@ -4285,5 +4288,82 @@ describe('ChatPage __tryGenerateTitle entry snapshot', () => {
 
 		// generateTitle 应以入口的 (clawId, topicId) 触发——证明 __tryGenerateTitle 收到了 targetStore
 		expect(genTitleSpy).toHaveBeenCalledWith('bot-1', 'new-topic-uuid');
+	});
+});
+
+// 失败 toast 来源前缀：条件加——仅当「失败来源 ≠ 当前正看的 chat」才带来源前缀，
+// 同一 chat（没切走）不加（消歧限定符只在有歧义时露出）。来源取自发送入口快照 srcStore、
+// 不漂到当前路由的 chatTitle。两半纪律都要锁：切走要加（chat A→B）、没切走不加。
+describe('ChatPage __notifyRunFailed / catch 来源前缀（条件 · 入口快照）', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		chatStoreManager.__reset();
+	});
+
+	test('切走后：__notifyRunFailed 用 srcStore 快照解析来源（chat A），即便当前路由已是 chat B', async () => {
+		// 当前路由 = chat B（Agent Bravo）
+		const wrapper = createWrapper({ clawId: 'bot-B', agentId: 'main' });
+		const agentsStore = useAgentsStore();
+		// agent id 与显示名故意不同，证明来源名取自 srcStore 快照解析而非占位 agentId
+		agentsStore.byClaw['bot-A'] = { agents: [{ id: 'a-alpha', name: 'Agent Alpha' }], defaultId: 'a-alpha', fetched: true };
+		agentsStore.byClaw['bot-B'] = { agents: [{ id: 'main', name: 'Agent Bravo' }], defaultId: 'main', fetched: true };
+		await flushPromises();
+		// 健全性：当前路由确实指向 B
+		expect(wrapper.vm.chatTitle).toBe('Agent Bravo');
+
+		// 发送入口快照：真实 store 指向 chat A
+		const srcStoreA = getChatStore('bot-A', 'a-alpha');
+		wrapper.vm.__notifyRunFailed(
+			{ accepted: true, endReason: 'failed', errorMessage: 'boom' },
+			srcStoreA,
+		);
+
+		const arg = mockNotify.error.mock.calls.at(-1)[0];
+		// 来源取自快照 A，不是当前路由 B
+		expect(arg.title).toBe('[Agent Alpha] Agent run failed');
+		expect(arg.title).not.toContain('Agent Bravo');
+		expect(arg.description).toBe('boom');
+	});
+
+	test('__withSourcePrefix（catch 路径同款）给友好文案带上快照来源', async () => {
+		const wrapper = createWrapper({ clawId: 'bot-B', agentId: 'main' });
+		const agentsStore = useAgentsStore();
+		agentsStore.byClaw['bot-A'] = { agents: [{ id: 'a-alpha', name: 'Agent Alpha' }], defaultId: 'a-alpha', fetched: true };
+		await flushPromises();
+
+		const srcStoreA = getChatStore('bot-A', 'a-alpha');
+		expect(wrapper.vm.__withSourcePrefix('Connection lost', srcStoreA)).toBe('[Agent Alpha] Connection lost');
+	});
+
+	test('没切走：srcStore === 当前 chatStore（同一 chat）不加前缀', async () => {
+		const wrapper = createWrapper({ clawId: 'bot-S', agentId: 'main' });
+		const agentsStore = useAgentsStore();
+		// 当前 chat 的 agent 有真实显示名——若误加前缀会是 [Agent Solo]，断言它不出现，
+		// 证明"无前缀"来自同 chat 短路、而非来源名解析为空的兜底
+		agentsStore.byClaw['bot-S'] = { agents: [{ id: 'main', name: 'Agent Solo' }], defaultId: 'main', fetched: true };
+		await flushPromises();
+
+		const cur = wrapper.vm.chatStore;
+		expect(cur).toBeTruthy();
+		// 健全性：来源名确实能解析出真实名（排除空兜底解释）
+		expect(wrapper.vm.__resolveSourceName(cur)).toBe('Agent Solo');
+
+		// srcStore === this.chatStore（同一 chat、没切走）→ 干净文案、无前缀
+		wrapper.vm.__notifyRunFailed({ accepted: true, endReason: 'failed', errorMessage: 'boom' }, cur);
+		const arg = mockNotify.error.mock.calls.at(-1)[0];
+		expect(arg.title).toBe('Agent run failed');
+		expect(arg.title).not.toContain('Agent Solo');
+		// catch 路径同款
+		expect(wrapper.vm.__withSourcePrefix('Connection lost', cur)).toBe('Connection lost');
+	});
+
+	test('来源解析为空时回退原文案、不弹 [] 前缀', async () => {
+		const wrapper = createWrapper({ clawId: 'bot-B', agentId: 'main' });
+		await flushPromises();
+		// topic 模式但 topicsStore 无此 topic（未命名）→ 解析空 → 不加前缀
+		const srcTopic = { topicMode: true, sessionId: 'unknown-topic', clawId: 'bot-A', agentId: 'main' };
+		expect(wrapper.vm.__withSourcePrefix('Connection lost', srcTopic)).toBe('Connection lost');
+		// 无 srcStore → 不加前缀
+		expect(wrapper.vm.__withSourcePrefix('Connection lost', undefined)).toBe('Connection lost');
 	});
 });
