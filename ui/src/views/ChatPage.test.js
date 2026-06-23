@@ -4360,10 +4360,32 @@ describe('ChatPage __notifyRunFailed / catch 来源前缀（条件 · 入口快�
 	test('来源解析为空时回退原文案、不弹 [] 前缀', async () => {
 		const wrapper = createWrapper({ clawId: 'bot-B', agentId: 'main' });
 		await flushPromises();
-		// topic 模式但 topicsStore 无此 topic（未命名）→ 解析空 → 不加前缀
+		// topic 不在 store（已删/claw 解绑）→ 拿不到真名 → 不加前缀
 		const srcTopic = { topicMode: true, sessionId: 'unknown-topic', clawId: 'bot-A', agentId: 'main' };
 		expect(wrapper.vm.__withSourcePrefix('Connection lost', srcTopic)).toBe('Connection lost');
 		// 无 srcStore → 不加前缀
 		expect(wrapper.vm.__withSourcePrefix('Connection lost', undefined)).toBe('Connection lost');
+	});
+
+	test('未命名 topic（已在 store、title 空）→ 用占位名「新话题」加前缀', async () => {
+		const wrapper = createWrapper({ clawId: 'bot-B', agentId: 'main' });
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const topicsStore = useTopicsStore();
+		topicsStore.byId['topic-x'] = { topicId: 'topic-x', title: null, clawId: 'bot-A', agentId: 'main' };
+		await flushPromises();
+		// topic 在 store 但 title 空 → 回退占位名 → 加 [New topic] 前缀（en locale）
+		const srcTopic = { topicMode: true, sessionId: 'topic-x', clawId: 'bot-A', agentId: 'main' };
+		expect(wrapper.vm.__withSourcePrefix('Connection lost', srcTopic)).toBe('[New topic] Connection lost');
+	});
+
+	test('已命名 topic（已在 store、title 非空、切走）→ 用真标题加前缀', async () => {
+		const wrapper = createWrapper({ clawId: 'bot-B', agentId: 'main' });
+		const { useTopicsStore } = await import('../stores/topics.store.js');
+		const topicsStore = useTopicsStore();
+		topicsStore.byId['topic-y'] = { topicId: 'topic-y', title: 'My Topic', clawId: 'bot-A', agentId: 'main' };
+		await flushPromises();
+		// topic 在 store 且 title 非空 → 用真标题加前缀（非占位名兜底、非空回退）
+		const srcTopic = { topicMode: true, sessionId: 'topic-y', clawId: 'bot-A', agentId: 'main' };
+		expect(wrapper.vm.__withSourcePrefix('Connection lost', srcTopic)).toBe('[My Topic] Connection lost');
 	});
 });

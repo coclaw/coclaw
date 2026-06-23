@@ -828,7 +828,9 @@ export default {
 		/**
 		 * 从入口快照 srcStore 解析来源标题：chat 模式取 agent 显示名，topic 模式取 topic 标题。
 		 * ⚠️ 必须用传入的快照、不能用按当前路由算的 chatTitle/agentDisplay，否则会复刻
-		 * 「切走后归因到当前 chat」的 bug。返回 '' 仅发生在「无 srcStore」或「topic 模式未命名」；
+		 * 「切走后归因到当前 chat」的 bug。topic 已在 store 但未命名（title 空）时回退到占位名
+		 * 「新话题」（topic.newTopic，与列表/header 口径一致），让未命名 topic 切走后的失败 toast 也带前缀。
+		 * 返回 '' 仅发生在「无 srcStore」或「topic 已不在 store（已删/claw 解绑）」——拿不到真名、不强行贴占位名。
 		 * chat 模式 agent 名有多级兜底（clawName/id/'Agent'）始终非空，未加载时退化为占位 id 而非空。
 		 * @param {object} [srcStore] - 发送入口快照的 chat store
 		 * @returns {string}
@@ -836,7 +838,9 @@ export default {
 		__resolveSourceName(srcStore) {
 			if (!srcStore) return '';
 			if (srcStore.topicMode) {
-				return this.topicsStore.findTopic(srcStore.sessionId)?.title || '';
+				const topic = this.topicsStore.findTopic(srcStore.sessionId);
+				if (!topic) return '';
+				return topic.title || this.$t('topic.newTopic');
 			}
 			// chat 模式 agentId 不在 store 顶层字段、藏在 chatSessionKey；用 store 自带的
 			// __resolveAgentId() 取，与 store 其它路径口径一致，别自行 split。

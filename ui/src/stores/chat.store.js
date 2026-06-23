@@ -306,8 +306,11 @@ export function createChatStore(storeKey, opts = {}) {
 			 *   否则 hook 同步触发 dropRun 时基于 stale messages 删 streamingMsgs，
 			 *   会让本次 run 的回复整段消失（直到下次 reload 自愈）。force 路径不参与
 			 *   `__silentLoadPromise` / `__loadPromise` 体系
+			 * @param {boolean} [opts.prePersist] - 必与 silent 同传：标记本次 NOT_FOUND 处于发消息后
+			 *   等持久化的预期窗口（__awaitPersistAndDrop 专用）。仅此场景静音 NOT_FOUND 的远程诊断；
+			 *   onRefresh / 重连 reconcile 等普通 silent 加载不传，NOT_FOUND 照常上报
 			 */
-			async loadMessages({ silent = false, limit: limitOverride, onMessagesPersisted, force = false } = {}) {
+			async loadMessages({ silent = false, limit: limitOverride, onMessagesPersisted, force = false, prePersist = false } = {}) {
 				// 飞行中守卫：复用已有请求，防止 activate() + connReady watcher 同时触发。
 				// force 路径不参与守卫——它需要拿与触发方 run 状态对齐的快照。
 				if (!force) {
@@ -322,7 +325,7 @@ export function createChatStore(storeKey, opts = {}) {
 				}
 
 				if (this.topicMode) {
-					const p = this.__loadTopicMessages({ silent });
+					const p = this.__loadTopicMessages({ silent, prePersist });
 					// force 路径在 topic 模式下也独立、不参与守卫体系，与 chat 模式语义保持一致
 					if (!force) {
 						if (silent) {
@@ -498,8 +501,10 @@ export function createChatStore(storeKey, opts = {}) {
 			 * topic 模式下加载消息（使用 coclaw.sessions.getById）
 			 * @param {object} opts
 			 * @param {boolean} opts.silent
+			 * @param {boolean} [opts.prePersist] - 首发等持久化探测（见 loadMessages 同名参数）：
+			 *   为 true 时静音本次 NOT_FOUND 的 rpc.failed 远程诊断
 			 */
-			async __loadTopicMessages({ silent = false } = {}) {
+			async __loadTopicMessages({ silent = false, prePersist = false } = {}) {
 				if (!this.sessionId) {
 					this.messages = [];
 					this.errorText = '';
@@ -519,12 +524,13 @@ export function createChatStore(storeKey, opts = {}) {
 					this.errorText = '';
 				}
 				try {
-					// silent 加载（首发 pre-persist / 重连 reconcile）的 NOT_FOUND 本就被容忍、不向用户暴露（仅 !silent 才设 errorText），
-					// 故 quietCodes 静音其 rpc.failed 远程诊断噪音；非 silent（用户主动打开）的 NOT_FOUND 仍照常上报 + 提示。
+					// 仅 prePersist（__awaitPersistAndDrop 首发等持久化探测）的 NOT_FOUND 是预期窗口、本就被容忍，
+					// 故静音其 rpc.failed 远程诊断噪音；onRefresh / 重连 reconcile 等普通 silent 加载遇 NOT_FOUND
+					// 意味着已存在 topic 的正文真丢了，照常上报；非 silent（用户主动打开）的 NOT_FOUND 还会设 errorText 提示。
 					const result = await conn.request('coclaw.sessions.getById', {
 						sessionId: this.sessionId,
 						agentId: this.topicAgentId || 'main',
-					}, { timeout: 120_000, quietCodes: silent ? ['NOT_FOUND'] : undefined });
+					}, { timeout: 120_000, quietCodes: prePersist ? ['NOT_FOUND'] : undefined });
 					const msgs = Array.isArray(result?.messages) ? result.messages : [];
 					console.debug('[chat] loadTopicMessages ok count=%d (was %d)', msgs.length, prevCount);
 					console.debug('[chat] loadTopicMessages raw messages topicId=%s count=%d %o',
@@ -1740,6 +1746,7 @@ export function createChatStore(storeKey, opts = {}) {
 				const ok = await this.loadMessages({
 					silent: true,
 					force: true,
+					prePersist: true,
 					onMessagesPersisted: () => runsStore.dropRun(runKey, res.runId),
 				});
 				if (ok) runsStore.dropRun(runKey, res.runId);

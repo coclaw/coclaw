@@ -541,7 +541,7 @@ describe('useChatStore', () => {
 			}, { timeout: 120_000 });
 		});
 
-		test('silent 加载声明 quietCodes:[NOT_FOUND]；非 silent 时为 undefined', async () => {
+		test('quietCodes：仅 prePersist 静音 NOT_FOUND；普通 silent / 非 silent 照常上报', async () => {
 			const clawsStore = useClawsStore();
 			clawsStore.setClaws([{ id: '1', online: true }]);
 
@@ -557,17 +557,24 @@ describe('useChatStore', () => {
 			const store = createChatStore('topic:tq', { clawId: '1', agentId: 'main' });
 			store.sessionId = 'tq';
 
-			// 非 silent（用户打开死 topic）：quietCodes 为 undefined，NOT_FOUND 仍照常上报 + 提示
-			await store.loadMessages();
-			const nonSilentCall = conn.request.mock.calls.find((c) => c[0] === 'coclaw.sessions.getById');
-			expect(nonSilentCall[2].quietCodes).toBeUndefined();
+			// (a) prePersist（__awaitPersistAndDrop 首发等持久化探测）：静音 NOT_FOUND
+			await store.loadMessages({ silent: true, prePersist: true });
+			let call = conn.request.mock.calls.find((c) => c[0] === 'coclaw.sessions.getById');
+			expect(call[2].quietCodes).toEqual(['NOT_FOUND']);
 
 			conn.request.mockClear();
 
-			// silent（topic 首发 pre-persist 加载）：声明 NOT_FOUND 可静默，不刷远程诊断噪音
+			// (b) 普通 silent（onRefresh / 重连 reconcile，不带 prePersist）：NOT_FOUND 照常上报
 			await store.loadMessages({ silent: true });
-			const silentCall = conn.request.mock.calls.find((c) => c[0] === 'coclaw.sessions.getById');
-			expect(silentCall[2].quietCodes).toEqual(['NOT_FOUND']);
+			call = conn.request.mock.calls.find((c) => c[0] === 'coclaw.sessions.getById');
+			expect(call[2].quietCodes).toBeUndefined();
+
+			conn.request.mockClear();
+
+			// (c) 非 silent（用户主动打开死 topic）：NOT_FOUND 照常上报 + 提示
+			await store.loadMessages();
+			call = conn.request.mock.calls.find((c) => c[0] === 'coclaw.sessions.getById');
+			expect(call[2].quietCodes).toBeUndefined();
 		});
 
 		test('topic 模式下 sessionId 为空时返回 false', async () => {
