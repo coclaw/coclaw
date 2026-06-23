@@ -1,5 +1,17 @@
 # @coclaw/ui
 
+## 0.32.10
+
+### Patch Changes
+
+- 247ce29: Chat failure toasts now prefix the source chat/topic name when the failed send/run belongs to a chat other than the one currently in view, so a failure that lands after you've switched chats is no longer mistaken for the current chat's failure. Failures for the chat you're still looking at stay unprefixed.
+- 7ee7de0: Mark the ManageClawsPage claw status dots as decorative (aria-hidden). In active connection states the status they convey by color is already shown as adjacent text (connLabel), so hiding the dots from assistive technology avoids redundant screen-reader announcements.
+- 6285426: Fix a horizontal scrollbar appearing in dropdown menus that contain separators (e.g. the desktop sidebar user account menu). The global menu theme zeroes the group's horizontal padding so highlights span the full row, which left Nuxt UI's default separator `-mx-1` with nothing to offset — pushing each divider 4px past both edges and tripping the menu viewport's implicit horizontal overflow. Neutralized with `separator: mx-0` so dividers sit flush to the viewport width.
+- dd0ddab: Migrate the remaining two hand-built menus (DesktopSidebar user menu and ManageClawsPage claw action menu) from UPopover to UDropdownMenu, inheriting the global dropdown theme. This brings keyboard navigation, Esc-to-close and proper menu semantics for free, and removes the last duplicated hand-rolled popover lists. Behavior is preserved: the same items, click handlers, per-item disabled gating, danger styling, separators and E2E testids; the user menu still spans the sidebar width.
+- e22788d: Migrate the topic/agent/web-agent item action menus and the narrow-screen "+" menu from hand-built popovers to Nuxt UI UDropdownMenu, gaining keyboard navigation, menu semantics and Escape-to-close. A global dropdownMenu theme keeps the existing mobile-first item sizing (44px touch targets), and the menus stay non-modal (no scroll lock) to match the previous popover behavior.
+- 07f39c9: Add a subtle breathing (pulse) animation to ProgressRing's indeterminate state, and guard all of ProgressRing's animations (spin, pulse, progress transition) behind prefers-reduced-motion.
+- b64c952: Stop emitting redundant `rpc.failed` remote-diagnostic logs for silent topic pre-persist loads. The connection layer gains an opt-in `quietCodes` request option so callers can declare tolerable failure codes (e.g. NOT_FOUND on a topic's first-send load) without suppressing diagnostics for real, user-initiated transcript loss.
+
 ## 0.32.9
 
 ### Patch Changes
