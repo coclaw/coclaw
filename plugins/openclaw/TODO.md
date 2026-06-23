@@ -154,19 +154,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**（不修）：保持现状（split 模块本身就是这次重构的目的）；如有监控告警需迁移，更新过滤条件即可。
 
-## dump 文本 queueLen 数字含义改变（行为微变，不修）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
-**关联**：webrtc-peer.js __dumpSessionState
-
-**问题**：dump 字面 `queueLen=N` 保留，但 N 的含义变了。
-- 老 RpcSendQueue 的 `q.queue.length` 计入"非分片 JSON 字符串"+"分片消息的每个 chunk"。一条 100MB 消息分片后会贡献几万条
-- 新 MemoryQueue 的 `stats().memCount` 计入"完整 JSON 字符串"。同一条 100MB 消息只贡献 1 条；分片在 sender 端按需做，不进 queue
-
-**影响**：人工读 dump 时对队列压力的直觉判断会偏差。但 queueBytes 仍可作为压力的真实信号。
-
-**修复方向**（不修）：等阶段 2 切 FBQ 时一并重审 dump 字段语义；也可考虑改名为 `queueMsgs=` 以提示语义。
-
 ## __setupDataChannel 装配代码无 try/catch（防御性，不修）
 
 **发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
@@ -369,15 +356,6 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 **问题**：握手 connect 请求 send 抛错时只 warn + 清 reqId，未关 ws、未调 `__onGatewayAttemptFailed`，握手前 close handler 又被 `wasReady||connectFailReported` 守卫拦下，最终不入退避。
 
 **为什么 TODO**：触发面极窄（ws send 在 OPEN 状态抛错少见）；改动需要谨慎覆盖握手三态机。先放一放，等真实环境观察到该路径触发再修。
-
-### transport-adapter / message-model timestamp 静默回填
-
-**发现**：E5 codex-rescue。
-**锚点**：`plugins/openclaw/src/message-model.js:20-22`（normalizeInboundEnvelope）/ `:54-56`（buildOutboundEnvelope）
-
-**问题**：present-but-invalid 的 `timestamp`（如 ISO 字符串）被替换为 `Date.now()`，原始时间语义丢失。
-
-**为什么 TODO**：transport-adapter / message-model 当前仅被单测引用，未接生产路径；改动牵涉协议约定（要否兼容 ISO），等启用前再统一修。
 
 ### bind 进行中可被新 enroll 插入覆盖 config
 
@@ -1033,10 +1011,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 ### 非 prerelease 成因的持久性 update 失败每周期循环（policy/integrity/engines 等）
 
 持久性 update 失败（registry policy 拒装、integrity 校验失败、engines 不满足等）按瞬态语义不写 skipVersion，每周期重复"失败→回滚→重启网关"。本次修复**有意不动**：失败时乱写 skip 会把网络抖动等真瞬态失败误伤成永久跳过，v3.1 评审砍掉重试计数器是同一判断。错因富化后 upgrade-log/lastUpgrade.error 已可见真因，循环周期 1h 可观测。候选解法是未来的有界重试 / 失败分类议题。同族推论——"磁盘新、运行旧"悬置态：worker 死于 update 阶段（磁盘已写新版）且网关未重启时，对账补记 interrupted 后 checkForUpdate 读磁盘判"无更新"，新版本等下次自然重启才激活且无人验证（备份保留，仍可人工回滚）。
-
-### V4：spec 钉死 no-op 端到端复现待专项验证
-
-"显式版本 install 记 exact spec → `plugins update` 跟随 spec 永远 no-op"的端到端复现未专项跑过（T7 仅间接观察到 update 未推进）。修复（裸包名 update 解钉）依赖的单匹配解钉行为另有发版 gate（V3）覆盖；本条是历史钉死形态的复现验证，补实验坐实即可销账。
 
 ### V5：跨平台形态摸底（systemd system service 探针、macOS/Windows restart 行为）
 
