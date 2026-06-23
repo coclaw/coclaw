@@ -45,7 +45,7 @@
 - 未顺手修的原因：改成容器相对（`max-h-full`）在现 DOM 结构上 percentage 解析不了——content 是 `height:auto` 仅受 max-height 封顶、父链无确定高度，需重构 body/包裹层为定高或 flex `min-h-0` 收缩链路才成立，且该改动全端生效需评估 web/Capacitor 观感，超出「数个 class」范围。
 - 修法方向：把 body → 图片包裹层改成可收缩 flex 链（`min-h-0` + 图片去 vh 上限改随容器收缩），或图片上限改 calc 扣除 `var(--cc-titlebar-h, 0px)`（web 取 fallback 0 不变）；二选一时优先前者（语义干净、不引变量依赖）。
 
-## Electron 自定义标题栏的几个低优项（窄屏移动 header / toaster 安全区重复 / HMR 监听未注销 / 页面 zoom 与系统按钮错位）
+## Electron 自定义标题栏的几个低优项（窄屏移动 header / toaster 安全区重复 / HMR 监听未注销）
 
 **发现日期**：2026-06-10
 **来源**：同上发布前 review（renderer + 主进程维度）
@@ -53,7 +53,6 @@
 1. **窄于 md(768px) 时移动 header 钻到色带下**：~~`MobilePageHeader`（`sticky top-0 z-10`）在自定义模式下任何宽度都渲染；内容滚动后 sticky header 升到 top:0，落在 z-60 色带与拖动区之下，返回键不可点~~——**已由 2026-06-11 滚动容器化顺带修复**：滚动收进 `.cc-app-content` 后 sticky 锚到容器顶=标题栏下缘，header 不再钻色带。
 2. **toaster 顶距重复叠加 safe-area**：~~`main.css` `.cc-toaster-viewport` 用 `top: calc(--cc-titlebar-h + 1rem + safe-area-inset-top)`，而 viewport 已带 `mt-[safe-area-inset-top]`（`vite.config.js`）。~~——**已由本批 `63a14035` 修复**：`top` 去掉 safe-area 叠加，由 viewport 的 `mt-[safe-area]` 单独承载（带刘海 Mac 全屏 inset>0 时原会 2× 计，并非"恒 0 无害"）。
 3. **主题 matchMedia 监听未注销**：`theme-mode.js` 的 `auto` 跟随系统监听只有模块级 `initialized` 守重复注册；Vite HMR 模块替换会重置 `initialized` 而留下旧监听。仅 dev-HMR 受影响，生产 boot-once 干净。
-4. **页面 zoom（Cmd+/-）下色带与系统按钮区纵向错位**（2026-06-10 红绿灯居中修复时发现，预存）：应用菜单开着 `zoomIn`/`zoomOut`，而 mac `trafficLightPosition` 按 point 固定、Windows WCO `height:38` 按 DIP 固定，38px CSS 色带却随 zoom 缩放——zoom≠100% 时按钮相对色带偏移（mac 偏上，Windows 按钮区矮于色带）。显示器 DPI/Retina 缩放**无此问题**（CSS px 与原生坐标同系等比缩放）。修法方向：监听 zoom 变化按 zoomFactor 重算 `setWindowButtonPosition` / `setTitleBarOverlay({height})`，或收掉 zoom 菜单角色。用户主动 zoom 才触发、纯观感，暂不修。
 （浅色主题启动闪一下深色背景 `backgroundColor:'#202122'` 属已知接受取舍，`window-chrome.js` 已注明，不另登记。原第 4 条"Mac 红绿灯未竖直居中"已由 `trafficLightPosition` 垂直居中修复。）
 
 ## Windows NSIS 未在安装期注册 coclaw:// 协议（首启前的冷链接打不开）

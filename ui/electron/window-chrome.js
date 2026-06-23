@@ -12,6 +12,13 @@
 /** 标题栏条高度（px）；与 web 侧作用域 CSS 的 --cc-titlebar-h 保持一致 */
 export const TITLEBAR_HEIGHT = 38;
 
+// 已知接受取舍 · 页面缩放下的轻微错位：缩放（Cmd/Ctrl +/-，main.js 的 zoom 菜单角色）只缩网页内容，
+// 这条 38px 色带随之变高，但据它固定的原生控件（mac TRAFFIC_LIGHT_POSITION / Windows titleBarOverlay.height）
+// 建窗时按 zoom=1 设定、不重算 → zoom≠100% 时按钮与色带纵向轻微错位（mac 偏上 / Win 偏矮）。
+// 纯观感、resetZoom 即复原、业界通行可接受（VS Code 同类长期不修）；显示器 DPI/Retina 缩放无此问题。
+// 不做动态补偿：菜单/键盘缩放不发 zoom-changed（仅滚轮触发），需自接管缩放入口按 zoomFactor 重算
+// setWindowButtonPosition / setTitleBarOverlay，且要绕开 Windows 缩放快捷键失效（Electron #40674，官方 not planned）——为纯观感不划算。
+
 // 窗口创建期固定背景色（暗色 bg-default，app 默认 dark 主题），避免首帧前露白底闪。
 // 取舍见设计稿 §4.1：dark 用户受益、light 用户 reload 时新增一道暗闪，固有取舍不另处理。
 const BACKGROUND_COLOR = '#202122';
