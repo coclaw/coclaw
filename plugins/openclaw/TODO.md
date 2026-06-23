@@ -21,19 +21,6 @@
 
 ---
 
-## realtime-bridge 测试在 CPU/IO 饥饿下偶发断言失败（时序敏感，重压才复现）
-
-**发现日期**：2026-06-22（c8 覆盖 race 的重 IO 加压验证副产物）
-**关联**：`src/realtime-bridge.test.js:353` 用例「RealtimeBridge should handle rpc/unbound/close/send-fail branches」，断言在 `:458`
-
-**现象**：在 6 路 `dd` fsync 的重 IO 拥塞下连跑并行测试，约 160 次中**偶发一次**该用例断言失败：`AssertionError: 't2' !== undefined`（`:458` 期望 undefined、实得 `'t2'`，strictEqual）。该用例耗时偏长（~700ms，其余多为微秒级），涉及多步异步。**覆盖率全程达标——这是真测试失败、与 c8 覆盖 race 无关**（别和上一条混淆）。
-
-**根因初判（未深究）**：用例对异步事件完成顺序/状态时序敏感；CPU/IO 饥饿打乱调度时序时，某个本应仍为 undefined 的值（疑似 transport/timer 标识 `t2`）被提前置上 → 断言失败。疑似测试依赖真实调度时序而非完全确定化的 mock，非生产代码缺陷。
-
-**为什么暂不修**：① 仅在人为极端加压（6 路 dd）下观察到一次，正常 / CI 实际负载是否触发未验证；② 未定位 `:458` 断言依赖的具体异步顺序，修前需读 `realtime-bridge.test.js:353-458` 钉清 `t2` 的来源时序；③ severity 低（测试侧 flaky，不涉生产）。但 CI 慢 / 忙 runner 上同类时序敏感测试可能偶发崩、是潜在的 CI 变红源，值得后续做确定化（fake timer / 显式 await 排序）。
-
----
-
 ## worktree 重构建并跑时主网关偶发被 SIGTERM 重启（隔离网关基础设施落地时发现）
 
 **发现日期**：2026-05-31（worktree 插件验证基础设施 `scripts/worktree-gateway.sh` 落地实测时发现）

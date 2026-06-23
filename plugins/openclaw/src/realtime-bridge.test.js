@@ -442,18 +442,14 @@ test('RealtimeBridge should handle rpc/unbound/close/send-fail branches', async 
 
 		// claw.unbound branch (no clawId in payload — clears config)
 		server.emit('message', { data: JSON.stringify({ type: 'claw.unbound', reason: 'x' }) });
-		for (let i = 0; i < 10; i += 1) {
-			await new Promise((resolve) => setTimeout(resolve, 5));
-		}
+		await waitFor(async () => (await readConfig()).token === undefined, { label: 'token cleared on claw.unbound' });
 		const afterUnbound = await readConfig();
 		assert.equal(afterUnbound.token, undefined);
 
 		// close with 4003 should clear token and log auth-close
 		await writeConfig({ token: 't2' });
 		server.emit('close', { code: 4003, reason: 'revoked' });
-		for (let i = 0; i < 10; i += 1) {
-			await new Promise((resolve) => setTimeout(resolve, 5));
-		}
+		await waitFor(async () => (await readConfig()).token === undefined, { label: 'token cleared on auth-close' });
 		const afterClose = await readConfig();
 		assert.equal(afterClose.token, undefined);
 		assert.ok(logs.some((x) => String(x).includes('auth-close') && String(x).includes('4003')), 'should log auth-close event');
