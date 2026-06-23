@@ -89,6 +89,14 @@ pion-node ↔ pion-ipc 之间是 **stdin/stdout JSON-RPC**，每条消息一行�
 3. **pion-ipc 自身的 stderr**：pion-node 透传 stderr 到上层 logger，不会静默吞掉 panic。
 4. **pion/webrtc upstream issue**：`~/repos/pion/` 已克隆，可以直接看上游源码核对 ICE/DTLS/SCTP 行为。
 
+### 已知无害噪声：SIGTERM 重启日志
+
+gateway 收 SIGTERM 重启时，日志会出现这一串：`[pion-ipc] ERROR service exited with error: context canceled` / `[pion-ipc] process exited code=1` / `[pion-ipc] watchdog: restart #1 in 200ms`。看着像异常退出 + 真重启，实际是纯噪声、无害。
+
+根因：OS 进程组群发 SIGTERM 先杀掉 Go 子进程 → Go 把 `context.Canceled` 当 ERROR 返回、exit code=1 → pion-node 见 `_intentionalStop=false` 误调度 watchdog restart → 但随后 plugin stop 调到 `ipc.stop()` 拆掉 `_restartTimer`，**实际不重启**。
+
+治本在上游（pion-ipc Go 优雅退出走 exit 0；或 pion-node 把子进程放进独立进程组避免被群发信号波及），本仓不修，作下游观察者跟踪上游。
+
 ## 何时来读这份 doc
 
 - 升级 `@coclaw/pion-node` 版本时——核对 `PionIpc` 构造参数 / 平台包矩阵是否变。

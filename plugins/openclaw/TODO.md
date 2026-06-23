@@ -495,38 +495,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 **修复方向（不修，KEEP）**：send-fail 的 catch 内主动 close ws（或置 `connectFailReported` / 调 `__onGatewayAttemptFailed`），让 `gatewayWs` 归 null 走按需重建。残余持久性 rare-but-uncertain（网关握手超时行为未验证）→ 拿不准 KEEP。
 
-## pion-ipc SIGTERM 退出码 + watchdog 误打 schedule restart 噪声
-
-**发现日期**：2026-05-09（Round 2 系统级测试 gateway 重启日志分析）
-
-**锚点**：
-- `@coclaw/pion-ipc`（Go 二进制）SIGTERM 处理路径 + exit code 决定逻辑
-- `node_modules/.../@coclaw/pion-node@0.3.0/src/pion-ipc.js:308` `_handleProcessExit` / line 329 `_scheduleRestart`
-- gateway 重启时 plugin stop hook 与 OS 进程组信号传播的时序
-
-**现象**：gateway 收到 SIGTERM 重启时，gateway 日志会出现这一串噪声：
-- `[pion-ipc] [stderr] received signal, shutting down signal:15`
-- `[pion-ipc] [stderr] ERROR service exited with error: context canceled`
-- `[pion-ipc] process exited code=1 signal=null`
-- `[pion-ipc] watchdog: restart #1 in 200ms`
-
-但 watchdog 计划的 200ms 重启实际不会发生——plugin stop 路径稍后调到的 `ipc.stop()` 会把 `_stopped/_intentionalStop` 标记上并清掉 `_restartTimer`。
-
-**根因层次**：
-- OS 把 SIGTERM 群发给整个进程组 → pion-ipc Go 子进程**先于** plugin stop hook 调到 `ipc.stop()` 之前被杀
-- Go 端把 `context.Canceled` 当 ERROR 返回主进程并 exit code=1（应当 exit 0）
-- pion-node 的 `_handleProcessExit` 看到 `_intentionalStop=false`（plugin 还没来得及调 stop），按崩溃路径 schedule watchdog restart 并打 log
-- 紧跟 plugin stop 调到 `ipc.stop()`，把 watchdog 拆掉，**实际没有真重启**
-
-**影响**：仅日志噪声，不影响功能。但容易让分析者误判为异常退出 + 真重启。
-
-**修复方向**（不在 plugin 层）：
-- **首选 · pion-ipc Go**：SIGTERM 路径走优雅退出，把 `context.Canceled` 视为已知关闭原因，exit 0；不要打 ERROR 级 service 退出 log
-- **备选 · pion-node**：spawn pion-ipc 时放进独立进程组（`detached: true` / 设 `setpgid`），避免 OS SIGTERM 群发波及子进程，由 pion-node 主动按节奏 stop
-- plugin 层无更优解——已在 stop hook 内 await `ipc.stop()`，无法更早抢救（被 OpenClaw gateway shutdown 触发时机决定）
-
-**预存问题**：非 plugin 自身 bug，不在本仓库修；plugin 作为下游观察者跟踪上游修复。
-
 ## 自动升级与 OpenClaw 插件 hub 形成双源（hub 上线前必须决策）
 
 **发现日期**：2026-05-09（pre-hub release 设计 review）
@@ -627,69 +595,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 - **不推荐**：移除早判、纯靠 `child.on('close')` 触发 `parseResult`——会让"永不优雅退出的子进程"等到总超时 10s 才返回结果，破坏 helper 当初引入 grace 期的设计意图
 
 **实施前提**：写测试时务必同时覆盖场景 C（nested 假闭合 + grace 内补全）与场景 E（完整 JSON + 后续 chunk 追加），防止再次单面修法。
-
----
-
-## chat-history 双源归档 follow-up F1：topic 模式与上游 sessions 体系的实际关系
-
-**发现日期**：2026-05-17（第三轮 review 用户问询）→ 2026-05-17 二次调研修正
-**关联**：`plugins/openclaw/index.js#handleSessionCreated` 的早返 guard、`plugins/openclaw/src/realtime-bridge.js` sessions.changed 分支
-
-**原命题**（已被推翻一半）：topic 模式（`agent({ sessionId: <uuid> })` 不传 sessionKey）时 OpenClaw 完全不写 sessions.json、不 fire session_start、不 emit 任何 sessions.changed。
-
-**调研结论**（精确到上游源码行）：
-
-| 子命题 | 实际真相 | 上游锚点 |
-|---|---|---|
-| 不写 sessions.json | ❌ 不成立 | 内层 runner 在 `agents/command/session.ts:277-282` 用 `buildExplicitSessionIdSessionKey` 把 sessionId 伪造成 `agent:<agentId>:explicit:<sessionId>`，跑完后 `agent-command.ts:1241-1262` 走 updateSessionStore 写进 sessions.json |
-| 不 fire session_start hook | ✅ 成立 | `emitGatewaySessionStartPluginHook` 在 agent.ts 全文无调用，仅 `session-reset-service.ts:680` + `sessions.ts:1326` 触发 |
-| 不 emit sessions.changed | ❌ 部分不成立 | gateway 层 reason=create/send 守卫 `requestedSessionKey` 严，topic 跳过；但 transcript-update 链路（`config/sessions/transcript.ts:316` → `server-session-events.ts:107,153-165`）仍发 `sessions.changed { phase: "message" }` 事件，**无 reason 字段** |
-
-**澄清 CoClaw 自身有没有"fake sessionKey"**：
-- UI `ui/src/stores/chat.store.js:607-611`：topic 模式只设 `agentParams.sessionId`，**不设 sessionKey**（grep 全仓未找到任何 fake sessionKey 概念）
-- UI→plugin 现走 WebRTC DC 直通（不经 server；server `claw-ws-hub.js` 那条 forwardToClaw 链路是废弃旧路），plugin 端拿到的 params 与 UI 发出时一致
-- Plugin topic-manager 不参与 agent RPC 调用，只管 topic 元信息
-- 所以 `agent:<id>:explicit:<sessionId>` 是**上游内层 runner 自造**的，CoClaw 全链路看不到（也不该看到）
-
-**对 plugin 自身的影响**：**无**。两条防线刚好都挡得住：
-- hook 路径：上游不 fire session_start，plugin 收不到
-- sessions.changed 路径：plugin 在 `realtime-bridge.js:875` 严格判 `reason === 'create'`，topic 的 transcript-update 没 reason 字段，被过滤掉
-
-**外溢副作用**（plugin 改不了，归上游设计）：
-1. OpenClaw 自家 sessions.json + sessions list（webchat/dashboard）会被 topic 的 `agent:*:explicit:*` 历史 entries 占位污染
-2. 上游 `sessions.changed` 事件复用同一频道发 `phase=message` 但**不带 reason 字段**——区分 reason 类型只能靠 reason 是否存在
-
-**关于 explicit sessionKey 行为的引入时间**（2026-05-17 git archaeology）：
-
-| 项 | 值 |
-|---|---|
-| 引入 commit | `cd36ff7483`（`fix: resume explicit session-id agent runs`，Peter Steinberger） |
-| 日期 | 2026-04-04 |
-| 首个含此 commit 的上游 tag | `v2026.4.5` |
-| 动机 | 让 `openclaw agent --session-id <uuid>` 跑完后**能再次 resume 同一 sessionId**——必须有一个稳定 sessionKey 才能 store-and-lookup |
-| 引入前行为（v2026.4.5 之前） | `agents/command/session.ts:149` 父节点版本：sessionId-only 时 `sessionKey=undefined`，下游 `agent-command.ts:540` 写盘守卫 `if (sessionStore && sessionKey)` 直接跳过——**sessions.json 不写** |
-| caller opt-out | **无**——grep `persistExplicit` / `skipExplicitPersist` / `ephemeral.*session` 全无命中；`updateSessionStoreAfterAgentRun` 也无 opt-out 参数 |
-| 兜底机制 | 通用 `session.maintenance.pruneAfter`（默认 30 天）+ `maxEntries`（默认 500），见 `src/config/sessions/store-maintenance.ts:20-21`；cron `session-reaper.ts` 执行。**不针对 explicit** |
-
-**用户回忆得到验证**：CoClaw 最初支持 topic 时（早于 2026-04-04），sessions.json 不会因 topic 流量膨胀。当前 gateway 2026.5.7 已带 explicit 逻辑，且上游没开 caller flag 让外部 plugin 关掉。
-
-**膨胀风险评估**：
-- 重度 topic 用户：每 topic 一条 entry，长期累积；通用 maxEntries=500 触顶后 LRU 裁剪，不会无界膨胀，但 entry 周转会让"老 topic 突然恢复不出来"
-- 轻度 topic 用户：30 天 prune 兜底足够
-
-**可能的根治方向**（按代价从低到高）：
-- (A) **等上游加 opt-out**：去上游提 issue / PR，给 agent RPC 加 `persistExplicit: false` 或类似 flag —— 受益面广，但周期长
-- (B) **CoClaw 端调小 maintenance 上限**：通过 OpenClaw config 把 `session.maintenance.maxEntries` 压到更小（如 50）—— 治标但会牵连所有 session，可能误伤
-- (C) **CoClaw 自管 topic transcript**：放弃用 OpenClaw 的 sessionId 体系驱动 topic transcript 写入，plugin 自己维护 topic .jsonl 不调上游 agent RPC —— 重构成本高，且失去上游 model 调用便利
-- (D) **被动接受现状**：上游兜底机制能 capping，UX 上"老 topic 续不上"接受为已知行为
-
-**待办**：
-- [x] 此节内容并入 task #11 上游 issue 草稿（已记录在本 TODO 节）
-
-**待办**：
-- [x] CLI 实验交叉验证（2026-05-17）——结果完全命中预期：chat-history.json sha256 不变；sessions.json 新增 `agent:main:explicit:d623247e-4d48-4e0c-84ef-f79b1461d966` entry（71→72）；plugin 日志无 chat-history.missing-keys 或任何 handleSessionsCreated（旧名，5125818 重命名前的实验日志，现名 handleSessionCreated）相关 warn（reason='create' 严判完全静默 phase=message 流量）
-- [x] 上述两个外溢副作用纳入上游 issue 草稿（2026-05-23）——草稿写在 `docs/upstream-issues/explicit-session-key-opt-out.md` + `docs/upstream-issues/sessions-changed-message-reason-field.md`（整目录 gitignored，draft-only 约定见该目录 README）；提交 GitHub 后登记到 `docs/openclaw-upstream-issues.md` 并删除本地草稿
-- [ ] 多 agent topic 启用后复评：F1 实验只钉死了"main agent topic 路径不破"，若 CoClaw 解开 UI `chat.store.js` topicMode 分支让非 main agent 也能新建 topic（参考 `docs/decisions/topic-main-agent-constraint.md` §"2026-05-17 重评"），需要复跑实验验证非 main agent 的 explicit fake sessionKey 路径同样不撞穿 `reason === 'create'` 严判，并核查 chat-history 桶不被污染
 
 ---
 
@@ -811,18 +716,25 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 
 **严重性**：低——理论盲点；触发难度高；recordSessionTransition 现有 reload+mutex 已吞掉多数 race。
 
-## chat-history classifyChatHistorySessionKey 是黑名单策略（未来新 sessionKey 形态默认入档）
+## chat-history classifyChatHistorySessionKey 黑名单漏掉上游已现存的 acp / thread 形态
 
 **发现日期**：2026-05-19（cron 顶替止血 deep review 第二轮 codex-rescue 提出）
 **关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `classifyChatHistorySessionKey`
 
-**问题**：helper 用黑名单（explicit / subagent / cron）判定跳过，其他形态默认 `ok=true` 进 chat-history。若上游未来新增 `agent:<id>:debug:*` / `agent:<id>:replay:*` / 其它新 segment，会无声入档污染 chat-history。
+**问题**：helper 用黑名单（explicit / subagent / cron）判定跳过，其他形态默认 `ok=true` 进 chat-history。黑名单**当前就漏掉**了 `acp:` 与 `:thread:` 两种形态——而这俩是上游**已现存的活跃形态**，不是未来假设。三种现存形态全部漏网入档：
+- 裸 `acp:*`（`parts[0] !== 'agent'` → 直接 `ok=true`）
+- `agent:<id>:acp:*`（`parts[2] === 'acp'`，不在黑名单 → `ok=true`）
+- `agent:main:main:thread:1234`（`parts[2] === 'main'`，不在黑名单 → `ok=true`）
 
-**为什么本期未修**：黑名单策略对当前已知形态准确；改成白名单需要枚举所有合法 chat sessionKey 段（`main` / 用户自定义 channel 等），过度设计风险高于当前价值。属于"识别到才说"。
+三者都 `ok=true` → 被当作 chat 写进 `coclaw-chat-history.json`。
 
-**修复方向**：上游确实加新 segment 形态时，及时把它加入黑名单（一行改动）。若上游频繁演进 segment 词表，考虑迁移到白名单 + 默认拒绝策略。
+**后果**：可见污染——chat 列表多出意外条目。`acp:` 是最干净的"真污染"证据（编辑器协议会话，不该出现在用户 chat 里）；`:thread:` 略可争议（thread 自带独立 sessionKey，算不算合法子 chat 是产品取舍）。
 
-**严重性**：低——需要上游主动加新形态才会触发；可观测信号有 `chat-history.skip-*` 缺失。
+**为什么本期未修**：影响低、有界——不崩、不丢真实 chat、无安全问题，只是多几条噪声条目。改成白名单需要枚举所有合法 chat sessionKey 段（`main` / 用户自定义 channel 等），代价/风险高于当前价值。
+
+**修复方向**：把 `acp` / `:thread:` 加入黑名单（黑名单一行改动）；若判定 `:thread:` 应算合法 chat 则只加 `acp`。上游若频繁演进 segment 词表，考虑迁移到白名单 + 默认拒绝策略。
+
+**严重性**：低——可见但有界的列表噪声，无功能/数据/安全后果。
 
 ## MiniMax OAuth：global 区域登录流未真机验证
 

@@ -133,6 +133,7 @@
 2. reconcile 能在归档被硬删前读到正文——已知 `resolveTranscriptFile` 读 `.deleted.`，且有 ≈30d 富余；补 reconcile 单测（模拟归档→折进镜像）。
 3. compaction 在盘形态——基线用整文件拷贝即正确，无需依赖此项；仅当将来做增量追加优化时再确认。
 4. 可选索引清理触发的 session-end 钩子对 CoClaw chat-history 无副作用（仅当采用 §7 的可选清理时需确认）。
+5. 非 main agent topic 启用时复跑 F1 实验：验非 main agent 的 explicit 伪 sessionKey 路径同样不撞穿 `reason === 'create'` 严判，且 chat-history 桶不被污染（main agent 路径已在 F1 钉死，非 main 是解开 UI `chat.store.js` topicMode 分支后的新增面）。
 
 ---
 
