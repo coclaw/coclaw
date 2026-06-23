@@ -33,9 +33,14 @@
 					:aria-label="$t('layout.rtcUnreachable')"
 					@click="onManualRetry"
 				/>
-				<!-- 添加按钮：下拉菜单（添加 Claw / 添加 Web Agent） -->
+				<!-- 添加按钮：下拉菜单（添加 Claw / 添加 Web Agent）。a11y（role=menu / aria-haspopup / aria-expanded）由 UDropdownMenu 提供 -->
 				<div class="relative">
-					<UPopover v-model:open="capAddMenuOpen" :content="{ side: 'bottom', align: 'end' }">
+					<UDropdownMenu
+						v-model:open="capAddMenuOpen"
+						:items="addMenuItems"
+						:content="{ side: 'bottom', align: 'end' }"
+						:modal="false"
+					>
 						<UButton
 							icon="i-lucide-plus"
 							color="primary"
@@ -43,27 +48,17 @@
 							class="cc-icon-btn-lg"
 							data-testid="cap-header-add-trigger"
 							:aria-label="$t('layout.addEntry')"
-							aria-haspopup="menu"
-							:aria-expanded="capAddMenuOpen"
 						/>
-						<template #content>
-							<div class="flex max-w-60 flex-col py-1" role="menu">
-								<button
-									v-for="item in addActionItems"
-									:key="item.id"
-									type="button"
-									role="menuitem"
-									:data-testid="`cap-header-add-${item.id}`"
-									class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
-									@click="onAddAction(item.id)"
-								>
-									<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-[18px] shrink-0" :class="item.iconClass" aria-hidden="true" />
-									<img v-else :src="item.icon" alt="" aria-hidden="true" class="size-[18px] shrink-0" />
-									<span class="truncate">{{ item.label }}</span>
-								</button>
-							</div>
+						<!-- leading 图标异构（add-claw 为 svg img、add-web-agent 为带色 lucide），用 slot 精确还原原渲染 -->
+						<template #item-leading="{ item }">
+							<UIcon v-if="item.iconType === 'lucide'" :name="item.icon" class="size-[18px] shrink-0" :class="item.iconClass" aria-hidden="true" />
+							<img v-else :src="item.icon" alt="" aria-hidden="true" class="size-[18px] shrink-0" />
 						</template>
-					</UPopover>
+						<!-- 在 label 上挂 data-testid（标准 item 元素不透传任意 data-* 属性） -->
+						<template #item-label="{ item }">
+							<span :data-testid="item.testid">{{ item.label }}</span>
+						</template>
+					</UDropdownMenu>
 				</div>
 			</div>
 		</header>
@@ -354,6 +349,14 @@ export default {
 				{ id: 'add-claw', label: this.$t('layout.addClaw'), icon: this.addClawIcon, iconType: 'svg', activePath: '/claws/add' },
 				{ id: 'add-web-agent', label: this.$t('layout.addWebAgent'), icon: 'i-lucide-globe', iconType: 'lucide', iconClass: 'text-teal-600' },
 			];
+		},
+		/** cap header 下拉菜单的 items：复用 addActionItems，补 testid（仅 main 实例）与 onSelect */
+		addMenuItems() {
+			return this.addActionItems.map((item) => ({
+				...item,
+				testid: this.instance === 'main' ? `cap-header-add-${item.id}` : undefined,
+				onSelect: () => this.onAddAction(item.id),
+			}));
 		},
 		/** Agent 列表：claw agents + 用户点过的 web agents 混排，按 last used 倒排 */
 		mixedAgentItems() {

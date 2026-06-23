@@ -1,6 +1,11 @@
 <template>
 	<div class="relative" @click.prevent>
-		<UPopover v-model:open="menuOpen" :content="{ side: 'bottom', align: 'end' }">
+		<UDropdownMenu
+			v-model:open="menuOpen"
+			:items="menuItems"
+			:content="{ side: 'bottom', align: 'end' }"
+			:modal="false"
+		>
 			<UButton
 				:data-testid="instance === 'main' ? `web-agent-actions-trigger-${webAgentId}` : null"
 				variant="ghost"
@@ -11,19 +16,11 @@
 				:class="menuOpen ? 'opacity-100' : ''"
 				:aria-label="name ? $t('common.moreActionsFor', { name }) : $t('common.moreActions')"
 			/>
-			<template #content>
-				<div class="flex max-w-60 flex-col py-1">
-					<button
-						:data-testid="instance === 'main' ? `web-agent-actions-remove-${webAgentId}` : null"
-						class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
-						@click="onRemove"
-					>
-						<UIcon name="i-lucide-x" class="size-[18px] shrink-0" />
-						<span class="truncate">{{ $t('webAgents.removeFromRecent') }}</span>
-					</button>
-				</div>
+			<!-- 在 label 上挂 data-testid（E2E 锚点）：标准 item 元素不透传任意 data-* 属性 -->
+			<template #item-label="{ item }">
+				<span :data-testid="item.testid">{{ item.label }}</span>
 			</template>
-		</UPopover>
+		</UDropdownMenu>
 	</div>
 </template>
 
@@ -45,6 +42,19 @@ export default {
 		return {
 			menuOpen: false,
 		};
+	},
+	computed: {
+		menuItems() {
+			return [
+				{
+					label: this.$t('webAgents.removeFromRecent'),
+					icon: 'i-lucide-x',
+					// testid 仅 'main' 实例渲染（与原逻辑一致，避免 strict-mode 撞号）；undefined 时 Vue 不落属性
+					testid: this.instance === 'main' ? `web-agent-actions-remove-${this.webAgentId}` : undefined,
+					onSelect: () => this.onRemove(),
+				},
+			];
+		},
 	},
 	methods: {
 		onRemove() {

@@ -66,6 +66,43 @@ export default defineConfig({
 				modal: MODAL_THEME,
 				// 弹出菜单脱离背景：quasar 多层投影 + 暗色提亮描边，叠在内置 content 上（shadow-lg 被去重换掉）
 				popover: { slots: { content: MENU_ELEVATION } },
+				// 下拉菜单：统一承载 4 处原手搓弹出菜单（UPopover + 手写按钮），调回移动优先观感——
+				//   44px 触控行、左小右大不对称内边距（补偿左侧 lucide 图标视觉重量）、满格直角 bg-accented 高亮、
+				//   内容自适应宽度，并叠上与 popover 一致的浮起投影。
+				// ⚠ 主题拼接非替换：默认密度类（min-w-32 / p-1.5 / gap-1.5 / size-5 / before:inset-px 等）会残留，
+				//   故覆盖一律落在与默认同名的 slot/variant 上，靠 tailwind-merge 后者胜出（同 input/select 套路）。
+				dropdownMenu: {
+					slots: {
+						// 内容容器：去最小宽度（默认 min-w-32）改内容自适应 + max-w-60 上限；叠浮起投影（去重换掉内置 shadow-lg）
+						content: `min-w-0 max-w-60 ${MENU_ELEVATION}`,
+						// 分组：去掉默认 p-1 的左右内边距，只留上下 4px（=原 popover 内层 py-1），让项铺满整行
+						group: 'px-0 py-1',
+						// 项：触控行高 44px + 垂直居中 + 高亮铺满方角（原 hover:bg-accented 是满格直角，非默认 inset 圆角）
+						item: 'min-h-11 items-center before:inset-0 before:rounded-none',
+					},
+					variants: {
+						active: {
+							false: {
+								// 高亮底色跳到 bg-accented、文字常驻 text-default（原菜单 hover 仅变底色不变字色）
+								item: 'data-highlighted:before:bg-accented data-highlighted:text-default',
+								// 图标常驻 text-default（默认 text-dimmed），与原内联图标继承色一致
+								itemLeadingIcon: 'text-default',
+							},
+						},
+						size: {
+							// 默认尺寸 md：不对称内边距 pl-4/pr-5（左小右大补偿图标）+ icon/label 间距 gap-2.5 + 字号 text-sm；
+							// 去掉默认 p-1.5 的上下内边距（行高交给 min-h-11），图标尺寸 18px。
+							md: {
+								item: 'pl-4 pr-5 py-0 gap-2.5 text-sm',
+								itemLeadingIcon: 'size-[18px]',
+							},
+						},
+					},
+					compoundVariants: [
+						// 危险项（color=error）：保留红字红图标，但高亮底色拉回中性 bg-accented（原删除项 hover 也是中性灰，非红色调）
+						{ color: 'error', class: { item: 'data-highlighted:before:bg-accented', itemLeadingIcon: 'text-error' } },
+					],
+				},
 				// select 同 input：默认 outline 变体给 trigger base 加 text-highlighted，选中值文字跟着变纯白；
 				// 统一跳柔到 text-default（落 size 变体 base + ! 锁定，理由同下方 input 注释）。
 				select: {

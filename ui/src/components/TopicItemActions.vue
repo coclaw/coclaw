@@ -1,6 +1,11 @@
 <template>
 	<div class="relative" @click.prevent>
-		<UPopover v-model:open="menuOpen" :content="{ side: 'bottom', align: 'end' }">
+		<UDropdownMenu
+			v-model:open="menuOpen"
+			:items="menuItems"
+			:content="{ side: 'bottom', align: 'end' }"
+			:modal="false"
+		>
 			<UButton
 				variant="ghost"
 				color="neutral"
@@ -10,25 +15,7 @@
 				:class="menuOpen ? 'opacity-100' : ''"
 				:aria-label="name ? $t('common.moreActionsFor', { name }) : $t('common.moreActions')"
 			/>
-			<template #content>
-				<div class="flex max-w-60 flex-col py-1">
-					<button
-						class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented"
-						@click="onRename"
-					>
-						<UIcon name="i-lucide-pencil" class="size-[18px] shrink-0" />
-						<span class="truncate">{{ $t('topic.rename') }}</span>
-					</button>
-					<button
-						class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-error transition-colors hover:bg-accented active:bg-accented"
-						@click="onDelete"
-					>
-						<UIcon name="i-lucide-trash-2" class="size-[18px] shrink-0" />
-						<span class="truncate">{{ $t('topic.delete') }}</span>
-					</button>
-				</div>
-			</template>
-		</UPopover>
+		</UDropdownMenu>
 
 		<!-- 重命名对话框 -->
 		<UModal v-model:open="renameOpen" :title="$t('topic.rename')" description=" " :ui="promptUi">
@@ -94,6 +81,15 @@ export default {
 			deleteOpen: false,
 			deleting: false,
 		};
+	},
+	computed: {
+		menuItems() {
+			return [
+				{ label: this.$t('topic.rename'), icon: 'i-lucide-pencil', onSelect: () => this.onRename() },
+				// 删除为危险项：per-item color 'error'（红字红图标），高亮底色由全局主题拉回中性
+				{ label: this.$t('topic.delete'), icon: 'i-lucide-trash-2', color: 'error', onSelect: () => this.onDelete() },
+			];
+		},
 	},
 	methods: {
 		onRename() {

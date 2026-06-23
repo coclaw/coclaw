@@ -451,15 +451,16 @@ X4 触及面比 X1 广，需要重新评估：
 
 ## 下拉菜单与列表项 trigger 菜单统一迁到 UDropdownMenu
 
-**发现日期**：2026-05-10
+**发现日期**：2026-05-10（2026-06-23 更新：首批 4 处已迁）
 **关联讨论**：MainList 重组（添加 Claw / 添加 Web Agent 入口三处铺设）
 
-来源：本轮 MainList 重组讨论中确认，窄屏 capacitor header 的 `+` 改下拉菜单时，沿用了项目现有 "MainList 三点菜单同款样式" 即 `UPopover + 自绘列表`（如 `TopicItemActions.vue` / `AgentItemActions.vue` / `WebAgentItemActions.vue`）。这套实现先于 Nuxt UI 4 `UDropdownMenu` 引入，本质就是下拉菜单，应统一迁移。
+来源：项目里多处 "三点 / `+` 操作菜单" 沿用先于 Nuxt UI 4 的 `UPopover + 自绘列表` 实现，本质是下拉菜单，应统一迁到 `UDropdownMenu`（白拿焦点管理 / roving tabindex / `role="menu"` / Esc，样式集中由全局主题控、不再各自维护 hack）。
 
-- 现状涉及位置（至少）：`TopicItemActions.vue`、`AgentItemActions.vue`、`WebAgentItemActions.vue`，以及本轮新增的窄屏 header `+` 下拉
-- 修复方向：统一替换为 `UDropdownMenu`（参考 `nuxt-ui` skill 中的标准用法），保持现有 a11y / 键盘 / 移动端可点击区域等行为不退化
-- 收益：a11y 现成（焦点管理、roving tabindex、`role="menu"`）；样式集中由全局 `appConfig` 控；本地不再各自维护 `UPopover` 自绘 hack
-- 本次不动，避免与 MainList 重组叠加风险
+- ✅ 首批已迁（2026-06-23）：`TopicItemActions.vue`、`AgentItemActions.vue`、`WebAgentItemActions.vue`、MainList 窄屏 header `+`。并在 `ui/vite.config.js` 建了全局 `dropdownMenu` 主题把移动端观感（44px 行高、不对称 `pl-4 pr-5` 图标补偿、`gap-2.5`、18px 图标、满格高亮）调回；各处加 `:modal="false"` 对齐原非 modal 手感。
+- 🔜 剩余同款手搓菜单（deep-review 发现，本次范围外）：
+  - `DesktopSidebar.vue:26` 用户菜单——同款简单结构，直接套现有全局主题即可（small）
+  - `ManageClawsPage.vue:93` claw 操作菜单——较难：项带 per-item `:disabled`（在线 / 解绑中门控）+ `border-t` 分隔线，需用 UDropdownMenu 的 disabled item 与分隔语义（medium）
+- 收益：全局主题已就位，剩余两处迁过去自动继承样式。
 
 ## remote-log 架构二次简化候选：单 FIFO + 消费端截批（2026-05-13）
 

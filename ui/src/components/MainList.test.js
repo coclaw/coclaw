@@ -105,15 +105,25 @@ const UButtonStub = {
 	emits: ['click'],
 };
 
-// UPopover stub：永远渲染 trigger 与 content（默认折叠状态由父组件 v-model 决定，
-// 测试关心的是 content 内菜单项是否点击有效，因此都暴露在 DOM 中以便点击）
-const UPopoverStub = {
-	props: ['open', 'content'],
+// UDropdownMenu stub：永远渲染 trigger（默认插槽）与 :items 平铺出的按钮（含 item-leading / item-label 插槽），
+// 测试关心的是菜单项点击是否触发 onSelect、testid 是否经 label 插槽落到 DOM，故都暴露以便查询 / 点击。
+const UDropdownMenuStub = {
+	name: 'UDropdownMenu',
+	props: ['items', 'open', 'content'],
 	emits: ['update:open'],
 	template: `
-		<div class="u-popover-stub">
-			<div class="u-popover-trigger"><slot /></div>
-			<div class="u-popover-content"><slot name="content" /></div>
+		<div class="u-dropdown-stub">
+			<div class="u-dropdown-trigger"><slot :open="open" /></div>
+			<button
+				v-for="(it, i) in (items || [])"
+				:key="i"
+				type="button"
+				class="u-dropdown-item"
+				@click="it.onSelect && it.onSelect()"
+			>
+				<slot name="item-leading" :item="it" />
+				<slot name="item-label" :item="it">{{ it.label }}</slot>
+			</button>
 		</div>
 	`,
 };
@@ -132,7 +142,7 @@ function createWrapper(props = {}) {
 				RouterLink: RouterLinkStub,
 				UIcon: UIconStub,
 				UButton: UButtonStub,
-				UPopover: UPopoverStub,
+				UDropdownMenu: UDropdownMenuStub,
 				TopicItemActions: { template: '<div class="topic-actions-stub" />' },
 				AgentItemActions: { template: '<div class="agent-actions-stub" />' },
 				WebAgentItemActions: { template: '<div class="web-agent-actions-stub" />' },
@@ -294,7 +304,9 @@ test('cap header 下拉菜单：点击"添加 Web Agent" → openPickerDialog', 
 	expect(__openPickerDialogMock).toHaveBeenCalledTimes(1);
 });
 
-test('cap header + 按钮 a11y：aria-haspopup=menu，aria-expanded 跟随 capAddMenuOpen', async () => {
+test('cap header + 按钮 a11y：trigger 保留 aria-label，菜单开合经 v-model:open 接到 capAddMenuOpen', async () => {
+	// 迁移到 UDropdownMenu 后，role=menu / aria-haspopup / aria-expanded 由组件（reka-ui）提供，
+	// 这里只校验仍属本组件职责的部分：trigger 的 aria-label，以及 open 状态确实双向绑定到 capAddMenuOpen。
 	__mockIsCapacitorApp = true;
 	const wrapper = createWrapper();
 	await vi.dynamicImportSettled();
@@ -302,13 +314,14 @@ test('cap header + 按钮 a11y：aria-haspopup=menu，aria-expanded 跟随 capAd
 	await wrapper.vm.$nextTick();
 
 	const trigger = wrapper.find('[data-testid="cap-header-add-trigger"]');
-	expect(trigger.attributes('aria-haspopup')).toBe('menu');
+	expect(trigger.exists()).toBe(true);
 	expect(trigger.attributes('aria-label')).toBe('添加');
-	expect(trigger.attributes('aria-expanded')).toBe('false');
 
+	const dd = wrapper.findComponent({ name: 'UDropdownMenu' });
+	expect(dd.props('open')).toBe(false);
 	wrapper.vm.capAddMenuOpen = true;
 	await wrapper.vm.$nextTick();
-	expect(wrapper.find('[data-testid="cap-header-add-trigger"]').attributes('aria-expanded')).toBe('true');
+	expect(dd.props('open')).toBe(true);
 });
 
 test('cap header 下拉菜单：点击菜单项后 capAddMenuOpen 自动复位为 false', async () => {
@@ -747,7 +760,7 @@ test('agent item 在 topic 路由下不被高亮', async () => {
 		props: { currentPath: '/topics/t-uuid' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, UPopover: UPopoverStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' }, WebAgentItemActions: { template: '<div />' } },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, UDropdownMenu: UDropdownMenuStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' }, WebAgentItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addClaw': '添加 Claw', 'layout.addWebAgent': '添加 Web Agent', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'topics-chat', params: { sessionId: 't-uuid' }, query: {} },
@@ -772,7 +785,7 @@ test('agent item 在 main session 路由下被高亮', async () => {
 		props: { currentPath: '/chat/b1/main' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, UPopover: UPopoverStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' }, WebAgentItemActions: { template: '<div />' } },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, UDropdownMenu: UDropdownMenuStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' }, WebAgentItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addClaw': '添加 Claw', 'layout.addWebAgent': '添加 Web Agent', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'chat', params: { clawId: 'b1', agentId: 'main' }, query: {} },
@@ -797,7 +810,7 @@ test('agent item 在 files 子页路由下按所属 agent 高亮', async () => {
 		props: { currentPath: '/files/b1/main' },
 		global: {
 			plugins: [pinia],
-			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, UPopover: UPopoverStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' }, WebAgentItemActions: { template: '<div />' } },
+			stubs: { RouterLink: RouterLinkStub, UIcon: UIconStub, UButton: UButtonStub, UDropdownMenu: UDropdownMenuStub, TopicItemActions: { template: '<div />' }, AgentItemActions: { template: '<div />' }, WebAgentItemActions: { template: '<div />' } },
 			mocks: {
 				$t: (key) => ({ 'layout.addClaw': '添加 Claw', 'layout.addWebAgent': '添加 Web Agent', 'topic.newTopic': '新话题' }[key] ?? key),
 				$route: { name: 'files', params: { clawId: 'b1', agentId: 'main' }, query: {} },
@@ -1118,7 +1131,7 @@ test('mounted 时调用 webAgentsStore.loadAll()', async () => {
 				RouterLink: RouterLinkStub,
 				UIcon: UIconStub,
 				UButton: UButtonStub,
-				UPopover: UPopoverStub,
+				UDropdownMenu: UDropdownMenuStub,
 				TopicItemActions: { template: '<div />' },
 				AgentItemActions: { template: '<div />' },
 				WebAgentItemActions: { template: '<div />' },

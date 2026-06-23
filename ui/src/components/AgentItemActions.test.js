@@ -3,10 +3,26 @@ import { expect, test, vi } from 'vitest';
 
 import AgentItemActions from './AgentItemActions.vue';
 
-const UPopoverStub = {
-	props: ['open'],
+// UDropdownMenu stub：trigger（默认插槽）+ 把 :items 平铺成按钮，便于点击触发 onSelect 与断言项。
+const UDropdownMenuStub = {
+	name: 'UDropdownMenu',
+	props: ['items', 'open', 'content'],
 	emits: ['update:open'],
-	template: '<div class="popover-stub"><slot /><slot name="content" /></div>',
+	template: `
+		<div class="dropdown-stub">
+			<slot :open="open" />
+			<button
+				v-for="(it, i) in (items || [])"
+				:key="i"
+				type="button"
+				class="dropdown-item"
+				@click="it.onSelect && it.onSelect()"
+			>
+				<slot name="item-leading" :item="it"><span class="icon" :name="it.icon" /></slot>
+				<slot name="item-label" :item="it">{{ it.label }}</slot>
+			</button>
+		</div>
+	`,
 };
 
 const UButtonStub = {
@@ -29,7 +45,7 @@ function createWrapper(props = {}) {
 		},
 		global: {
 			stubs: {
-				UPopover: UPopoverStub,
+				UDropdownMenu: UDropdownMenuStub,
 				UButton: UButtonStub,
 				UIcon: UIconStub,
 			},

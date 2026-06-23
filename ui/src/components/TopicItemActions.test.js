@@ -28,10 +28,28 @@ import TopicItemActions from './TopicItemActions.vue';
 import { useTopicsStore } from '../stores/topics.store.js';
 import { useClawsStore } from '../stores/claws.store.js';
 
-const UPopoverStub = {
-	props: ['open'],
+// UDropdownMenu stub：渲染 trigger（默认插槽）+ 把 :items 平铺成按钮，便于断言项内容并模拟 select。
+// onSelect 在点击时调用，等价真实组件的菜单项 @select。
+const UDropdownMenuStub = {
+	name: 'UDropdownMenu',
+	props: ['items', 'open', 'content'],
 	emits: ['update:open'],
-	template: '<div class="popover-stub"><slot /><slot name="content" /></div>',
+	template: `
+		<div class="dropdown-stub">
+			<slot :open="open" />
+			<button
+				v-for="(it, i) in (items || [])"
+				:key="i"
+				type="button"
+				class="dropdown-item"
+				:data-color="it.color"
+				@click="it.onSelect && it.onSelect()"
+			>
+				<slot name="item-leading" :item="it"><span class="icon" :name="it.icon" /></slot>
+				<slot name="item-label" :item="it">{{ it.label }}</slot>
+			</button>
+		</div>
+	`,
 };
 
 const UModalStub = {
@@ -71,7 +89,7 @@ function createWrapper(props = {}) {
 		global: {
 			plugins: [pinia],
 			stubs: {
-				UPopover: UPopoverStub,
+				UDropdownMenu: UDropdownMenuStub,
 				UModal: UModalStub,
 				UButton: UButtonStub,
 				UInput: UInputStub,
@@ -126,6 +144,27 @@ test('menu shows rename and delete options', () => {
 	const wrapper = createWrapper();
 	expect(wrapper.text()).toContain('重命名');
 	expect(wrapper.text()).toContain('删除');
+});
+
+test('menuItems：项数/标签/图标/危险项/回调全绑定到位（钉死配对，互换或丢色能测出）', () => {
+	const wrapper = createWrapper();
+	const items = wrapper.findComponent({ name: 'UDropdownMenu' }).props('items');
+	expect(items).toHaveLength(2);
+
+	expect(items[0].label).toBe('重命名');
+	expect(items[0].icon).toBe('i-lucide-pencil');
+	expect(items[0].color).toBeUndefined();
+
+	// 删除是危险项：必须带 color 'error'（per-item 红色），图标 trash-2
+	expect(items[1].label).toBe('删除');
+	expect(items[1].icon).toBe('i-lucide-trash-2');
+	expect(items[1].color).toBe('error');
+
+	// onSelect 接到对应方法：调用即打开对应 modal
+	items[0].onSelect();
+	expect(wrapper.vm.renameOpen).toBe(true);
+	items[1].onSelect();
+	expect(wrapper.vm.deleteOpen).toBe(true);
 });
 
 test('clicking rename opens rename modal with current title', async () => {
