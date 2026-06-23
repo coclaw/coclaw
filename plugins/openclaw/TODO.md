@@ -972,14 +972,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行为未实测——主路径只承诺 user service 推荐形态；macOS / Windows 形态 `openclaw gateway restart` 是否连带杀 detached worker 也未摸底。不阻塞发版：非 systemd 形态不走 scope 分支、行为零改动；探针失败降级=现状 + `upgrade.cgroup-escape-failed` 信号 + inflight 对账兜底。
 
-### lastUpgrade.error 的 500 字符截尾可能截掉真因、只留 stderr 噪音（S4 实测）
-
-**发现日期**：2026-06-11（S4 独立回归实测）。`formatCmdFailure` 拼接顺序 `message | stdout | stderr`，npm 的 404 真因落 stdout 段；本机 openclaw CLI 的 stderr 固定带 proxy-preload / state-migrations 噪音（约 500+ 字符）。远程上报行（`upgrade.result error=...`，`updater.js`）引的正是 `lastUpgrade.error` → 远端看不到真因、只有本地 jsonl 留全文。
-
-**已部分缓解、症状仍在（2026-06-23 复核）**：`formatCmdFailure` 后来改成**双流各取尾部 + 先脱敏**（`worker.js`，`CMD_OUTPUT_TAIL_CHARS=500` 对 message/stdout/stderr 各自 tail 后拼 `prefix: … | stdout: … | stderr: …`），完整复合串原样进 jsonl。但这道改动服务的是脱敏 + 保证两流尾部都进 jsonl，**没碰症状那道截断**——`recordUpgradeTerminal` 仍对复合串再做一次**全局** `slice(-500)`（`state.js` `truncateErrorTail`，`ERROR_MAX_CHARS=500`）写进 `lastUpgrade.error`。stderr 段在复合串**末尾**，本机 stderr 噪音 ≥500 时全局尾-500 整段落在 stderr 内，stdout 的 404（位于复合串中段）仍被切掉。
-
-**判定**：维护期 KEEP（非 STALE、非不可达无害——本机此类升级失败每次命中）。但升级失败本身低频、纯诊断退化、本地 jsonl 留全文可恢复，维护期不主推。**最小修向**（若要恢复远程排障）：`state.js` 一处把 `ERROR_MAX_CHARS` 放宽到能容下已逐段封顶的复合串（每流 ≤500、复合上限 ~1530，取 ~1600），或移除这道二次截断、信任 `formatCmdFailure` 的逐段封顶——代价仅上报行变长。**别**让 `state.js` 去解析 `formatCmdFailure` 的分段格式做段感知截断（耦合 worker.js 字符串格式、得不偿失）。
-
 ## pion ICE 网卡过滤黑名单只拦 docker0，TUN 的 utun 伪候选漏网
 
 **发现日期**：2026-06-15（本机配置 sing-box TUN 系统级翻墙分流时发现；预存窄黑名单，非本次造成）

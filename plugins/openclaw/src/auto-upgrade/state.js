@@ -29,8 +29,13 @@ const STATE_FILENAME = 'upgrade-state.json';
 const LOG_FILENAME = 'upgrade-log.jsonl';
 const LOG_MAX_LINES = 200;
 const LOG_KEEP_LINES = 100;
-// lastUpgrade.error 截断上限：远端上报行不宜过长；jsonl 保留完整 error
-const ERROR_MAX_CHARS = 500;
+// lastUpgrade.error 截断上限：远端上报行不宜过长；jsonl 保留完整 error。
+// 取 1600 是为 ≥ worker.js formatCmdFailure 复合串的理论最大长度（≈1547：
+// prefix + message/stdout/stderr 三段各尾截 500 + 标签与 " | " 分隔符开销），
+// 保证 worker 格式化的失败串绝不被 state.js 二次全局截断而切掉中段真因；
+// 这里不解析 worker 的分段格式（保持两者解耦），只保留一道防御性硬上限——
+// state.js 的 error 还来自 'boom'/'timeout'/verify 等其它短串，需防意外超长串无界落盘。
+const ERROR_MAX_CHARS = 1600;
 
 const stateMutex = createMutex();
 const logMutex = createMutex();

@@ -615,13 +615,13 @@ test('recordUpgradeTerminal lastUpgrade.error 截断保尾部，jsonl 保留完�
 	const dir = await makeTmpDir();
 	process.env.OPENCLAW_STATE_DIR = dir;
 	try {
-		const longErr = `${'x'.repeat(600)}TAIL`;
+		const longErr = `${'x'.repeat(1700)}TAIL`;
 		await recordUpgradeTerminal({
 			from: '1.0.0', to: '1.1.0', result: 'rollback', error: longErr,
 		});
 
 		const state = await readState();
-		assert.equal(state.lastUpgrade.error.length, 500);
+		assert.equal(state.lastUpgrade.error.length, 1600);
 		assert.ok(state.lastUpgrade.error.endsWith('TAIL'), '截断须保尾部（真因在尾部）');
 
 		const entry = JSON.parse((await fs.readFile(getLogPath(), 'utf8')).trim());
