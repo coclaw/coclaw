@@ -154,16 +154,29 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 
 **修复方向**（不修）：保持现状（split 模块本身就是这次重构的目的）；如有监控告警需迁移，更新过滤条件即可。
 
-## __setupDataChannel 装配代码无 try/catch（防御性，不修）
+## __setupDataChannel 装配抛错 → rpcQueue 半残静默丢消息（真 bug；后果非平凡但生产概率≈0 → KEEP/defer；含 ex-553）
 
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）
-**关联**：webrtc-peer.js __setupDataChannel
+**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 4）；2026-06-23 两路对抗评审重核，合并原「装配段 `new FileBackedQueue()` / `init()` 抛错的静默缝隙」(ex-553) 为单一真相源
+**关联**：`src/webrtc/webrtc-peer.js` `__setupDataChannel` / `ondatachannel`
 
-**问题**：MemoryQueue / RpcDcSender 构造抛出会留下半装配状态——例如 connId 含非法字符会让 MemoryQueue 抛 TypeError，此时 session.rpcQueue 未赋值但 dc 事件 handlers 已设。
+**后果（非平凡）**：`ondatachannel` 同步先赋 `session.rpcChannel`(~:830)，再 fire-and-forget 调 `__setupDataChannel`，其抛错被最外层 `.catch`(~:831-833) 只 log 吞掉。`__setupDataChannel` 构造 queue + `await queue.init()`，**成功后**才赋 `session.rpcQueue`(~:1079)；构造/init 抛 → rpcQueue 停 null 但通道已 open。三个生产者（broadcast ~:325 / sendTo ~:352 / files ~:914）以 `?.rpcQueue?.` 静默门跳过 → plugin→UI 所有 RPC 响应静默丢。**且不可自恢复**：probe-ack 走裸 `dc.send` 绕 queue(~:890-891) → 传输层探测成功 → UI 认通道健康、不重建 → 丢失持续。
 
-**当前实现**：构造抛点在实践中触发不到——connId 由 UI 生成 `c_${UUID}` 格式总是满足 ID_RE；dc 是 ondatachannel 参数永不为 null。
+**概率（生产≈0，与后果分开看）**（2026-06-23 两路独立核实）：
+- 唯一现实触发 = **server 违反 connId 跨进程契约**（非法字符 → FBQ/MemoryQueue 构造 `ID_RE` 校验抛 TypeError）。正常 UI 发 `c_${uuid}` 恒合法。
+- diskCap 非有限 → 不可达：`measureDiskCap` 已夹紧 [64MB,1GB]、异常回退 1GB，仅测试注入坏值才抛。
+- **更正 ex-553 旧表述**：原称「`init()` 的 `fs.mkdir` 在权限/磁盘异常下可能抛」**不成立**——FBQ `init()` 不调 mkdir（只一个被 try/catch 吞的 `fs.rm`），mkdir 懒延迟到首次 spill；`await queue.init()` 近乎 throw-proof。
 
-**修复方向**（不修）：包 try/catch 在 `if (session && dc.label === 'rpc')` 段内，失败时 warn + return 不赋值任何字段。属纯防御。
+**可验证性**：确定性、廉价单测可钉的不变量（非难复现 race）——测试注入坏 `diskCap`(=Infinity) 或喂非法 connId 即可强制抛，断言"降级后 rpcQueue 非 null + 日志如实报 mem + enqueue 抵达"，撤修法 flip-to-RED。
+
+**⚠️ 朴素修法是错的（已证伪，别重蹈）**：「catch 后回退到既有 `new MemoryQueue(connId)`」对唯一现实触发**失效**——MemoryQueue 与 FBQ 共用同一套 `ID_RE`，同一非法 connId 喂给它**再次抛** → throw-in-catch 逃逸回最外层 `.catch` → rpcQueue 仍 null、依旧半残。两路对抗评审独立撞同一洞。
+
+**正确修法方向（未来真要修再做：业务码改动走深水区 + 发 patch changeset）**：try/catch 仅包 FBQ「构造 + init」两步（边界画在 init 之后、~:1058 身份重核之前，别误吞 abort）；catch 内 ① `new MemoryQueue` 用**安全内部 id**（非 connId；MemoryQueue id 只做日志 tag、不碰盘）→ 对非法 connId 也不再抛；② 重算 `queueImpl='mem'`/`fbqFallback` 让既有日志(~:1066-1068)**如实+响亮**报降级 + warn 带错误。两组测试（坏 diskCap / 非法 connId）各 flip-to-RED。
+- **更高层替代（更大改动、follow-up）**：信令入站处校验 connId 字符集、非法即结构化拒连（在它成为 session 路由键之前），是「正确 altitude」——避免在装配深处 mask 一个 server 契约违反。
+- **残余根因（更深、非本条范围）**：上面修法让 rpcQueue 对这些触发永不为 null，但 probe-ack 绕 queue 的不对称仍在——任何**其它**未来导致 rpcQueue 为 null 的路径，UI 仍因 probe 通而不重建。
+
+**为何 KEEP/defer（2026-06-23 用户拍板）**：生产概率≈0 + 正确修法触及 webrtc 核心错误路径逻辑 + connId 契约语义，维护期稳定优先；本轮只修订本 TODO（含证伪朴素修法），暂不实际修复。非"难验证的陷阱"——纯属维护期取舍。
+
+**关联（不合并）**：`## A1 异步装配引入的"handler 已挂、字段未挂"理论窗口` 是 init **顺利期间** rpcQueue 暂 null 的**瞬态自愈**窗口（init resolve 即愈），与本条「构造/init **抛错**后的永久半残」是不同失败模式、修法不互相覆盖，仅根因同源（字段赋值在 handler 挂载之后）。
 
 ## __sendPeerTransport 失败后无重试调度（预存）
 
@@ -445,6 +458,8 @@ dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-fail
 - __sendPeerTransport 在 sendTo 返回 false 时打 warn 或一次性 retry（peer-transport 是诊断信息，丢失影响小）
 - 等 Phase B 引入 RpcDropMonitor 后，把这两条 silent drop 也作为 reason 上报
 
+**关联（不同失败模式、不合并）**：本条是 init **顺利期间** rpcQueue 暂 null 的**瞬态自愈**窗口（init resolve 即愈）；构造/init **抛错**后的**永久半残**是另一条 `## __setupDataChannel 装配抛错 → rpcQueue 半残静默丢消息`。两者根因同源（字段赋值在 handler 挂载之后）但修法不互相覆盖。（注：FBQ 现已切，本条理论窗口已成现实窗口，但仍自愈。）
+
 ## claw-paths runtime 改造遗留（2026-05-05 deep-review 抓出，预存）
 
 ### session-manager readFile TOCTOU 分支无法 test-only 覆盖（PRE-EXISTING 噪音，余 1 项）
@@ -547,27 +562,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 - 可选：进一步细分 `__bypassOvershootCount`（仅 overshoot 路径触发）vs 普通 bypass 入队（memFits=true 时也豁免 diskCap admission，算 bypass 但不是 overshoot）
 - monitor 不必参与（monitor 是 drop 视角，bypass 不是 drop）；bypass 统计放 FBQ 自身 stats 即可
 - close-log 加 bypass 累计字段（与 dropped / residual 并列），让降级期间的 bypass 救援量级可观测
-
-## 2026-05-08 FBQ/MemoryQueue 收口 deep-review 发现的预存问题
-
-### 装配段 `new FileBackedQueue()` / `init()` 抛错时的静默缝隙
-
-**发现日期**：2026-05-08（发版 0.21.0 前最终兜底 deep-review 由 codex-rescue 实例 4 surface）
-
-**锚点**：
-- `plugins/openclaw/src/webrtc/webrtc-peer.js:518` ondatachannel sync 段已经把 `session.rpcChannel` 切到新 dc（`readyState='open'`）
-- `plugins/openclaw/src/webrtc/webrtc-peer.js:694-715` 装配段 sync nullify 四字段 + await 旧 destroy
-- `plugins/openclaw/src/webrtc/webrtc-peer.js:727-754` 创建新 monitor / `new FileBackedQueue(...)` / `await queue.init()` / wire sender / consume loop —— **整段无局部 try/catch fallback**
-- `plugins/openclaw/src/webrtc/webrtc-peer.js:519` 最外层 `__setupDataChannel(...).catch(...)`（fire-and-forget catch）
-
-**问题**：装配段 nullify 之后若 `new FileBackedQueue()` 构造校验抛（`memBudget` / `diskCap` / `maxMessageBytes` 非有限正数）或 `init()` 抛（`fs.mkdir` 异常路径），异常被最外层 catch 兜住——此时 `session.rpcChannel=新 dc` 但 `rpcQueue=null` / `rpcDcSender=null` / 等四字段全 null。新消息进 broadcast 看 `rpcQueue=null` skip，**新 dc 开着但没有 queue 后端**，静默丢消息。
-
-**当前不触发**：FBQ 构造校验抛只在 `getDiskCap()` 返回非有限正数时触发（misconfiguration / startup prep timeout 后 `__diskCap=null` 走 MemoryQueue 分支，不走 FBQ）。`init()` 的 `fs.mkdir` 在权限/磁盘异常下可能抛，但前置 `__measureRpcQueueDiskCap` 已 `statfs` 过，多数环境下不会再失败。
-
-**修复方向**（如未来真触发再做）：
-- 装配段 try/catch 包整段创建逻辑，catch 里 fallback 到 MemoryQueue（与 startup prep timeout 降级路径对齐），并 `logger.warn?.(...)` 记录
-- 或者 catch 里保持四字段 null（已是该状态），但加 warn log 让运维侧看到"新 dc 装配失败"
-- 推荐前者——保住 dc 可用性比"无 queue 静默"更对齐用户预期
 
 ## gateway WS transport-level error 握手前发生时重试调度静默卡死
 

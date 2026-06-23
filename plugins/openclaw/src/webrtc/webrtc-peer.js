@@ -829,7 +829,7 @@ export class WebRtcPeer {
 				// 后变 fire-and-forget（WebRTC 实现的 ondatachannel 是 sync 回调，不能 await）
 				session.rpcChannel = channel;
 				this.__setupDataChannel(connId, channel).catch((err) => {
-					/* c8 ignore next 2 -- setup 内部已经 try/catch 所有 await；此处仅防御性兜底 */
+					/* c8 ignore next 2 -- async 装配段（FBQ 构造+init）无内部 try/catch，此 catch 是其抛错的真实吞没点（非"防御兜底"）；生产不可达（仅 server 违反 connId 契约触发）暂未修，详见 TODO「__setupDataChannel 装配抛错 → rpcQueue 半残静默丢消息」 */
 					this.logger.warn?.(`${this.__rtcTag} [${connId}] __setupDataChannel error: ${err?.message}`);
 				});
 			} else if (channel.label.startsWith('file:')) {
