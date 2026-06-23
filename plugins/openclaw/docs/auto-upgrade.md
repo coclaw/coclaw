@@ -340,6 +340,6 @@ Bridge 握手时上报 `pluginVersion`，server 回传：
 | 来源门禁时序 | start() 一次性判定 | L1 在 `__check` 内逐周期重验（有新版才 inspect，~3s 子进程不冻结网关；局部 try/catch 防外层 catch-all 吞信号） | 瞬时失败下周期自愈，消灭"一次误判 → 永久停摆" |
 | 达标判据 | 各处各写比较式 | `isVersionReached`（worker-verify.js）：`===` 或 `isNewerVersion`，健康轮询与 L2 同构复用 | `isNewerVersion` 是严格大于，等号须显式 |
 | 升级后处置 | exit 0 即无条件 restart + 轮询 | L2 结局矩阵（见"upgrade-worker 详细流程"）；新增 `noop-skip` result token 与 verify 目标参数化 | update exit 0 不代表真升级 |
-| 远程信号 | available 在来源判定前发 | `upgrade.available` 后移到 L1 放行后；稳定态信号（source-skip / gate-inspect-failed / install-path-fallback）经 `__gateSignalOnce` 按 (原因, toVersion) 去重，重启重置 | 永不升级的装置不该每小时刷屏 |
+| 远程信号 | available 在来源判定前发 | `upgrade.available` 后移到 L1 放行后；稳定态信号（available / source-skip / gate-inspect-failed / install-path-fallback）经 `__gateSignalOnce` 按 (原因, toVersion) 去重，重启重置 | 永不升级的装置不该每小时刷屏 |
 | worker 基线 | 无 | spawner 经 `--baselineVersion` 传 `install.version`（缺失不传 flag） | L2 区分"record 推进 / 未推进"的判定基线 |
 | 脚本侧 | `_lib.sh` 直读账本 JSON + 硬编码 `$HOME/.openclaw` | 改走 `plugins inspect --json`（主 shell memo 化、无 JSON 回落、CLI 失败响亮报错）；state-dir 尊重 `OPENCLAW_STATE_DIR` | 与 updater 同一契约来源 |

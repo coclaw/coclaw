@@ -753,6 +753,45 @@ test('L1 - inspect 真失败时跳过本周期、去重上报，并在下周期�
 	}
 });
 
+test('L1 - available 信号多周期去重：连续放行只发一条 upgrade.available', async () => {
+	resetEnv();
+	resetRemoteLog();
+	const tmpDir = await makeTmpDir();
+	process.env.OPENCLAW_STATE_DIR = tmpDir;
+	try {
+		const spawnCalls = [];
+		const logger = silentLogger();
+		const s = new AutoUpgradeScheduler({
+			pluginId: TEST_PLUGIN_ID,
+			logger,
+			opts: {
+				execFileFn: mockExecFile(null, '99.0.0\n'),
+				inspectInstallFn: npmInspectFn(),
+				spawnFn: (cmd, args) => { spawnCalls.push(args); return { pid: 1, unref: () => {}, on: () => {} }; },
+				isUpgradeLockedFn: async () => false,
+				writeUpgradeLockFn: async () => {},
+			},
+		});
+
+		// 同一 scheduler 实例连续三周期，每轮 npm 放行且 available 成立
+		await s.__check();
+		await s.__check();
+		await s.__check();
+
+		// 三周期都抵达 available 放行处（spawn 是 available 的紧邻下游，三次为证；
+		// 若某轮没到 available，spawn 也不会触发）
+		assert.equal(spawnCalls.length, 3);
+		// available 同为稳定态，按 (原因, toVersion) 去重：三周期只发一条
+		assert.equal(
+			remoteLogBuffer.filter(e => e.text.startsWith('upgrade.available')).length,
+			1,
+		);
+	} finally {
+		resetEnv();
+		resetRemoteLog();
+	}
+});
+
 test('L1 - inspectInstallFn 抛异常按真失败处理（局部 catch，不落外层 check-failed）', async () => {
 	resetEnv();
 	resetRemoteLog();

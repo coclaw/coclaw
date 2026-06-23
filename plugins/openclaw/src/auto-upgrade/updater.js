@@ -582,8 +582,12 @@ export class AutoUpgradeScheduler {
 				);
 			}
 
-			// 来源验明 npm 后才上报 available——否则永不升级的装置每小时刷一条
-			remoteLog(`upgrade.available from=${result.currentVersion} to=${result.latestVersion}`);
+			// 来源验明 npm 后才上报 available——否则永不升级的装置每小时刷一条；
+			// available 同为稳定态（直到升级落地或新版发布），与兄弟信号同模式按 (原因, toVersion) 去重防刷屏
+			this.__gateSignalOnce(
+				`available|${result.latestVersion}`,
+				`upgrade.available from=${result.currentVersion} to=${result.latestVersion}`,
+			);
 			this.__logger.info?.(`[auto-upgrade] Update available: ${result.currentVersion} → ${result.latestVersion}`);
 
 			// installPath 取自权威记录（新鲜）；缺失时回退自推包根，

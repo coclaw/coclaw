@@ -1055,10 +1055,6 @@ OpenClaw 自己从不踩坑，因为它每次比对前都先 `normalizeProviderI
 
 备份只覆盖插件目录本身；托管布局下依赖树可能由 npm 在插件目录之外统一管理，mv 回旧代码后依赖仍是新版安装时改写的状态，形成"新依赖+旧代码"混搭。同族限制：布局迁移场景（老布局升级 → record 指新托管路径）回滚不完美——备份的是旧实体、record 已指新处（`worker-verify.js` 头注释已有记述）。
 
-### 稳定 mismatch 态 upgrade.available 信号每周期重发无去重
-
-稳定 mismatch 态（有新版、L1 放行、但升级始终未完成且未 skip）下 `upgrade.available` 每周期重发一条 remoteLog——预存模式。修向：并入既有 `__gateSignalOnce` (原因, toVersion) 去重。（同模式的 `upgrade.skipped` 已随 2026-06-11 升级链修复并入去重销账。）
-
 ## 2026-06-11 auto-upgrade 升级链修复 follow-up（不阻塞发版）
 
 **发现日期**：2026-06-11（升级链缺陷修复方案评审收尾时商定；缺陷修复本体随同期 commit 落地、不在此留账，实测细节见 git 历史与 `tmp/upgrade-verify-20260611/` 留档）
