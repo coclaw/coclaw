@@ -494,16 +494,6 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 **修复方向**：考虑直接 mock 一个 bridge 实例，手工设置 `gatewayWs` / `gatewayReady` 等内部状态，绕过 `bridge.start()` 的全套副作用；或拦截 `setTimeout`（参考 `RealtimeBridge should handle connect timeout` 的 timer 拦截 pattern）让 setTimeout 立即触发。
 
-## 2026-05-07 FBQ bypass-overshoot round 2 deep-review 抓出的预存问题
-
-### webrtc-peer.test 的 flushAsync 依赖固定圈数 setImmediate（PRE-EXISTING）
-
-**锚点**：`plugins/openclaw/src/webrtc/webrtc-peer.test.js:19` 的 `flushAsync` helper
-
-**问题**：当前实现是固定圈数 `setImmediate`，consumeLoop 或 setup 内部任何位置多一个 `await` 都可能让相关测试假通过或假失败。
-
-**修复方向**：改成轮询具体可观测条件（如 `until queue.memBytes === 0` / `until session.rpcDcSender.flushed === true`）或等待事件 Promise，而非固定 tick 数。
-
 ## 2026-05-07 FBQ 本机实测中发现的诊断盲点
 
 ### FBQ / monitor 都未统计 bypass overshoot 的次数与字节数
