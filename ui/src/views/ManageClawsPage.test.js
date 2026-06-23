@@ -86,10 +86,40 @@ const AgentCardStub = {
 	template: '<div data-testid="agent-card">{{ agent.name }}</div>',
 };
 
-// vitest 不挂 @nuxt/ui，UPopover 需 stub：默认槽（触发按钮）+ #content 槽（菜单项）都渲染出来便于断言
-const UPopoverStub = {
-	template: '<div><slot /><slot name="content" /></div>',
+// vitest 不挂 @nuxt/ui，UDropdownMenu 需 stub：渲染 trigger（默认插槽）+ 把嵌套数组 :items 先 flatten 一层
+// 再平铺成按钮（含 item-leading / item-label 插槽），都暴露在 DOM 中便于断言。
+// it.disabled 落到按钮的 :disabled；testid 经 #item-label 插槽落到 label <span>（与真实组件一致，
+// 标准 item 元素不透传任意 data-*）；点击按钮触发 it.onSelect。
+const UDropdownMenuStub = {
+	name: 'UDropdownMenu',
+	props: ['items', 'open', 'content'],
+	emits: ['update:open'],
+	template: `
+		<div class="dropdown-stub">
+			<slot :open="open" />
+			<button
+				v-for="(it, i) in (items || []).flat()"
+				:key="i"
+				type="button"
+				class="dropdown-item"
+				:data-color="it.color"
+				:disabled="it.disabled"
+				@click="it.onSelect && it.onSelect()"
+			>
+				<slot name="item-leading" :item="it"><span class="icon" :name="it.icon" /></slot>
+				<slot name="item-label" :item="it">{{ it.label }}</slot>
+			</button>
+		</div>
+	`,
 };
+
+// 菜单项 testid 经 #item-label 插槽落在 label <span> 上，disabled / click 在外层 <button>；
+// 这里从 testid 回溯到承载它的 button wrapper，便于断言 disabled 态与触发点击。
+function menuItem(wrapper, testid) {
+	return wrapper.findAll('button.dropdown-item').find(
+		(b) => b.find(`[data-testid="${testid}"]`).exists(),
+	);
+}
 
 let mockBots = [];
 
@@ -102,7 +132,7 @@ function createWrapper() {
 				UBadge: UBadgeStub,
 				UIcon: { props: ['name'], template: '<i />' },
 				AgentCard: AgentCardStub,
-				UPopover: UPopoverStub,
+				UDropdownMenu: UDropdownMenuStub,
 			},
 			mocks: {
 				$t: (key, params) => {
@@ -488,12 +518,12 @@ describe('ManageClawsPage', () => {
 		expect(trigger2.props('loading')).toBe(false);
 
 		// unbind in-flight 时目标 claw 的三个菜单项全禁用（管理模型/重命名/移除）；他 claw 不受影响
-		expect(wrapper.find('[data-testid="claw-menu-models-1"]').element.disabled).toBe(true);
-		expect(wrapper.find('[data-testid="claw-menu-rename-1"]').element.disabled).toBe(true);
-		expect(wrapper.find('[data-testid="claw-menu-remove-1"]').element.disabled).toBe(true);
-		expect(wrapper.find('[data-testid="claw-menu-models-2"]').element.disabled).toBe(false);
-		expect(wrapper.find('[data-testid="claw-menu-rename-2"]').element.disabled).toBe(false);
-		expect(wrapper.find('[data-testid="claw-menu-remove-2"]').element.disabled).toBe(false);
+		expect(menuItem(wrapper, 'claw-menu-models-1').element.disabled).toBe(true);
+		expect(menuItem(wrapper, 'claw-menu-rename-1').element.disabled).toBe(true);
+		expect(menuItem(wrapper, 'claw-menu-remove-1').element.disabled).toBe(true);
+		expect(menuItem(wrapper, 'claw-menu-models-2').element.disabled).toBe(false);
+		expect(menuItem(wrapper, 'claw-menu-rename-2').element.disabled).toBe(false);
+		expect(menuItem(wrapper, 'claw-menu-remove-2').element.disabled).toBe(false);
 
 		// 收尾
 		resolveA();
@@ -1171,8 +1201,8 @@ describe('模型设置入口（三点菜单）', () => {
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		const item = wrapper.find('[data-testid="claw-menu-models-1"]');
-		expect(item.exists()).toBe(true);
+		const item = menuItem(wrapper, 'claw-menu-models-1');
+		expect(item).toBeTruthy();
 		expect(item.element.disabled).toBe(false);
 		await item.trigger('click');
 		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');
@@ -1185,9 +1215,9 @@ describe('模型设置入口（三点菜单）', () => {
 		await flushPromises();
 
 		expect(wrapper.find('[data-testid="claw-menu-1"]').exists()).toBe(true);
-		expect(wrapper.find('[data-testid="claw-menu-models-1"]').element.disabled).toBe(true);
-		expect(wrapper.find('[data-testid="claw-menu-rename-1"]').element.disabled).toBe(true);
-		expect(wrapper.find('[data-testid="claw-menu-remove-1"]').element.disabled).toBe(false);
+		expect(menuItem(wrapper, 'claw-menu-models-1').element.disabled).toBe(true);
+		expect(menuItem(wrapper, 'claw-menu-rename-1').element.disabled).toBe(true);
+		expect(menuItem(wrapper, 'claw-menu-remove-1').element.disabled).toBe(false);
 	});
 
 	test('菜单「重命名」点击 → 打开重命名对话框', async () => {
@@ -1196,7 +1226,7 @@ describe('模型设置入口（三点菜单）', () => {
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		await wrapper.find('[data-testid="claw-menu-rename-1"]').trigger('click');
+		await menuItem(wrapper, 'claw-menu-rename-1').trigger('click');
 		expect(wrapper.vm.renameOpen).toBe(true);
 	});
 
@@ -1206,7 +1236,7 @@ describe('模型设置入口（三点菜单）', () => {
 		const wrapper = createWrapper();
 		await flushPromises();
 
-		await wrapper.find('[data-testid="claw-menu-remove-1"]').trigger('click');
+		await menuItem(wrapper, 'claw-menu-remove-1').trigger('click');
 		expect(wrapper.vm.removeConfirmOpen).toBe(true);
 	});
 });
@@ -1398,7 +1428,7 @@ describe('chat 按钮在引导态下不被禁用（不变量）', () => {
 					UButton: UButtonStub,
 					UBadge: UBadgeStub,
 					UIcon: { props: ['name'], template: '<i />' },
-					UPopover: UPopoverStub,
+					UDropdownMenu: UDropdownMenuStub,
 				},
 				mocks: {
 					$t: (key) => key,

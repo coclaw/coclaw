@@ -23,7 +23,17 @@
 		</div>
 
 		<div class="border-t border-default px-2 py-1">
-			<UPopover v-model:open="menuOpen" :content="{ side: 'top', align: 'center' }">
+			<!-- 内容宽度钉回原 popover 宽度：原 popover shrink-wrap 到触发按钮宽（px-2 容器内的 w-full
+			     按钮 = drawerWidth-16，距侧栏边各约 8px 内缩）。全局 dropdownMenu 主题默认内容自适应
+			     （min-w-0 max-w-60），这里用 reka 暴露在弹层上的锚点（触发器）宽度变量
+			     --reka-popper-anchor-width 复刻该按钮宽；max-w-none 解除默认 240px 上限（drawerWidth 最大 384px） -->
+			<UDropdownMenu
+				v-model:open="menuOpen"
+				:items="userMenuDropdownItems"
+				:content="{ side: 'top', align: 'center' }"
+				:modal="false"
+				:ui="{ content: 'w-[var(--reka-popper-anchor-width)] max-w-none' }"
+			>
 				<UButton
 					data-testid="user-menu-trigger"
 					variant="ghost"
@@ -35,25 +45,10 @@
 					<UIcon :name="menuOpen ? 'i-lucide-chevron-down' : 'i-lucide-chevron-up'" class="size-4 text-muted" />
 				</UButton>
 
-				<template #content>
-					<!-- 不自带 bg：沿用 popover content 的 bg-default + 全局投影/描边，与其它动作菜单一致；
-					     之前的 bg-elevated 是局部覆盖，方角 + 与背景同色会和全局光晕/ring 打架（暗色下方角露底） -->
-					<div class="p-2" :style="{ width: (uiStore.drawerWidth - 16) + 'px' }">
-						<template v-for="item in userMenuItems" :key="item.id">
-							<div v-if="item.separator" class="my-1 border-t border-default" />
-							<button
-								type="button"
-								class="flex h-11 w-full items-center gap-3 rounded-lg px-2 py-1 text-left text-sm text-highlighted hover:bg-accented"
-								:data-testid="item.id === 'logout' ? 'btn-logout' : null"
-								@click="onMenuItemClick(item.id)"
-							>
-								<UIcon :name="item.icon" class="size-5" />
-								<span>{{ item.label }}</span>
-							</button>
-						</template>
-					</div>
+				<template #item-label="{ item }">
+					<span :data-testid="item.testid">{{ item.label }}</span>
 				</template>
-			</UPopover>
+			</UDropdownMenu>
 		</div>
 	</aside>
 </template>
@@ -105,8 +100,22 @@ export default {
 		showSidebarBrand() {
 			return !(isElectronApp && this.envStore.isWin);
 		},
-		userMenuItems() {
-			return getUserMenuItems(this.$t, { isAdmin: this.user?.level === -100 });
+		// 把 getUserMenuItems 形状（{ id, label, icon, separator? }）映射成 UDropdownMenu 扁平 items：
+		// separator:true 项前先插一条 { type: 'separator' }（分隔线渲染在该项上方），logout 项透传 testid 供 #item-label 落到 DOM
+		userMenuDropdownItems() {
+			const items = [];
+			for (const item of getUserMenuItems(this.$t, { isAdmin: this.user?.level === -100 })) {
+				if (item.separator === true) {
+					items.push({ type: 'separator' });
+				}
+				items.push({
+					label: item.label,
+					icon: item.icon,
+					testid: item.id === 'logout' ? 'btn-logout' : undefined,
+					onSelect: () => this.onMenuItemClick(item.id),
+				});
+			}
+			return items;
 		},
 		userDisplayName() {
 			return getUserDisplayName(this.user);

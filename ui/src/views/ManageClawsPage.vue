@@ -88,9 +88,14 @@
 								</div>
 							</template>
 						</div>
-						<!-- 右侧：三点菜单（管理模型 / 重命名 / 移除） -->
+						<!-- 右侧：三点菜单（管理模型 / 重命名 / 移除）。分隔由 clawMenuItems 的嵌套数组分组自动产生 -->
 						<div class="pl-3 shrink-0">
-							<UPopover v-model:open="menuOpenMap[claw.id]" :content="{ side: 'bottom', align: 'end' }">
+							<UDropdownMenu
+								v-model:open="menuOpenMap[claw.id]"
+								:items="clawMenuItems(claw)"
+								:content="{ side: 'bottom', align: 'end' }"
+								:modal="false"
+							>
 								<UButton
 									:data-testid="`claw-menu-${claw.id}`"
 									class="cc-icon-btn"
@@ -101,43 +106,12 @@
 									:loading="!!unbindingMap[claw.id]"
 									:aria-label="$t('common.moreActionsFor', { name: getClawName(claw) })"
 								/>
-								<template #content>
-									<div class="flex max-w-60 flex-col py-1">
-										<!-- unbind in-flight 时整菜单禁用（管理模型/重命名/移除均不可点），避免对正在解绑的 claw 误操作 -->
-										<button
-											type="button"
-											:data-testid="`claw-menu-models-${claw.id}`"
-											class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented disabled:opacity-40 disabled:cursor-not-allowed"
-											:disabled="!claw.online || !!unbindingMap[claw.id]"
-											@click="menuOpenMap[claw.id] = false; goToModels(claw.id)"
-										>
-											<UIcon name="i-lucide-sliders-horizontal" class="size-[18px] shrink-0" />
-											<span class="truncate">{{ $t('claws.manageModel') }}</span>
-										</button>
-										<button
-											type="button"
-											:data-testid="`claw-menu-rename-${claw.id}`"
-											class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-default transition-colors hover:bg-accented active:bg-accented disabled:opacity-40 disabled:cursor-not-allowed"
-											:disabled="renaming || !claw.online || !!unbindingMap[claw.id]"
-											@click="menuOpenMap[claw.id] = false; openRename(claw)"
-										>
-											<UIcon name="i-lucide-pencil" class="size-[18px] shrink-0" />
-											<span class="truncate">{{ $t('claws.rename') }}</span>
-										</button>
-										<div class="my-1 border-t border-default"></div>
-										<button
-											type="button"
-											:data-testid="`claw-menu-remove-${claw.id}`"
-											class="flex min-h-11 items-center gap-2.5 pl-4 pr-5 text-sm text-error transition-colors hover:bg-accented active:bg-accented disabled:opacity-40 disabled:cursor-not-allowed"
-											:disabled="!!unbindingMap[claw.id]"
-											@click="menuOpenMap[claw.id] = false; confirmRemove(claw.id)"
-										>
-											<UIcon name="i-lucide-trash-2" class="size-[18px] shrink-0" />
-											<span class="truncate">{{ $t('claws.remove') }}</span>
-										</button>
-									</div>
+								<!-- 在 label 上挂 data-testid（E2E 锚点）：标准 item 元素不透传任意 data-* 属性。
+								     truncate 沿用原手搓 label（短动词标签实际不触发，超长本地化时省略而非换行） -->
+								<template #item-label="{ item }">
+									<span :data-testid="item.testid" class="truncate">{{ item.label }}</span>
 								</template>
-							</UPopover>
+							</UDropdownMenu>
 						</div>
 					</div>
 
@@ -426,6 +400,31 @@ export default {
 		},
 		goToModels(clawId) {
 			this.$router.push(`/claws/${String(clawId)}/models`);
+		},
+		/**
+		 * 三点菜单项：disabled 依赖具体 claw（online）与 renaming / unbindingMap，
+		 * 故用方法按 claw 现算（非 computed）。嵌套数组分组 → 组间自动分隔线：
+		 * 【管理模型 + 重命名】|【移除】。unbind in-flight（busy）时整菜单禁用，避免对正在解绑的 claw 误操作。
+		 * @param {object} claw
+		 */
+		clawMenuItems(claw) {
+			const busy = !!this.unbindingMap[claw.id];
+			return [
+				[
+					{ label: this.$t('claws.manageModel'), icon: 'i-lucide-sliders-horizontal',
+						testid: `claw-menu-models-${claw.id}`, disabled: !claw.online || busy,
+						onSelect: () => { this.menuOpenMap[claw.id] = false; this.goToModels(claw.id); } },
+					{ label: this.$t('claws.rename'), icon: 'i-lucide-pencil',
+						testid: `claw-menu-rename-${claw.id}`, disabled: this.renaming || !claw.online || busy,
+						onSelect: () => { this.menuOpenMap[claw.id] = false; this.openRename(claw); } },
+				],
+				[
+					// 移除为危险项：per-item color 'error'（红字红图标），高亮底色由全局主题拉回中性
+					{ label: this.$t('claws.remove'), icon: 'i-lucide-trash-2', color: 'error',
+						testid: `claw-menu-remove-${claw.id}`, disabled: busy,
+						onSelect: () => { this.menuOpenMap[claw.id] = false; this.confirmRemove(claw.id); } },
+				],
+			];
 		},
 		/** 计算某台 claw 的引导态：离线 / 凭据 RPC 未成功返回时返回 null（设计 § 6 + § 7.4 gating） */
 		__guidanceStateFor(claw, dashboard) {
