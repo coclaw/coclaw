@@ -32,9 +32,11 @@ export const PROVIDER_META = {
 		popular: true,
 		dashboardUrl: 'https://aistudio.google.com/apikey',
 	},
+	// groq 不进"常用"组：它当前不在 providerAuth.catalog 发现集（只走 model-catalog 推断路径），
+	// 添加对话框里压根看不到它；保留 meta（displayName/dashboardUrl）备它将来真进 catalog 时正常展示。
 	groq: {
 		displayName: 'Groq',
-		popular: true,
+		popular: false,
 		dashboardUrl: 'https://console.groq.com/keys',
 	},
 	deepseek: {

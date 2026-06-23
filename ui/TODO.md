@@ -695,16 +695,6 @@ X4 触及面比 X1 广，需要重新评估：
 - UI 侧清不干净：把变体归一到基座需要 `resolveProviderIdForAuth`，UI 拿不到（设计 dump #8「归一在插件侧」）。
 - 最优修法方向：**插件在 `coclaw.model.list` 出参按 scope 附加"主模型 provider 的别名归一基座 id"字段**（additive，用已注入的 `resolveProviderIdForAuth` 算），UI carrier 判定比对该字段而非裸名。次选：UI 在 remove-flow 加"变体主模型 + 撤任一已配基座 → 强提示"的过警告启发式（多基座时会过报，且越本子任务 scope）。
 
-## 常用 provider 标记 `groq` 与 catalog id 对不上 → groq 常用分组未生效
-
-**发现日期**：2026-06-03（原含智谱 `zhipuai`，已于 2026-06-22 把 key 改为真实 id `zai` 修复；本条仅剩 groq）
-**来源**：provider 研究（常用模型清单 + plan 徽章）调研，活网关 2026.5.28 实测 `coclaw.providerAuth.catalog`；预存 bug，非本次引入
-
-- 现状：`ui/src/constants/provider-meta.js` 的 popular 集里 `groq` 对不上运行时 catalog——`providerAuth.catalog`（添加对话框数据源）的 43 个 provider 里**根本没有 `groq`**（groq 只出现在 model-catalog 路径 `infer model providers`，未进 setup 鉴权发现集）。
-- 机制：`AddProviderDialog` 的 popular 分组靠 `getProviderMeta(catalog.m.provider)` 严格匹配 catalog id，匹配不到就降级 `{ popular:false }` → groq 干脆不在添加列表（智谱 `zhipuai` 是同类问题，已修：key 改为真实 id `zai`）。
-- 修法：`groq` 为何不在 providerAuth catalog 需单独查（插件是否启用/是否只走 model-catalog），确认后决定留删；需活网关核实。
-- 严重度：低（仅常用置顶失效，不影响可达性与功能）。
-
 ## E2E multi-agent S8：是否允许从非 main agent 新建 topic？（产品决策待定）
 
 **发现日期**：2026-06-06（**2026-06-10 更新**：夹具/de-skip 已落地，唯此条产品决策仍待拍板）

@@ -143,7 +143,7 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		const w = makeWrapper({ existingProviders: ['openai'] });
 		// openai 排除：不应渲染 item
 		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
-		// anthropic (popular) + groq (popular) + mystery (other) 应有
+		// anthropic (popular) + groq (other，已不再 popular) + mystery (other) 应有
 		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-item-mystery"]').exists()).toBe(true);

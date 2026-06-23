@@ -2,9 +2,9 @@ import { test, expect } from 'vitest';
 
 import { PROVIDER_META, getProviderMeta } from './provider-meta.js';
 
-const POPULAR_IDS = ['anthropic', 'openai', 'google', 'groq', 'deepseek', 'moonshot', 'zai'];
+const POPULAR_IDS = ['anthropic', 'openai', 'google', 'deepseek', 'moonshot', 'zai'];
 
-test('PROVIDER_META 包含 7 个常用 provider', () => {
+test('PROVIDER_META 包含 6 个常用 provider', () => {
 	const popularIds = Object.entries(PROVIDER_META)
 		.filter(([, meta]) => meta.popular === true)
 		.map(([id]) => id);
@@ -48,4 +48,12 @@ test('智谱真实 catalog id zai 被识别为常用', () => {
 	expect(getProviderMeta('zai').displayName).toBe('智谱 AI (GLM)');
 	// 旧 key 已不存在 → 走 fallback、不再 popular
 	expect(getProviderMeta('zhipuai').popular).toBe(false);
+});
+
+// 回归锁：groq 不归入"常用"组（popular=false），原 popular:true 是匹配不上 catalog 的死配置已移除；
+// 但保留 meta（displayName/dashboardUrl），供它将来真进 catalog 时在"其它"组正常展示 + "去官网"链接。
+test('groq 保留 meta 但不归入常用组', () => {
+	expect(getProviderMeta('groq').popular).toBe(false);
+	expect(getProviderMeta('groq').displayName).toBe('Groq');
+	expect(getProviderMeta('groq').dashboardUrl).toBe('https://console.groq.com/keys');
 });
