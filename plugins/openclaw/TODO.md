@@ -112,47 +112,9 @@
 
 **预存问题**。
 
-## sendTo 返回值语义微变（admission 通过即 true）
-
-**发现日期**：2026-05-02
-**关联**：webrtc-peer.js sendTo + realtime-bridge.js:833
-
-**问题**：原 `RpcSendQueue.send` 在 build/oversize/queue-full 各场景返回 false；新 `sendTo` 仅在 queue-full（admission 拒绝）返回 false，build/oversize 失败发生在 sender 内部异步路径，sendTo 已 return true。realtime-bridge:833 用 `delivered` 打 log，build/oversize 场景不再产生 "undeliverable" log。
-
-**影响**：仅 logger 输出层面，业务无感。caller 不基于返回值做退路决策。
-
-**修复方向**（可选）：sendTo 内做 oversize/buildChunks 预校验后再 enqueue，让返回值真正反映"本条最终送达概率"。代价是破坏 admission 单一职责。
-
 ## 测试增强建议（阶段 1 deep-review 期间记录）
 
 - realtime-bridge.test.js:6073/6096 的 5x setTimeout(0) drain —— 已评估（2026-06-23）：两处都是否定断言（断言「不应 broadcast」），drain N 个 tick 等「缺席」是标准写法，无更确定的可观测条件可替代；保留现状、低优先。
-
-## oversize 与 queue-full 的 drop 分类翻面（行为微变，不修）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
-**关联**：memory-queue.js / rpc-dc-sender.js
-
-**背景**：原 RpcSendQueue.send 的检查顺序是 buildChunks → oversize → admission，所以一条既超 50MB 又恰好队列满的消息总是先报 `single-msg-oversize`（warn 级 + 计入 dropped）。新架构里 admission 在 enqueue 阶段做、oversize 在 sender 阶段做，如果队列已经满了，oversize 消息会被 admission 当 queue-full 在 overflow 期间静默丢，永远走不到 sender 的 oversize 检查；如果队列空，oversize 在 sender 抛 warn 但**不计入 droppedCount**。
-
-**影响**：诊断性下降。oversize（应用 bug 性质）原本有清晰的独立 warn，现在可能被 queue-full 静默吞掉；close 汇总数字也少了 sender 端的 build-fail/oversize 那部分。
-
-**修复方向**（不修）：在 enqueue 入口加一道 oversize 预判（破坏 MemoryQueue 与 FBQ 的纯容器语义），或让 sender 在抛 oversize/build-fail 时回调 queue 的 drop 计数器（增加耦合）。当前接受现状——>50MB 消息属应用 bug 路径，触发条件极窄。
-
-## 日志前缀变更：sender 侧 warn 从 [rpc-queue] 改为 [rpc-dc-sender]（行为微变，不修）
-
-**发现日期**：2026-05-02（rpc-dc-stage1 deep-review round 2）
-**关联**：rpc-dc-sender.js __safeWarn
-
-**问题**：原 RpcSendQueue 内的所有 warn 都带 `[rpc-queue tag=]` 前缀。重构后：
-- MemoryQueue 仍用 `[rpc-queue ...]`（overflow-start / overflow-end / onDrop-threw）
-- RpcDcSender 用 `[rpc-dc-sender ...]`（drop reason=single-msg-oversize / build-chunks-failed / dc.send failed）
-- consumeLoop 用 `${rtcTag} [${connId}] rpc-dc.send-failed code=...`
-
-dump 已记 `rpc-queue.build-chunks-failed` → `rpc-dc-sender.build-chunks-failed`（remoteLog 事件名），但 warn 前缀的连带变化未列。
-
-**影响**：监控/告警如按 `[rpc-queue]` 子串过滤会漏掉 sender 侧的 oversize/build-fail/dc.send-fail。
-
-**修复方向**（不修）：保持现状（split 模块本身就是这次重构的目的）；如有监控告警需迁移，更新过滤条件即可。
 
 ## __setupDataChannel 装配抛错 → rpcQueue 半残静默丢消息（真 bug；后果非平凡但生产概率≈0 → KEEP/defer；含 ex-553）
 
@@ -1012,7 +974,11 @@ systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行�
 
 ### lastUpgrade.error 的 500 字符截尾可能截掉真因、只留 stderr 噪音（S4 实测）
 
-**发现日期**：2026-06-11（S4 独立回归实测）。`formatCmdFailure` 拼接顺序是 `message | stdout | stderr`，npm 的 404 真因落在 stdout 段；本机 openclaw CLI 的 stderr 又固定带 proxy-preload / state-migrations 噪音（约 500+ 字符），`truncateErrorTail` 取尾 500 后 lastUpgrade.error 全是噪音、404 行被截掉。远程上报行（`upgrade.result error=...`）用的正是 lastUpgrade.error → 远端看不到真因，只有本地 jsonl 留全文。"真因通常在输出尾部"的设计前提对"stderr 是宿主 CLI 噪音"形态不成立。修向：截尾前按段保留（如各段独立截短再拼）或上报行改引 jsonl 全文的关键行。
+**发现日期**：2026-06-11（S4 独立回归实测）。`formatCmdFailure` 拼接顺序 `message | stdout | stderr`，npm 的 404 真因落 stdout 段；本机 openclaw CLI 的 stderr 固定带 proxy-preload / state-migrations 噪音（约 500+ 字符）。远程上报行（`upgrade.result error=...`，`updater.js`）引的正是 `lastUpgrade.error` → 远端看不到真因、只有本地 jsonl 留全文。
+
+**已部分缓解、症状仍在（2026-06-23 复核）**：`formatCmdFailure` 后来改成**双流各取尾部 + 先脱敏**（`worker.js`，`CMD_OUTPUT_TAIL_CHARS=500` 对 message/stdout/stderr 各自 tail 后拼 `prefix: … | stdout: … | stderr: …`），完整复合串原样进 jsonl。但这道改动服务的是脱敏 + 保证两流尾部都进 jsonl，**没碰症状那道截断**——`recordUpgradeTerminal` 仍对复合串再做一次**全局** `slice(-500)`（`state.js` `truncateErrorTail`，`ERROR_MAX_CHARS=500`）写进 `lastUpgrade.error`。stderr 段在复合串**末尾**，本机 stderr 噪音 ≥500 时全局尾-500 整段落在 stderr 内，stdout 的 404（位于复合串中段）仍被切掉。
+
+**判定**：维护期 KEEP（非 STALE、非不可达无害——本机此类升级失败每次命中）。但升级失败本身低频、纯诊断退化、本地 jsonl 留全文可恢复，维护期不主推。**最小修向**（若要恢复远程排障）：`state.js` 一处把 `ERROR_MAX_CHARS` 放宽到能容下已逐段封顶的复合串（每流 ≤500、复合上限 ~1530，取 ~1600），或移除这道二次截断、信任 `formatCmdFailure` 的逐段封顶——代价仅上报行变长。**别**让 `state.js` 去解析 `formatCmdFailure` 的分段格式做段感知截断（耦合 worker.js 字符串格式、得不偿失）。
 
 ## pion ICE 网卡过滤黑名单只拦 docker0，TUN 的 utun 伪候选漏网
 

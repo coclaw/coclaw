@@ -123,6 +123,8 @@ drop 来源有两类，分别由不同组件上报，**不要混淆**：
 
 `MESSAGE_OVERSIZED` / `BUILD_CHUNKS_FAILED` **每次单独 warn**——这是应用 bug 性质（消息体异常大或 maxMessageSize 协商出错），不属于队列压力，不应被 overflow 状态吞噬。也**不计入 queue 的 droppedCount**。
 
+**日志前缀分裂（监控告警注意）**：warn / remoteLog 前缀按模块分裂——队列/监视器侧统一 `[rpc-queue …]` warn + `rpc-queue.*` remoteLog（admission drop 含 oversize、overflow、disk-cap、spill、close）；sender 侧用 `[rpc-dc-sender …]` warn + `rpc-dc-sender.build-chunks-failed` remoteLog；consumeLoop 的 `dc.send` 失败用 `rpc-dc.send-failed code=…`（自带 rtcTag、不带 `[rpc-queue]`）。这是 split 模块的预期结果、不修。**监控若只按 `[rpc-queue]` / `rpc-queue.*` 子串过滤告警，会漏掉 sender 独有的 build-chunks-failed 与 consumeLoop 的 dc.send-failed**；需覆盖时一并匹配 `rpc-dc-sender` / `rpc-dc.send-failed`。
+
 ## agent run 类 RPC 响应：admission bypass
 
 `bypassAdmission(jsonStr)` 谓词命中时，即使容量层已顶到上限（MemoryQueue 的 `memBytes >= memBudget` / FBQ 的 `memBytes + writtenBytes >= diskCap`）也强行入队。
