@@ -77,6 +77,8 @@ export default defineConfig({
 						content: `min-w-0 max-w-60 ${MENU_ELEVATION}`,
 						// 分组：去掉默认 p-1 的左右内边距，只留上下 4px（=原 popover 内层 py-1），让项铺满整行
 						group: 'px-0 py-1',
+						// 分隔线：group 已 px-0，默认 -mx-1 失去抵消对象会左右各凸 4px → 被滚动视口接住渲染出横向滚动条；mx-0 中和掉
+						separator: 'mx-0',
 						// 项：触控行高 44px + 垂直居中 + 高亮铺满方角（原 hover:bg-accented 是满格直角，非默认 inset 圆角）
 						item: 'min-h-11 items-center before:inset-0 before:rounded-none',
 					},
