@@ -2,6 +2,19 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## 发布前审查（2026-06-24）发现的非阻塞项
+
+**来源**：对一批未 push ui commit 做发布前 8 路并行 review（4 claude + 4 codex 双路对照）。两个被 codex 标阻断的缺口（来源前缀对未命名 topic 不生效、NOT_FOUND 静音过宽）已在 `f5868a59` 修复；下列为非阻塞的测试加固残留与覆盖深度缺口，登记备查。
+
+1. **chat E2E 加固（`514ba7e3`）不彻底——一处可能假绿 + 两处脆点**
+   - 图片预览计数可能假绿：`e2e/chat-attachment.e2e.spec.js:195` 改用 `[data-testid="chat-img"]` 后断言数的是整个历史区图片卡片；若历史已有图片，本次附件预览未正常出现也可能通过。修法：限定计数到本次新增预览区域，或先记基线数再断言增量。
+   - 拖拽蒙层仍用文案断言：同文件 :401/:405 仍 `getByText(/松开以上传文件|Drop files to upload/)` 判蒙层显隐，与「testid 不断言文案」规范不符，locale 变更会误红。修法：给蒙层加 locale 无关 testid。
+   - chat-input readback 补打逻辑对「中段掉字」会留垃圾内容（如 `linline2`）：不影响当前用例断言（仅验 btn-send 可见=未发送），纯健壮性 nit。
+2. **菜单 UDropdownMenu 迁移（`dd0ddabb`/`e22788de`）单测覆盖深度不足**
+   - DesktopSidebar 用户菜单单测只断言「有项/有 separator/logout 能 emit」，未逐项锁 about/add-claw/add-web-agent/settings/profile/admin-dashboard 的顺序与 handler；未来丢项或接错 handler 可能漏测。
+   - ManageClawsPage claw 菜单单测 stub 直接 `.flat()` 嵌套数组、未断言 `data-color`；分组逻辑或 remove 项危险红色（`color:'error'`）退化时现有单测可能不报。
+   - 危险项红字 + 用户菜单宽度复刻依赖 Nuxt UI 内部主题解析顺序 / CSS 变量名，无自动化测试守护；Nuxt UI 升级若改 compoundVariant 顺序或变量名则无回归网。低优先，不建议现在为此加测试。
+
 ## 疑似：ChatPage `__scrollReady` 可视性门在高负载下可能短暂遮屏（未确认，低优）
 
 **发现日期**：2026-06-20
@@ -393,6 +406,7 @@
     - 现状：`ChatPage.vue:651` `__notifyRunFailed` 弹 `chat.errRunFailed`（"Agent run failed"），不带 chat / topic 名称。用户在 chat A 上 send 后切到 chat B，sendMessage 落地弹的 toast 看起来像 chat B 的失败
     - 影响：UX 困惑，用户难定位失败来源；尤其多 chat / 多 topic 并发使用场景
     - 修复方向：toast description 前缀加 chat / topic 名称（如 `[Topic 标题] FailoverError: ...`）；或 toast 加 "Open" 按钮跳回 source chat。属 i18n + UX 改造，需统一其它失败 toast（如 `__sendErrorMessage`）一起规划
+    - **更新（2026-06-24）**：run / send 两条路径已实现条件来源前缀（`247ce29e` 切走才加 `[来源名]` 前缀 + `f5868a59` 未命名 topic 回退占位名「新话题」）。**剩余缺口**：`onSlashCommand`（`ChatPage.vue` ~L1029）的失败 toast 仍未纳入来源前缀，存在同类归因歧义；且它在 catch 里用 live `this.chatStore`（非入口快照），带轻微 owner-swap 隐患（await 期间切走→归因到当前 chat）。slash 是独立交互面、本批 feature 显式只覆盖 run/send，待后续统一时一并补（补快照 + 前缀）。
 
 ## agent run 终态后 streamingMsgs 接管策略缺陷（X4 课题，2026-05-08）
 
