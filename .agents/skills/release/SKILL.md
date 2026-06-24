@@ -68,107 +68,24 @@ git commit -m "..."
 
 通用 0–5 → push main → 等 CI 绿 → 打/push tag → Release 判断 → 若插件本次 bump 则发 npm。
 
-### 6A. push main → 等 CI 绿 → 打/push tag
+### 6A. push → CI 闸 → tag → 镜像监控
 
-push tag 会**立刻**触发 `publish-images.yaml` 建镜像、且没有第二道闸；所以必须**先确认这次 bump commit 的 CI 通过，再打 tag**。顺序即保险：CI 没绿就别打 tag，远端零残留、可干净重来。
+push tag 会**立刻**触发 `publish-images.yaml` 建镜像、且没有第二道闸，所以必须**先确认这次 bump commit 的 CI 通过、再打 tag**——CI 没绿就别打 tag，远端零残留、可干净重来。这段不可逆编排沉淀进 `scripts/release-publish.sh`，一次 Bash 调用跑完：
 
-三步共享 `$SHA`/`$RUN_ID`/`$CONCLUSION`，**必须当一次 Bash 调用连跑**——Bash 工具每次调用都是全新 shell、不跨调用保留变量；分开跑这些值会丢：② 会拿空 SHA 抓错 run、③ 会拿空 ref 建不出 tag。下面是合并后的单块；三步在干嘛、为何等 CI、为何钉 SHA，见块内注释与下面说明。
-
-- **① push bump commit 到 main，记下它的确切 SHA**（echo 出来，agent 在输出里可核对）。
-- **② 等这次 push 触发的 CI 在该 SHA 上跑绿（门禁）**：CI（`ci.yaml`）只在 push main / PR 时跑、**tag 不触发 CI**，等的就是上一步 push 触发的那次。run 要几秒才注册，先按 SHA 找 run、再轮询结论。**别用 `gh run watch --exit-status` 接 `| tail` / `; echo`**（退码会被盖、红跑误报成绿），用 `gh run view --json` 自判。
-- **③ CI 绿才打 tag，钉到那个确切 SHA**（不是裸 HEAD，防等 CI 的几分钟里别的终端推进了本地 main、套到未被 CI 验过的更新 commit）；红/超时则中止，不打 tag，远端零残留、可干净重来。
-
-> **执行提示**：这是**一次** Bash 调用、要等 CI 跑完（正常 ~2min）。跑它时**务必把 Bash 工具超时调到上限 `600000`ms（10min），别用默认 120s**——否则绿跑没结束就被工具超时掐断、还得善后。轮询自带上界、不会无限等。
+> **执行提示**：脚本要等 CI + 镜像跑完（正常 ~3–6min）。跑它时**务必把 Bash 工具超时调到上限 `600000`ms（10min），别用默认 120s**，否则没跑完就被工具超时掐断、还得善后。脚本各轮询自带上界、不会无限等。
 
 ```bash
-set -euo pipefail
-
-# ① push bump commit；push 失败（如非 ff）→ set -e 直接退出，不会往下等/打 tag
-git push origin main
-SHA=$(git rev-parse HEAD)   # 钉住本次 bump commit；tag/门禁都对这个 SHA，别用裸 HEAD
-echo "bump commit SHA: $SHA"
-
-# ② 找该 SHA 的 CI run id（刚 push 可能还没注册，短重试；gh 偶发失败用 || true 兜成空、继续重试）
-RUN_ID=""
-for i in $(seq 1 12); do
-	RUN_ID=$(gh run list --workflow ci.yaml --commit "$SHA" --limit 1 --json databaseId -q '.[0].databaseId' || true)
-	[ -n "$RUN_ID" ] && break
-	sleep 5
-done
-[ -z "$RUN_ID" ] && { echo "CI run for $SHA not found; aborting"; exit 1; }
-echo "CI run id: $RUN_ID"
-
-# CI 实测 ~2min+ 才完成：先一次性等过拐点，省掉头 ~8 次必然 in_progress 的白查
-sleep 135   # ~2m15s
-# 之后短间隔轮询，有上界别无限等：最多 24 轮 ×10s ≈ 再 4min
-# 合计等待上界 ~6.5min（远超实测 ~2min+），又稳在工具 10min 超时内、留足余量
-STATUS=""
-for i in $(seq 1 24); do
-	STATUS=$(gh run view "$RUN_ID" --json status -q '.status' || true)
-	[ "$STATUS" = "completed" ] && break
-	sleep 10
-done
-if [ "$STATUS" != "completed" ]; then
-	echo "CI 超 ~6.5min 仍未结束（run $RUN_ID）：去 Actions 页核实，绿了再手动对该 SHA 打 tag。aborting"
-	exit 1
-fi
-CONCLUSION=$(gh run view "$RUN_ID" --json conclusion -q '.conclusion' || true)
-echo "CI conclusion: $CONCLUSION"
-
-# ③ CI 非 success（红/取消）→ 中止：不打/不推 tag，远端无 tag、无镜像，零不可逆残留
-[ "$CONCLUSION" != "success" ] && { echo "CI not green ($CONCLUSION); aborting tag/release"; exit 1; }
-
-# 绿：tag 钉到 $SHA（非裸 HEAD）；tag 不存在才建（`git tag -l` 无匹配也退 0，不能用作存在性判断）
-git rev-parse -q --verify "refs/tags/v<root-version>" >/dev/null || git tag v<root-version> "$SHA"
-git push origin v<root-version>
-echo "tagged & pushed v<root-version> @ $SHA"
+bash scripts/release-publish.sh <root-version>   # 0.32.11 或 v0.32.11 均可
 ```
 
-> **中途已建本地 tag 又要中止**：先 `git tag -d v<root-version>` 删掉本地 tag 再退出，确保不残留。
+脚本一次跑完 push → CI 闸 → 打/push tag → 镜像监控，安全属性已内建（钉确切 SHA——非裸 HEAD，防等 CI 期间本地 main 被推进而 tag 套到未验 commit；CI 红/超时中止不打 tag；push tag 失败回滚本地 tag；镜像监控非门禁）。**退出语义**：
 
-> **镜像构建（按需选择性）**：push 新 `v*` tag 触发 `publish-images.yaml`，只重建自上个 tag 起**真有改动**的 server / ui（没改的跳过，省 server arm64 慢构建；其 `:latest`/`:<version>` 仍指向正确 digest，属预期、非漏建）。根依赖变更（lockfile / `workspace.yaml` / 根 `package.json` 的**非 version** 改动）则两个都建。
->
-> 若本次未 bump 根版本（无新 `v*` tag，仅动 server/plugin 而 ui 仍最高），tag 触发不发生，需手动补 `gh workflow run publish-images.yaml`——它**始终全建**，是该盲区的可靠兜底；**手动补建前同样先等该 SHA 的 CI 绿**。
+- **push 失败 / CI 红 / CI 超时 → 非零退出**，均在打 tag 前中止，远端零 tag、零镜像，可干净重来。
+- **镜像监控失败 / 超时 → echo `WARN` 但 exit 0**：tag 已推、`publish-images.yaml` 已不可逆触发，这步只确认、非门禁；看到 WARN 去 Actions 页核实即可。
 
-**④ 等镜像构建完成并确认（post-tag 监控，非门禁）**
+镜像该建哪些（server / ui / 两者）由脚本**自动推导**——与 `publish-images.yaml` 同源（自上个 tag 起的路径 diff，根依赖变更则全建），据此调监控节奏（含 server 的 arm64 慢构建先等过拐点，仅 ui 从头短轮询）并校验实际构建。
 
-tag 已推、`publish-images.yaml` 已**不可逆触发**——这步只是**确认镜像建出来了**，不是 release 门禁。与②CI 闸的关键区别：**超时/失败都不中止 release**（tag 已发），只是告警让你去看一眼。实测时长：只建 ui（server 被跳过）~50s；server+ui 都建 ~4min+（server arm64 模拟是大头）。所以**从头就轮询**（不像 CI 闸先 sleep 135，免得拖慢 ui-only 快路径），间隔 15s。
-
-> **执行提示**：这步也要等几分钟，当一次 Bash 调用跑时把 Bash 工具超时设到 `600000`ms（别用默认 120s）。
-
-```bash
-# 找本次 tag push 触发的 publish-images run（按 push 事件取最新；同有注册延迟，短重试）
-PUB_RUN_ID=""
-for i in $(seq 1 12); do
-	PUB_RUN_ID=$(gh run list --workflow publish-images.yaml --event push --limit 1 --json databaseId -q '.[0].databaseId')
-	[ -n "$PUB_RUN_ID" ] && break
-	sleep 5
-done
-
-if [ -z "$PUB_RUN_ID" ]; then
-	echo "publish-images run 未找到：去 Actions 页确认是否已触发/需手动补建"
-else
-	# 从头轮询，有上界：最多 24 轮 ×15s ≈ 6min，覆盖 ~4min+ 最坏情况，又稳在工具 10min 超时内
-	PUB_STATUS=""
-	for i in $(seq 1 24); do
-		PUB_STATUS=$(gh run view "$PUB_RUN_ID" --json status -q '.status')
-		[ "$PUB_STATUS" = "completed" ] && break
-		sleep 15
-	done
-	if [ "$PUB_STATUS" != "completed" ]; then
-		# 超时 ≠ 失败：tag 已推、构建已触发，只是还没建完/没确认，别中止 release
-		echo "镜像 ~6min 还没建完（run $PUB_RUN_ID）：不是失败，去 Actions 页看最终结果即可"
-	else
-		PUB_CONCLUSION=$(gh run view "$PUB_RUN_ID" --json conclusion -q '.conclusion')
-		if [ "$PUB_CONCLUSION" = "success" ]; then
-			# 选择性构建下未改动服务的 step 是 skipped，conclusion 仍为 success——别误判成失败
-			echo "镜像 OK（run $PUB_RUN_ID；未改动服务 step=skipped 属正常，conclusion=success 即成功）"
-		else
-			echo "⚠️ 镜像构建未成功（conclusion=$PUB_CONCLUSION，run $PUB_RUN_ID）：去 Actions 页排查，必要时手动补 gh workflow run publish-images.yaml。tag 已推、release 已发——这是镜像侧告警、非回滚 release"
-		fi
-	fi
-fi
-```
+> **手动兜底**：若本次未 bump 根版本（无新 `v*` tag，仅动 server/plugin 而 ui 仍最高），tag 触发不发生、脚本镜像段什么都监控不到，需手动补 `gh workflow run publish-images.yaml`——它**始终全建**，是该盲区的可靠兜底；手动补建前先把 push+CI 等绿。
 
 ### 7A. Release 判断
 
@@ -190,7 +107,7 @@ cd plugins/openclaw && pnpm release
 
 ## 模式 B：只 bump push
 
-通用 0–5 → push & tag（**含 6A 的 CI 闸：先等该 SHA 的 CI 绿再打/push tag**）→ Release 判断。**步骤完全同 A，跳过 8A**——即使本次插件有 bump 也不发 npm（用户的明确意图，留到下次 A 模式时再发）。
+通用 0–5 → 跑 6A 的 `scripts/release-publish.sh`（同一道 CI 闸：先等该 SHA 的 CI 绿再打/push tag）→ Release 判断。**步骤完全同 A，跳过 8A**——即使本次插件有 bump 也不发 npm（用户的明确意图，留到下次 A 模式时再发）。
 
 > **B 后想补发 npm**（不再 bump、发当前版本）：直接 `cd plugins/openclaw && pnpm release`，相当于补做 8A。
 
