@@ -1698,6 +1698,53 @@ describe('ChatPage watchers', () => {
 		expect(input.props('disabled')).toBe(false);
 	});
 
+	test('connStatusText: restarting → 即使 dcReady=true 也显示恢复中 banner', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.clawId = 'bot-1';
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].rtcPhase = 'restarting';
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// i18nMap 未含 connRecovering → $t mock 回退返回 key 本身
+		expect(wrapper.vm.connStatusText).toBe('chat.connRecovering');
+	});
+
+	test('connStatusText: 非 restarting 且 dcReady=true → banner 为空（不过度触发）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.clawId = 'bot-1';
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: true }]);
+		clawsStore.byId['bot-1'].dcReady = true;
+		clawsStore.byId['bot-1'].rtcPhase = 'ready';
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// 新分支只对 restarting 生效，ready 阶段 dcReady=true 仍短路为空
+		expect(wrapper.vm.connStatusText).toBe('');
+	});
+
+	test('connStatusText: offline + restarting → offline 优先（插入顺序正确）', async () => {
+		const wrapper = createWrapper();
+		const chatStore = getChatStore();
+		chatStore.clawId = 'bot-1';
+
+		const clawsStore = useClawsStore();
+		clawsStore.setClaws([{ id: 'bot-1', name: 'Bot', online: false }]);
+		clawsStore.byId['bot-1'].rtcPhase = 'restarting';
+		setupAgents();
+		await wrapper.vm.$nextTick();
+
+		// restarting 分支位于 !online 守卫之后 → offline 文案优先
+		expect(wrapper.vm.connStatusText).toBe(i18nMap['chat.clawOffline']);
+	});
+
 	test('connReady immediate: 挂载时 bot 已连接则立即加载消息', async () => {
 		// 预创建 pinia 并填充 bot 状态，模拟"返回列表后再进入会话"
 		const pinia = createPinia();

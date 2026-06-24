@@ -382,7 +382,8 @@ export default {
 		},
 		/**
 		 * 连接状态文案（inline banner）
-		 * 仅在连接不可用时显示，基于 rtcPhase 给出精确状态
+		 * 基于 rtcPhase 给出精确状态。注意：ICE restart 恢复期（rtcPhase==='restarting'）
+		 * 即使 dcReady 仍为 true 也会显示一条横幅，故不止「连接不可用时」才出（见下方 restarting 分支）。
 		 */
 		connStatusText() {
 			if (this.isNewTopic) return '';
@@ -391,6 +392,9 @@ export default {
 			const claw = this.clawsStore.byId[clawId];
 			if (!claw) return this.$t('chat.clawNotFound');
 			if (!claw.online) return this.$t('chat.clawOffline');
+			// ICE restart 恢复期：DC/SCTP 仍存活、dcReady 不翻转，但底层路径正在重协商。
+			// 放在 dcReady 守卫前，让聊天页也给一条「正在恢复连接…」横幅（此前此窗口无任何在场信号）。
+			if (claw.rtcPhase === 'restarting') return this.$t('chat.connRecovering');
 			// claw 在线但 DC 未就绪 → 根据 rtcPhase 细化
 			if (claw.dcReady) return '';
 			const phase = claw.rtcPhase;
