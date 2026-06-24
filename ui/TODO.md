@@ -379,13 +379,22 @@
     - 修法方向：把 store identity 比对换成 per-call token：`__loadMoreHistory` 入口 bump `__loadToken`，await 后比对 token，finally 也只在 token 匹配时清锁；可彻底覆盖"切走切回 / 同 store 多次重入"等所有路径
     - 本次只补到"切走 → 不动新视图 + 不误清新锁"层面（占绝大多数真实场景）；token 改造留待后续
 
-## agent run 取消 (cancellation) 与"自然完成"语义混淆（2026-05-07）
+## agent run「因取消而终止」的 UI 呈现 —— 受阻于因果不可靠感知（2026-05-07，2026-06-24 重订）
 
 **发现日期**：2026-05-07
 
-- 现状：上游对"用户取消"走 `ok=true + payload.status='ok' + result.meta.aborted=true`（见 openclaw-repo `agent.ts:330` 用 `result?.meta?.aborted` 判断）。UI 当前 `__onRpcDone` 走 `endReason='rpc'` 不读 meta.aborted，"用户主动取消"和"自然完成"被混为一谈
-- 影响：诊断日志、analytics、UI 状态展示无法区分两类终态
-- 修复方向：`__onRpcDone` 读 `rpcResult.result?.meta?.aborted`，true → endReason='rpc-aborted'；ChatPage 不 notify 但日志区分
+**目标**：在界面中呈现一个 agent run 是否「因取消而终止」（与「自然完成」区分），不止于诊断日志。
+
+**为何不是小改 —— 因果不可靠（核心阻塞）**：
+- 上游信号不稳：上游有自己的判定（openclaw-repo `gateway/server-methods/agent.ts`，`result?.meta?.aborted===true` → 终态 `status='timeout'+summary='aborted'+stopReason`，否则 `status='ok'+summary='completed'`）。但罕见竞态下取消会落成 `status='error'`（plugin 内部异常与取消同时发生，见 `agent-runs.store.js` `__onRpcDone` 上方注释）——即上游「aborted」并非恒可信。
+- 本地标记 ≠ 因果：`run.cancelled`（`agent-runs.store.js` `settleWithTransitionByKey`）只是「用户点了 STOP」的意图；run 可能在取消生效前已自然跑完（天然竞态）。拿意图当因果去打终态标签，是断言我们并不知道的事实。
+- 故旧修复方向（读 `meta.aborted` / 用 `run.cancelled` → `endReason='rpc-aborted'`）已废弃。
+
+**现状**：
+- 诊断侧已够：取消全程有远程日志 `cancel.intent`、`agent.run.send-cancelled`、`cancel.{run-ended,immediate,gone,not-supported,run-ended-fallback}`（`chat.store.js`），与 `agent.run.end` 关联即可重建。真正缺的是「可靠因果」+「UI 呈现」。
+- 用户可见行为无 bug：取消已被 `run.cancelled` 正确静默（ChatPage `endReason` 白名单只对 `failed`/`rpc-timeout` 弹）。
+
+**解锁条件**：需一个可靠的「因取消而终止」判定——要么上游稳定该信号（关联上游 agent-run-cancellation 工作流），要么产品侧明确接受一个诚实标注的 best-effort 呈现（如 `run.cancelled` 与上游 aborted 双印证、且 UI 文案不 overclaim 因果）。在此之前不落地任何猜因果的标签。属待上游/待设计。
 
 ## 测试场景补强 review 中发现的预存 / UX 增强项（2026-05-07）
 
