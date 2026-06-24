@@ -36,15 +36,6 @@
 - 缓解：用 `Date.now()` 保证账号名唯一、永不碰撞，账号泄漏不影响其他用例。
 - 接受现状，账号表显著增长时再回头处理（如加管理端清理任务 / 测试账号定期清扫）。
 
-## ImgViewDialog 图片上限 85vh 与 Electron 弹窗避让叠加后内滚阈值升高
-
-**发现日期**：2026-06-11
-**来源**：Electron 标题栏盖高弹窗修复的实施评审（评审新增跟进项，条件不满足未随主修复动）
-
-- 现状：`ImgViewDialog.vue` 图片用 `max-h-[85vh]` 封顶；Electron 避让规则给 modal content 的 max-h 扣掉 38px 条高后，窗高 **<~680px** 即 85vh 超出 content 可用高 → body 内滚（修复前该阈值约 ~426px）。图片查看器内滚观感差。
-- 未顺手修的原因：改成容器相对（`max-h-full`）在现 DOM 结构上 percentage 解析不了——content 是 `height:auto` 仅受 max-height 封顶、父链无确定高度，需重构 body/包裹层为定高或 flex `min-h-0` 收缩链路才成立，且该改动全端生效需评估 web/Capacitor 观感，超出「数个 class」范围。
-- 修法方向：把 body → 图片包裹层改成可收缩 flex 链（`min-h-0` + 图片去 vh 上限改随容器收缩），或图片上限改 calc 扣除 `var(--cc-titlebar-h, 0px)`（web 取 fallback 0 不变）；二选一时优先前者（语义干净、不引变量依赖）。
-
 ## Electron 自定义标题栏的几个低优项（窄屏移动 header / toaster 安全区重复 / HMR 监听未注销）
 
 **发现日期**：2026-06-10

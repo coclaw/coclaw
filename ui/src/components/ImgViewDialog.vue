@@ -10,7 +10,8 @@
 				<img
 					:src="src"
 					alt=""
-					class="max-w-[90vw] max-h-[85vh] object-contain"
+					class="max-w-[90vw] object-contain"
+					style="max-height: min(85vh, calc(100vh - var(--cc-titlebar-h, 0px) - 4rem))"
 				/>
 				<!-- 关闭按钮 -->
 				<UButton
