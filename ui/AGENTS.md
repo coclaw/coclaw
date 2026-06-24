@@ -19,6 +19,7 @@
 
 - 使用较新的 CSS 特性（如 `dvh`/`svh`/`lvh`、Container Queries 等）时，必须提供 fallback，确保在基线浏览器中功能可用
 - `src/assets/main.css` 中提供了 `.h-dvh-safe` 工具类（`@supports` 回退到 `vh`），需要动态视口高度时应使用该类而非 Tailwind 的 `h-dvh`
+- **已知接受缺口（won't-fix，上条「必须 fallback」的明确例外）**：Tailwind 4 alpha 修饰符（`bg-*/80`、`ring-white/10` 等）编译为 `color-mix()`，基线浏览器及 iOS 15 壳（部署目标 15.0 < Safari 16.2）不支持 → 半透明浮层/hover 底色静默退化为无背景（仅视觉降级、不锁平台、app 照常运行）。Vite/esbuild 不给 `color-mix()` 补 fallback，故**别为此升 `build.target`**——升了不修渲染，还可能让 iOS 15 壳 JS 白屏。波及面仅 iOS 15 + 老桌面浏览器访客，已接受；日后要线下保真再评估 Lightning CSS 自动 fallback 或实色 token。
 
 ## 编程规范
 
