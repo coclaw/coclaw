@@ -719,20 +719,25 @@ reload 瞬间旧 register 的 RPC handler 可能仍在写 `coclaw-topics.json` /
 ## chat-history classifyChatHistorySessionKey 黑名单漏掉上游已现存的 acp / thread 形态
 
 **发现日期**：2026-05-19（cron 顶替止血 deep review 第二轮 codex-rescue 提出）
+**2026-06-24 复核校准**：原条目对 thread 的归因被证伪、acp 形态可达性细化（见下）；整条仍 KEEP（acp 半边是真 gap，thread 半边是产品决策）。
 **关联**：`plugins/openclaw/src/chat-history-manager/manager.js` `classifyChatHistorySessionKey`
 
-**问题**：helper 用黑名单（explicit / subagent / cron）判定跳过，其他形态默认 `ok=true` 进 chat-history。黑名单**当前就漏掉**了 `acp:` 与 `:thread:` 两种形态——而这俩是上游**已现存的活跃形态**，不是未来假设。三种现存形态全部漏网入档：
-- 裸 `acp:*`（`parts[0] !== 'agent'` → 直接 `ok=true`）
-- `agent:<id>:acp:*`（`parts[2] === 'acp'`，不在黑名单 → `ok=true`）
-- `agent:main:main:thread:1234`（`parts[2] === 'main'`，不在黑名单 → `ok=true`）
+**问题**：helper 用黑名单（explicit / subagent / cron，均 `parts[2]` 严格相等）判定跳过，其他形态默认 `ok=true` 进 chat-history。漏网形态（已核实当前现状）：
 
-三者都 `ok=true` → 被当作 chat 写进 `coclaw-chat-history.json`。
+- **`agent:<id>:acp:*`（`parts[2] === 'acp'`）→ `ok=true`**：已核实是上游真实活跃形态（如 `agent:codex:acp:1`，上游 `isAcpSessionKey` 认；编辑器协议会话，不该进用户 chat）。**确认会被误归档**——本条最干净的"真污染"。
+- **裸 `acp:*`（`parts[0] !== 'agent'` → 直接 `ok=true`）**：上游 `isAcpSessionKey` 认裸 `acp:` 前缀，但目前只见它作 heartbeat 的 reason 字段，**作为 sessionKey 进 classify 未证实可达**；按"别防御不可达"原则，是否守它存疑。
+- **thread（`:thread:`）→ `ok=true`**：⚠️ 原条目举的 `agent:main:main:thread:1234`（`parts[2] === 'main'`）**上游不存在、归因错误**。真实 thread 键是 `:thread:` *后缀*挂在 IM 渠道键上（如 `agent:main:telegram:work:direct:123:thread:...`、`agent:main:slack:channel:C123:thread:...`），其 `parts[2]` 是渠道名（telegram/slack…）、永不在黑名单 → `ok=true`。误归档机制是"渠道键默认入档"，**不是** `parts[2] === 'main'`。
 
-**后果**：可见污染——chat 列表多出意外条目。`acp:` 是最干净的"真污染"证据（编辑器协议会话，不该出现在用户 chat 里）；`:thread:` 略可争议（thread 自带独立 sessionKey，算不算合法子 chat 是产品取舍）。
+被误归档者都 `ok=true` → 当作 chat 写进 `coclaw-chat-history.json`。
 
-**为什么本期未修**：影响低、有界——不崩、不丢真实 chat、无安全问题，只是多几条噪声条目。改成白名单需要枚举所有合法 chat sessionKey 段（`main` / 用户自定义 channel 等），代价/风险高于当前价值。
+**后果**：可见污染——chat 列表多出意外条目。acp 是确凿真污染；thread 是否算合法子 chat 属产品取舍。
 
-**修复方向**：把 `acp` / `:thread:` 加入黑名单（黑名单一行改动）；若判定 `:thread:` 应算合法 chat 则只加 `acp`。上游若频繁演进 segment 词表，考虑迁移到白名单 + 默认拒绝策略。
+**为什么本期未修**：影响低、有界——不崩、不丢真实 chat、无安全问题，只是多几条噪声条目。
+
+**修复方向（已校准）**：
+- acp 半边（真低风险，黑名单加分支级）：`parts[2] === 'acp'` 加进黑名单（对齐 cron/subagent 既有 `parts[2]` 严格相等样板，blast radius 极小、对正常 agent/main 归档零影响）；裸 acp 视可达性再定要不要前置守 `parts[0] === 'acp'`。JSDoc 的 `reason` 联合类型（`manager.js:28`）需同步补 `'acp'`。补测仿现有 cron/subagent 块（外加防误判：`agent:main:telegram:acp:direct:u` 这类 accountId="acp" 应保持 `ok=true`）。
+- thread 半边（**非** `parts[2]` 一行）：真实 thread 键 `parts[2]` 各异，须按 `:thread:` 段/后缀检测（对齐上游 `parseThreadSessionSuffix` 或 `includes(':thread:')`）；且 thread 算不算合法 chat 是**产品决策**，先定语义再改。原"黑名单一行加 thread"说法不准确。
+- 上游若频繁演进 segment 词表，考虑迁白名单 + 默认拒绝策略。
 
 **严重性**：低——可见但有界的列表噪声，无功能/数据/安全后果。
 
