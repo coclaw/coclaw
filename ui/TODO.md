@@ -638,16 +638,6 @@ X4 触及面比 X1 广，需要重新评估：
   - 不要再走 REST 兜底——会回退到撤销前的同一坑
 - 优先级：低；此场景在真正现网命中很窄（SSE 接通本身可靠性较高），不阻塞产品迭代
 
-## 未 push commits 第二轮 deep-review 沉淀（业务代码部分）
-
-**发现日期**：2026-05-24
-**关联背景**：ui 工作区 22 个未 push commit 第二轮 read-only deep-review（5 维度 codex-rescue + opus subagent 补 Dim 4）的业务代码 finding。本会话只处理测试加固，业务代码改动留待后续，先沉淀避免遗忘。
-
-4. **ManageClawsPage 窄屏 320px 下 claw 名称 h2 被挤窄**
-   - 现状：`ManageClawsPage.vue` claw 卡片标题 h2 在 320px 极窄屏下被同行操作按钮挤窄，依赖 `truncate` 兜底；视觉降级但不破损
-   - 修法：调整窄屏 flex/grid 布局让标题独占一行，或为 320px 加专属断点处理
-   - 优先级：极低；当前 truncate 已可 cover，列入跟踪
-
 ## 未 push commits 第三轮 read-only deep-review 沉淀（2026-05-25）
 
 **发现日期**：2026-05-25

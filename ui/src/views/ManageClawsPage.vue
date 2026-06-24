@@ -43,6 +43,7 @@
 											:class="clawDotClass(claw)"
 											aria-hidden="true"
 										></span>
+										<!-- 标题 truncate 兜底：320px 极窄屏 + 长名会被同行 badge/花费/菜单挤到截断（截几字+省略号）。接受现状不专修——移动基态(<640)无子断点，改 flex 让标题独占行会连累 360+ 内联布局，只救 320 须引非标断点+两套变体，性价比不划算 -->
 										<h2 class="text-base font-semibold truncate min-w-0">{{ getClawName(claw) }}</h2>
 										<UBadge color="primary" variant="subtle" size="xs" class="shrink-0">{{ dashboard.agents?.length ?? 0 }} {{ $t('dashboard.agents') }}</UBadge>
 									</div>
