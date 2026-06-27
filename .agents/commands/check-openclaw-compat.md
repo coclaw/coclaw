@@ -1,5 +1,5 @@
 ---
-description: 扫描 openclaw-repo/ 在 baseline 之后的上游破坏性变更（重点保自动升级链路），发新版前必跑；不改代码、出报告、跑完推进 baseline
+description: 扫描本地 openclaw-repo/ 在 baseline 之后的上游破坏性变更（重点保已安装插件的自动升级链路），发新版前必跑；只读分析、不改代码、出报告、跑完把 baseline 推进到发布 tag。手动触发：发新版前 / 看到 OpenClaw 发新版疑似撞坑 / gateway 升级后插件出现异常时用 /check-openclaw-compat。
 disable-model-invocation: true
 ---
 
@@ -30,12 +30,16 @@ disable-model-invocation: true
 
 ## 当前 baseline
 
-> 每次跑完都把这一行更新成本次的 HEAD。
+> 每次跑完把 baseline 推进到**本次扫到的已发布版 tag**（不是 git HEAD，理由见下方约定）。
 
 ```
-baseline-commit: 050c0813b39f5347789291c728c0fa5fa3c6b827
-baseline-checked-at: 2026-06-10
+baseline-tag:        v2026.6.10
+baseline-commit:     aa69b12d0086b631b139c1435c9621a5783e3a40
+baseline-checked-at: 2026-06-27
 ```
+
+⚠️ **baseline 锚发布 tag，别锚开发主干随手 commit、别凭日期猜**：OpenClaw 版本号是日期式（`v2026.6.10`）但与 commit/发布日期**脱节**——`v2026.6.10` 实际 6-24 才定型，tag 落在 `aa69b12`；本地 `openclaw-repo/` 的 git `main` 是含未发布 beta/alpha 的开发主干，**领先实际发布版上千 commit**。
+教训（2026-06-27）：上次 baseline 记成开发主干 6-10 的随手 commit `050c0813`（不在任何发布 tag 上），这次差点把"版本号 6-10"与"baseline 日期 6-10"误判成同一点、结论"无变化"——实际用户装的 `v2026.6.10` 领先它 2736 个已发布 commit。正确做法：`openclaw --version` 取安装版 commit → `git -C openclaw-repo describe --tags <commit>` 拿发布 tag → 推进到该 tag；**别**拿 git `main`/HEAD 当终点或 baseline（未发布、会变、下次又对不齐）。
 
 ## 核心关切（为什么这个命令存在）
 
@@ -150,7 +154,7 @@ baseline-checked-at: 2026-06-10
 - 检查要点（逐条 grep 上游核对现状是否仍成立）：
   - **K1 缺省 maxTokens 填充**：`src/config/defaults.ts` 的 `DEFAULT_MODEL_MAX_TOKENS`（现 8192）与 `min(默认, contextWindow)` 填充公式——值或公式变宽，"必须硬写 maxTokens"的前提松动（minimax 真实 131072，不写被截 16x）
   - **K2 catalog 仍丢 maxTokens**：`src/agents/model-catalog.ts` `loadModelCatalog` 的 pi-ai 条目映射仍不带 `maxTokens`/`cost`——若开始带，"白嫖 catalog"变可行 → 重评自维护
-  - **K3 pi-ai 出厂字典**：`node_modules/@mariozechner/pi-ai/dist/models.generated.js` 里 `minimax`/`minimax-cn` 是否还在、M2.7 参数是否变（变了我方静态表要对齐）、是否**新增 `minimax-portal`**（新增可考虑不再自写）
+  - **K3 pi-ai 出厂字典**（⚠️锚点 2026-06-27 已确认将漂移）：曾在 `node_modules/@mariozechner/pi-ai/dist/models.generated.js`。上游未发布主干已**彻底移除** `@mariozechner/pi-ai`，字典迁至 `@openclaw/model-catalog-core` / `@openclaw/llm-core`——下个发布版（> v2026.6.10）后旧锚点失效，改查这两个包里 `minimax`/`minimax-cn` 是否还在、是否**新增 `minimax-portal`**。我方走自家静态表、不耦合，此项仅"出厂字典对齐"参考
   - **K4 `models.list` view 契约**：view 枚举（`packages/gateway-protocol/src/schema/agents-models-skills.ts`，现 `default`/`configured`/`all`）与 `view:'all'` **跳过凭据过滤**的语义（`src/gateway/server-methods/models.ts` 与 `models-list-result.ts`）——任一变化会让 `coclaw.model.set` 的 catalog 存在性校验误判（合法模型被判 not found）
   - **K5 plugin-sdk 子路径**：`models-provider-runtime`（`buildModelsProviderData`）与 `agent-runtime`（`loadModelCatalog`）是否仍在 dist `package.json` exports、导出名未变
 - 风险等级：**中** —— 不影响自动升级链路，但 K1/K4 命中会让输出上限或加模型校验**静默错位**（症状：长回复被截 8192、合法模型被判 not found），无 deprecation 警告、排查链条长
@@ -163,6 +167,7 @@ baseline-checked-at: 2026-06-10
   - 新增状态类需求一律优先 SDK / CLI 查询路径，不再添置 JSON 直读
 - 上游锚点：`src/plugins/installed-plugin-index-store-path.ts`、`src/state/openclaw-state-db.paths.ts`（`resolveOpenClawStateSqlitePath`）；grep `installRecords` / `auth-profiles`
 - 风险等级：**高** —— 直读方在新版本 host 上读到陈旧快照，无报错静默错位；自动升级链路是第一受害者
+- **持续演进方向（2026-06-27 核实）**：迁移仍在推进——install records 早已 SQLite 化（我方走 `inspect --json` 正确路径、不受影响）；未发布主干进一步把 memory store / restart sentinels / handoffs / voicewake 等状态迁 SQLite。我方均不直读这些、当前无影响，但这是本类活跃前沿，下次重点盯有没有迁到我方**真读**的文件（如 auth-profiles 目前仍文件型）
 
 ## 工作流
 
@@ -172,8 +177,9 @@ baseline-checked-at: 2026-06-10
    - 否则当作"附加指令"（用户希望加深的关注点）
 
 2. **取 diff 范围**：
-   - `git -C openclaw-repo log --oneline <baseline>..HEAD` 看变更范围
-   - 如果范围 > 200 commits 或 baseline 不存在，先告诉用户、问是否继续
+   - **先把扫描终点钉成"用户实际安装版"、不是 git HEAD**：`openclaw --version` 取安装版 commit → `git -C openclaw-repo describe --tags <commit>` 确认发布 tag。git `main` 通常领先实际发布版上千 commit（未发布主干），拿它当终点会把没发布的变更误当"已落地"。
+   - 核心范围 `git -C openclaw-repo log --oneline <baseline>..<安装版tag>`（已发布维度）；可选再扫 `<安装版tag>..main` 做未发布前瞻。
+   - 范围 > 200 commits 不必慌：本扫描按必查清单**锚点文件切片**（不逐 commit），成本取决于锚点数、与 commit 总数基本无关；仍先告诉用户、问是否继续。baseline 不存在也先告诉用户。
 
 3. **逐项过清单**：
    - 对必查清单每一项：grep / read 上游相关文件，看是否有变更
@@ -186,7 +192,7 @@ baseline-checked-at: 2026-06-10
 
 5. **写报告**（见下节）
 
-6. **更新 baseline**：把本文件 `baseline-commit` 改为本次的 `git -C openclaw-repo rev-parse HEAD`，`baseline-checked-at` 改为今天。
+6. **更新 baseline**：推进到本次扫到的**已发布版 tag**（不是 git HEAD）——`baseline-tag` 改为该 tag、`baseline-commit` 改为 `git -C openclaw-repo rev-list -n1 <tag>`、`baseline-checked-at` 改为今天。理由见"当前 baseline"段锚定约定。
 
 7. **若发现新类别坑**（不属于现有清单类别）：按"演进规则"追加到清单。
 
