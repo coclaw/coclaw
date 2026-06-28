@@ -96,7 +96,7 @@ for _ in $(seq 1 18); do # 之后短间隔轮询，有上界（再 ~3min）。
 	sleep 10
 done
 if [ "$STATUS" != "completed" ]; then
-	echo "CI 超时未结束（run $RUN_ID）：去 Actions 页核实，绿了再手动对该 SHA 打 tag。aborting"
+	echo "CI 超时未结束（run ${RUN_ID}）：去 Actions 页核实，绿了再手动对该 SHA 打 tag。aborting"
 	exit 1
 fi
 CONCLUSION=$(gh run view "$RUN_ID" --json conclusion -q '.conclusion' || true)
@@ -156,15 +156,15 @@ while within_deadline; do
 	sleep 15
 done
 if [ "$PUB_STATUS" != "completed" ]; then
-	echo "WARN: 镜像未在预算内建完（run $PUB_RUN_ID）——非失败，去 Actions 页看最终结果（tag 已推，非门禁）"
+	echo "WARN: 镜像未在预算内建完（run ${PUB_RUN_ID}）——非失败，去 Actions 页看最终结果（tag 已推，非门禁）"
 	exit 0
 fi
 PUB_CONCLUSION=$(gh run view "$PUB_RUN_ID" --json conclusion -q '.conclusion' || true)
 if [ "$PUB_CONCLUSION" != "success" ]; then
-	echo "WARN: 镜像构建未成功（conclusion=$PUB_CONCLUSION, run $PUB_RUN_ID）——去 Actions 排查，必要时 gh workflow run publish-images.yaml（tag 已推，非门禁）"
+	echo "WARN: 镜像构建未成功（conclusion=${PUB_CONCLUSION}, run ${PUB_RUN_ID}）——去 Actions 排查，必要时 gh workflow run publish-images.yaml（tag 已推，非门禁）"
 	exit 0
 fi
-echo "镜像构建成功（run $PUB_RUN_ID；未改动服务 step=skipped 属正常）"
+echo "镜像构建成功（run ${PUB_RUN_ID}；未改动服务 step=skipped 属正常）"
 
 # 校验实际构建与推导是否一致（非门禁，仅漂移时告警）。step conclusion=skipped 表示该服务被跳过。
 server_step=$(gh run view "$PUB_RUN_ID" --json jobs -q '.jobs[].steps[]|select(.name=="Build & push server image")|.conclusion' 2>/dev/null | head -n1 || true)
