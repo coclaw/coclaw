@@ -723,3 +723,13 @@ X4 触及面比 X1 广，需要重新评估：
   2. **重连恢复后 sessions / topics / dashboard 数据被刷新**（`__refreshIfStale` / `refreshClawResources` 真触发）。
 - 为何不强写：这两条要求**真实**的 RTC 断开→恢复时序，项目已确认极难稳定触发（[[project_rtc_connection_hard_to_break]]：ICE restart 有 3min 恢复预算、DC alive 时 `connReady` watcher 不翻、`dcReady` 几乎不翻）。纯内存态注入只能伪造"某一帧的状态值"，无法忠实驱动"断→恢复→刷新"这条经状态机的真实路径——硬注入等于把状态机重写一遍，断言的是脚手架而非真行为，属假绿。
 - 可行的真实触发探索方向（任一落定后再补，避免假绿）：(a) 在 plugin/coturn 侧提供可控的"掐断 relay / 强制 ICE 失败"测试钩子；(b) 用 CDP `Network.emulateNetworkConditions(offline)` 配合 `forceCloseWs` 制造信令+传输双断后再恢复，观察 `__refreshIfStale` 是否触发对应 store 的 reload RPC；(c) 注入一个带**真实 conn** 的测试 claw 走 `webrtc-connection.js` 的 restart 路径。三者都需要先验证能稳定复现"DC 真断又真恢复"才有意义。
+
+## 添加服务商对话框的 provider 卡片显示原始 provider id（缺友好品牌名）
+
+**发现日期**：2026-06-28
+**来源**：重排"常用"分组成员/顺序时顺带核实
+
+- 现状：添加服务商对话框（`AddProviderDialog.vue`）的 provider 卡片、搜索、标题统一直接显示 OpenClaw 原生 provider id（如 `volcengine` 实为豆包/火山方舟、`minimax-portal`、`google-gemini-cli` 等），不直观。`provider-meta.js` 的 `displayName` 字段已为部分 provider 预留品牌名，但**全 UI 无消费点**（卡片/搜索/分组标题/主模型选择器均渲染原始 id）。
+- 为何暂缓：接友好名渲染涉及面较大——多处卡片/搜索过滤/分组标题、i18n（品牌名是否进 i18n 的口径）、且 `displayName` 仅覆盖少数 provider（其余仍要 fallback 原 id），还需保证搜索同时命中 id 与品牌名。非小改。
+- 根因：当前设计刻意统一展示原生 id（见 `provider-meta.js` 文件头注释），混用 id/品牌名既不一致又是维护负担。
+- 修复方向（将来）：把 `displayName` 接到卡片/搜索/标题渲染（缺省 fallback 原 id），并同步 i18n 与多语言文件；先确认 `displayName` 覆盖率与 fallback 体验可接受再动。

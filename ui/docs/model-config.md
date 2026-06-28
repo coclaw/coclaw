@@ -182,13 +182,18 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 │ [🔍 搜索 provider...           ]        │
 │                                         │
 │ ─ 常用 ────────────────────             │
-│  ○ anthropic       Claude               │
-│  ○ openai          GPT                  │
-│  ○ google          Gemini               │
-│  ○ groq            Llama (托管)         │
 │  ○ deepseek                             │
+│  ○ zai                                  │
+│  ○ minimax                              │
+│  ○ minimax-portal                       │
 │  ○ moonshot                             │
+│  ○ qwen                                 │
+│  ○ volcengine                           │
+│  ○ openai                               │
+│  ○ openrouter                           │
 │ ─ 其它 ────────────────────             │
+│  ○ anthropic                            │
+│  ○ google                               │
 │  ○ ...                                  │
 └────────────────────────────────────────┘
 ```
@@ -429,26 +434,37 @@ notify 走组件内 `useNotify()`（store 不 import nuxt-ui，组件内可用�
 - `src/constants/provider-meta.js`：硬编码 `provider id → { displayName, popular, dashboardUrl }` 映射表（见 § 8.1 初始值）
 - `src/utils/nav-back.js`：抽取自 `MobilePageHeader` 的 back+fallback helper
 
-### 8.1 provider 元数据映射表（初始值）
+### 8.1 provider 元数据映射表（当前值）
 
 `src/constants/provider-meta.js` 导出形如：
 
 ```js
 export const PROVIDER_META = {
-	anthropic: { displayName: 'Anthropic Claude', popular: true,  dashboardUrl: 'https://console.anthropic.com/settings/keys' },
-	openai:    { displayName: 'OpenAI',           popular: true,  dashboardUrl: 'https://platform.openai.com/api-keys' },
-	google:    { displayName: 'Google Gemini',    popular: true,  dashboardUrl: 'https://aistudio.google.com/apikey' },
-	groq:      { displayName: 'Groq',             popular: true,  dashboardUrl: 'https://console.groq.com/keys' },
-	deepseek:  { displayName: 'DeepSeek',         popular: true,  dashboardUrl: 'https://platform.deepseek.com/api_keys' },
-	moonshot:  { displayName: 'Moonshot (Kimi)',  popular: true,  dashboardUrl: 'https://platform.moonshot.cn/console/api-keys' },
-	zai:       { displayName: '智谱 AI (GLM)',    popular: true,  dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
+	anthropic:        { displayName: 'Anthropic Claude', popular: false, dashboardUrl: 'https://console.anthropic.com/settings/keys' },
+	openai:           { displayName: 'OpenAI',           popular: true,  dashboardUrl: 'https://platform.openai.com/api-keys' },
+	google:           { displayName: 'Google Gemini',    popular: false, dashboardUrl: 'https://aistudio.google.com/apikey' },
+	groq:             { displayName: 'Groq',             popular: false, dashboardUrl: 'https://console.groq.com/keys' },
+	deepseek:         { displayName: 'DeepSeek',         popular: true,  dashboardUrl: 'https://platform.deepseek.com/api_keys' },
+	moonshot:         { displayName: 'Moonshot (Kimi)',  popular: true,  dashboardUrl: 'https://platform.moonshot.cn/console/api-keys' },
+	zai:              { displayName: '智谱 AI (GLM)',    popular: true,  dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
+	minimax:          { displayName: 'MiniMax',          popular: true  },
+	'minimax-portal': { displayName: 'MiniMax (Portal)', popular: true  },
+	qwen:             { displayName: 'Qwen',             popular: true  },
+	volcengine:       { displayName: 'Volcengine',       popular: true  },
+	openrouter:       { displayName: 'OpenRouter',       popular: true  },
 	// 其它 provider 未在表中即为 popular: false / dashboardUrl 缺省（不显示"去官网"链接）
 };
+
+// "常用"分组的显示顺序（成员 = 上表 popular:true，两者须一致，由 provider-meta.test.js 锁防漂移）
+export const POPULAR_ORDER = [
+	'deepseek', 'zai', 'minimax', 'minimax-portal', 'moonshot',
+	'qwen', 'volcengine', 'openai', 'openrouter',
+];
 ```
 
 约定：
 
-- **本期"常用" provider 共 7 个**（上表 `popular: true`），覆盖国外主流（Claude / OpenAI / Gemini / Groq）+ 国内主流（DeepSeek / Moonshot / 智谱）
+- **本期"常用" provider 共 9 个**（上表 `popular: true`，显示顺序由 `POPULAR_ORDER` 定），以国内主流为主：DeepSeek / 智谱 / MiniMax（含 Portal OAuth）/ Moonshot / Qwen（阿里）/ Volcengine（豆包），外加 OpenAI、OpenRouter；Anthropic、Google 归"其它"组
 - `displayName` 用品牌官方名，**不进 i18n**（品牌不翻译）
 - `dashboardUrl` 实施时由队员核验是否仍可用；若变更则在 PR 描述中标注
 - 未在表中的 provider：`displayName` fallback 为 provider id 本身、`popular: false`、不显示"去官网"链接

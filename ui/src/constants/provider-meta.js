@@ -19,7 +19,7 @@
 export const PROVIDER_META = {
 	anthropic: {
 		displayName: 'Anthropic Claude',
-		popular: true,
+		popular: false,
 		dashboardUrl: 'https://console.anthropic.com/settings/keys',
 	},
 	openai: {
@@ -29,7 +29,7 @@ export const PROVIDER_META = {
 	},
 	google: {
 		displayName: 'Google Gemini',
-		popular: true,
+		popular: false,
 		dashboardUrl: 'https://aistudio.google.com/apikey',
 	},
 	// groq 不进"常用"组：它当前不在 providerAuth.catalog 发现集（只走 model-catalog 推断路径），
@@ -55,7 +55,47 @@ export const PROVIDER_META = {
 		popular: true,
 		dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
 	},
+	// 以下国内厂商进"常用"组：dashboardUrl 暂缺（不显示"去官网"链接），displayName 当前无消费点（见文件头）
+	minimax: {
+		displayName: 'MiniMax',
+		popular: true,
+	},
+	'minimax-portal': {
+		displayName: 'MiniMax (Portal)',
+		popular: true,
+	},
+	qwen: {
+		displayName: 'Qwen',
+		popular: true,
+	},
+	volcengine: {
+		displayName: 'Volcengine',
+		popular: true,
+	},
+	openrouter: {
+		displayName: 'OpenRouter',
+		popular: true,
+	},
 };
+
+/**
+ * "常用"分组的**显示顺序**来源。成员资格由 PROVIDER_META 的 popular:true 决定，本数组只定顺序，
+ * 两者必须一致（由 provider-meta.test.js 的集合相等断言锁住，防漂移）。AddProviderDialog 的
+ * popularList 按本数组的 index 排序（不在数组内的 popular 项兜底排末尾，与集合一致时不会发生）。
+ *
+ * @type {string[]}
+ */
+export const POPULAR_ORDER = [
+	'deepseek',
+	'zai',
+	'minimax',
+	'minimax-portal',
+	'moonshot',
+	'qwen',
+	'volcengine',
+	'openai',
+	'openrouter',
+];
 
 /**
  * 取一个 provider 的元数据；未知 provider 走 fallback

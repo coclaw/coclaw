@@ -22,6 +22,7 @@ vi.mock('../../composables/use-notify.js', () => ({
 
 import AddProviderDialog from './AddProviderDialog.vue';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
+import { POPULAR_ORDER } from '../../constants/provider-meta.js';
 
 const UButtonStub = {
 	props: { disabled: { type: Boolean, default: false }, loading: { type: Boolean, default: false } },
@@ -143,7 +144,7 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		const w = makeWrapper({ existingProviders: ['openai'] });
 		// openai 排除：不应渲染 item
 		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
-		// anthropic (popular) + groq (other，已不再 popular) + mystery (other) 应有
+		// anthropic (other，已移出常用组) + groq (other) + mystery (other) 应有
 		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-item-mystery"]').exists()).toBe(true);
@@ -234,6 +235,49 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		await w.vm.$nextTick();
 		expect(w.emitted('update:open')).toBeTruthy();
 		expect(w.emitted('update:open')[0]).toEqual([false]);
+	});
+});
+
+describe('AddProviderDialog — popular group membership & ordering', () => {
+	// 含全部 9 个 popular（故意打乱插入序，验证 popularList 不依赖 catalog 顺序）
+	// + 若干非 popular（含被移出常用组的 anthropic / google）
+	const orderingCatalog = [
+		{ provider: 'openrouter', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'volcengine', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'qwen', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'moonshot', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'minimax-portal', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'minimax', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'zai', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'deepseek', authMethods: ['api-key'], hasCred: false },
+		// 非 popular（anthropic / google 已移出常用组）
+		{ provider: 'google', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'anthropic', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'mystery', authMethods: ['api-key'], hasCred: false },
+	];
+
+	test('popular group contains exactly the 9 ids, in POPULAR_ORDER (independent of catalog order)', () => {
+		const w = makeWrapper({ catalog: orderingCatalog });
+		expect(w.vm.popularList.map(p => p.id)).toEqual([...POPULAR_ORDER]);
+	});
+
+	test('anthropic / google fall into the other group (no longer popular)', () => {
+		const w = makeWrapper({ catalog: orderingCatalog });
+		const popIds = w.vm.popularList.map(p => p.id);
+		expect(popIds).not.toContain('anthropic');
+		expect(popIds).not.toContain('google');
+		const otherIds = w.vm.otherList.map(p => p.id);
+		expect(otherIds).toContain('anthropic');
+		expect(otherIds).toContain('google');
+	});
+
+	test('other group keeps alphabetical order by id', () => {
+		const w = makeWrapper({ catalog: orderingCatalog });
+		const otherIds = w.vm.otherList.map(p => p.id);
+		// 非 popular 项维持 availableProviders 的字母序
+		expect(otherIds).toEqual(['anthropic', 'google', 'groq', 'mystery']);
 	});
 });
 

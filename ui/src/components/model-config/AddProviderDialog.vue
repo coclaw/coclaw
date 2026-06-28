@@ -247,7 +247,7 @@
 </template>
 
 <script>
-import { getProviderMeta, PROVIDER_META } from '../../constants/provider-meta.js';
+import { getProviderMeta, PROVIDER_META, POPULAR_ORDER } from '../../constants/provider-meta.js';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 import { mapModelConfigErrorKey, isCanceledError } from '../../utils/model-config-errors.js';
 import { openExternalUrl } from '../../utils/external-url.js';
@@ -432,7 +432,15 @@ export default {
 			);
 		},
 		popularList() {
-			return this.filteredProviders.filter(p => p.popular);
+			// 常用区单独按 POPULAR_ORDER 的 index 排序（otherList 仍沿用 availableProviders 的字母序）；
+			// 不在数组内的 popular 项兜底排末尾（理论上不会发生，POPULAR_ORDER 与 popular:true 集合一致）。
+			const rank = (id) => {
+				const i = POPULAR_ORDER.indexOf(id);
+				return i === -1 ? POPULAR_ORDER.length : i;
+			};
+			return this.filteredProviders
+				.filter(p => p.popular)
+				.sort((a, b) => rank(a.id) - rank(b.id));
 		},
 		otherList() {
 			return this.filteredProviders.filter(p => !p.popular);
