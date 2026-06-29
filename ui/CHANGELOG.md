@@ -1,5 +1,15 @@
 # @coclaw/ui
 
+## 0.33.0
+
+### Minor Changes
+
+- eba9914: Surface provider brand names (via a single getProviderName helper) in the add-provider dialog, API-key list, remove-confirm, and dashboard model tags; add brand-name search in the add-provider dialog. Display-only; provider id remains the source of truth.
+
+### Patch Changes
+
+- 995419d: Show friendly provider brand names in the remaining raw-id spots: the default-model row, the claw card model row, and the primary-model picker group titles. The picker now also matches and sorts by brand name (raw id still searchable). Provider id remains the sole source of truth (testids/keys/RPC payloads unchanged); uncovered variants gracefully fall back to the raw id.
+
 ## 0.32.12
 
 ### Patch Changes
