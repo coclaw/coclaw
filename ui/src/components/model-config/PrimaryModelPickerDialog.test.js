@@ -94,7 +94,7 @@ describe('PrimaryModelPickerDialog — byProvider (listAvailable) sole data sour
 		// 别名套餐变体作为一等公民出现，可被选中
 		const variant = w.find('[data-testid="primary-picker-item-volcengine-plan__ark-code-latest"]');
 		expect(variant.exists()).toBe(true);
-		// 分组标题直接显示变体 provider id
+		// 分组标题：未覆盖变体经 getProviderName 回退裸 id（覆盖 provider 才显示品牌名）
 		expect(w.find('[data-testid="primary-picker-group-volcengine-plan"]').text()).toBe('volcengine-plan');
 	});
 
