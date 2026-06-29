@@ -2,14 +2,7 @@
  * 根据模型信息生成用于 Dashboard 展示的标签列表。
  */
 
-export const PROVIDER_NAMES = {
-	anthropic: 'Anthropic',
-	openai: 'OpenAI',
-	google: 'Google',
-	meta: 'Meta',
-	mistral: 'Mistral',
-	deepseek: 'DeepSeek',
-};
+import { getProviderName } from '../constants/provider-meta.js';
 
 /**
  * @typedef {{ label?: string, labelKey?: string, labelParams?: Record<string, string>, icon?: string, type: string }} ModelTag
@@ -29,7 +22,7 @@ export function generateModelTags(model) {
 
 	// provider
 	if (model.provider) {
-		const name = PROVIDER_NAMES[model.provider] || model.provider;
+		const name = getProviderName(model.provider);
 		tags.push({ labelKey: 'dashboard.model.provider', labelParams: { name }, icon: '🏢', type: 'provider' });
 	}
 

@@ -201,7 +201,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - 列表数据源：`coclaw.providerAuth.catalog` 返回的 provider 中 **`hasCred === false`** 的那些（即"还没配过、可加"的）；不再从 `models.list view:"all"` distinct provider 取（已去 view:all）
 - **排除已配 provider 用别名归一名（修订 6，#8 闭合）**：列表里要排掉用户已有凭据的 provider，排除口径**两侧都按别名基座名归一**（`resolveProviderIdForAuth`，插件侧做——UI 拿不到该函数）。否则套餐用户持 `volcengine` 基座 key，仍被提供去重复加 `volcengine`/`volcengine-plan`。归一后的"已配 provider"集由插件随凭据信号或专门字段给 UI
 - "常用"分组的 provider 由 UI 端硬编码（一期人工维护一份"热门 provider"清单，按用户分布 + 国内外平衡选取）
-- displayName 由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**当前无消费点**：模型设置页所有界面（API 密钥列表 / 撤销弹窗 / provider 选择列表 / 主模型选择器）统一直接展示原生 provider id，排序也按 id——映射表只覆盖少数常用 provider，混用 id/品牌名既不一致又是维护负担。displayName 字段保留、不删，待将来真要做品牌名展示时再启用
+- 品牌名 `name`（原 `displayName`）由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**经共享 helper `getProviderName` 在以下展示点换名**（完整清单与 dormant 说明见 § 8.1）：添加 provider 弹窗（列表项 label + 第二步标题 / noKeyHint / 去官网链接 / oauth-login 暂不支持 toast，外加按品牌名搜索）、API 密钥列表行、撤销确认弹窗 + 撤销失败 toast、Dashboard 机型标签（当前 dormant）；列表**排序仍按 id**。这些处均**纯展示换名**——provider id 仍是唯一真值（testid / 点击 / 比对 / RPC 一律用裸 id）。Tier-2 的 `provider/model` 复合标识处（主模型行 / 选模型器 / claw 卡片）维持裸 id
 
 **Step 2 输入 API key**（移动端为居中 confirm 小卡片、非全屏；桌面端为模态。输 key 步套用项目统一 confirm 弹窗样式，不随 Step 1 全屏）：
 
@@ -431,7 +431,7 @@ notify 走组件内 `useNotify()`（store 不 import nuxt-ui，组件内可用�
 
 辅助数据：
 
-- `src/constants/provider-meta.js`：硬编码 `provider id → { displayName, popular, dashboardUrl }` 映射表（见 § 8.1 初始值）
+- `src/constants/provider-meta.js`：硬编码 `provider id → { name, popular, dashboardUrl }` 映射表（见 § 8.1 初始值）
 - `src/utils/nav-back.js`：抽取自 `MobilePageHeader` 的 back+fallback helper
 
 ### 8.1 provider 元数据映射表（当前值）
@@ -440,18 +440,20 @@ notify 走组件内 `useNotify()`（store 不 import nuxt-ui，组件内可用�
 
 ```js
 export const PROVIDER_META = {
-	anthropic:        { displayName: 'Anthropic Claude', popular: false, dashboardUrl: 'https://console.anthropic.com/settings/keys' },
-	openai:           { displayName: 'OpenAI',           popular: true,  dashboardUrl: 'https://platform.openai.com/api-keys' },
-	google:           { displayName: 'Google Gemini',    popular: false, dashboardUrl: 'https://aistudio.google.com/apikey' },
-	groq:             { displayName: 'Groq',             popular: false, dashboardUrl: 'https://console.groq.com/keys' },
-	deepseek:         { displayName: 'DeepSeek',         popular: true,  dashboardUrl: 'https://platform.deepseek.com/api_keys' },
-	moonshot:         { displayName: 'Moonshot (Kimi)',  popular: true,  dashboardUrl: 'https://platform.moonshot.cn/console/api-keys' },
-	zai:              { displayName: '智谱 AI (GLM)',    popular: true,  dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
-	minimax:          { displayName: 'MiniMax',          popular: true  },
-	'minimax-portal': { displayName: 'MiniMax (Portal)', popular: true  },
-	qwen:             { displayName: 'Qwen',             popular: true  },
-	volcengine:       { displayName: 'Volcengine',       popular: true  },
-	openrouter:       { displayName: 'OpenRouter',       popular: true  },
+	anthropic:        { name: 'Anthropic Claude', popular: false, dashboardUrl: 'https://console.anthropic.com/settings/keys' },
+	openai:           { name: 'OpenAI',           popular: true,  dashboardUrl: 'https://platform.openai.com/api-keys' },
+	google:           { name: 'Google Gemini',    popular: false, dashboardUrl: 'https://aistudio.google.com/apikey' },
+	groq:             { name: 'Groq',             popular: false, dashboardUrl: 'https://console.groq.com/keys' },
+	deepseek:         { name: 'DeepSeek',         popular: true,  dashboardUrl: 'https://platform.deepseek.com/api_keys' },
+	moonshot:         { name: 'Moonshot (Kimi)',  popular: true,  dashboardUrl: 'https://platform.moonshot.cn/console/api-keys' },
+	zai:              { name: 'ZhipuAI (GLM)',    popular: true,  dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys' },
+	minimax:          { name: 'MiniMax',          popular: true  },
+	'minimax-portal': { name: 'MiniMax (Portal)', popular: true  },
+	qwen:             { name: 'Qwen',             popular: true  },
+	volcengine:       { name: 'Volcengine',       popular: true  },
+	openrouter:       { name: 'OpenRouter',       popular: true  },
+	meta:             { name: 'Meta',             popular: false },  // 仅供 Dashboard 机型标签
+	mistral:          { name: 'Mistral',          popular: false },  // 仅供 Dashboard 机型标签
 	// 其它 provider 未在表中即为 popular: false / dashboardUrl 缺省（不显示"去官网"链接）
 };
 
@@ -460,14 +462,20 @@ export const POPULAR_ORDER = [
 	'deepseek', 'zai', 'minimax', 'minimax-portal', 'moonshot',
 	'qwen', 'volcengine', 'openai', 'openrouter',
 ];
+
+// 取友好品牌名；未知 id 回退为 id 本身。纯展示用——provider id 仍是唯一真值。
+export function getProviderName(id) { return PROVIDER_META[id]?.name || id; }
 ```
 
 约定：
 
 - **本期"常用" provider 共 9 个**（上表 `popular: true`，显示顺序由 `POPULAR_ORDER` 定），以国内主流为主：DeepSeek / 智谱 / MiniMax（含 Portal OAuth）/ Moonshot / Qwen（阿里）/ Volcengine（豆包），外加 OpenAI、OpenRouter；Anthropic、Google 归"其它"组
-- `displayName` 用品牌官方名，**不进 i18n**（品牌不翻译）
+- `name`（原 `displayName`）用品牌官方名，**不进 i18n**（品牌不翻译）。**经共享 helper `getProviderName` 在以下展示点换名**：添加 provider 弹窗（列表项 label + 第二步标题 / noKeyHint / 去官网链接 / oauth-login 暂不支持 toast，外加按品牌名搜索）、API 密钥列表行、撤销确认弹窗 + 撤销失败 toast、Dashboard 机型标签。这些处都是**纯展示换名**：provider id 仍是唯一真值（testid / 点击传参 / 选中态比对 / RPC payload / 相等去重判断一律继续用裸 id）
+  - **Dashboard 机型标签当前 dormant**：`dashboard.store.js` 现把 modelCatalog 写死为 `[]`（§7.4，仪表盘不拉全量目录）→ `generateModelTags` 拿不到 model、走不到 provider 分支，故换名对 Dashboard 标签**当前无可见效果**。本次合表（`PROVIDER_NAMES` → `getProviderName` 单一数据源）是为 phase-2 接上 catalog 后正确点亮做准备，且 fallback 保留旧行为、无回归
+- **Tier-2 的 `provider/model` 复合标识处维持裸 id**：主模型行（ModelConfigPage / PrimaryModelPickerDialog）、claw 卡片（ManageClawsPage）刻意保持裸 id，不换品牌名
+- `meta` / `mistral` 无 `dashboardUrl`、非 popular，仅供 Dashboard 机型标签经 `getProviderName` 展示（从原 `model-tags.js` 的 `PROVIDER_NAMES` 并入，避免标签退化为裸 id）
 - `dashboardUrl` 实施时由队员核验是否仍可用；若变更则在 PR 描述中标注
-- 未在表中的 provider：`displayName` fallback 为 provider id 本身、`popular: false`、不显示"去官网"链接
+- 未在表中的 provider：`name` fallback 为 provider id 本身、`popular: false`、不显示"去官网"链接
 - 完整 provider 列表由 `coclaw.providerAuth.catalog` 运行时拿（setup 全集，含认证方式 + hasCred），**不在本表硬编码**——未来扩展只动 PROVIDER_META，不破坏 dropdown 完整性
 
 ### 8.2 i18n key 命名规范
@@ -485,7 +493,7 @@ export const POPULAR_ORDER = [
 
 - 涉及语言：**全 12 个 locale**（de / en / es / fr / hi / ja / ko / pt / ru / vi / zh-CN / zh-TW，与现状一致）
 - 任何新 key 必须 **12 个语言**全部**同步**新增；漏一个 = deep-review 必驳（设备码/oauth key 占位 `{provider}` 也须各语言齐）
-- `displayName`（provider 品牌名）**不进** i18n；oauth 徽章字面量 `oauth` 也**不进** i18n
+- `name`（provider 品牌名）**不进** i18n；oauth 徽章字面量 `oauth` 也**不进** i18n
 - 错误码 → 文案映射的 key 放 `modelConfig.common.*`（如 `common.errInvalidArgs`、`common.errIoFailed`），避免分散到各 component
 
 ---
@@ -554,7 +562,7 @@ export const POPULAR_ORDER = [
 - `dashboard.store` 新增字段（含失败态默认值）的派生计算
 - 错误码 → 文案映射函数
 - `utils/nav-back.js` helper
-- `constants/provider-meta.js` 映射表形态校验（每条带 displayName、popular、可选 dashboardUrl）
+- `constants/provider-meta.js` 映射表形态校验（每条带 name、popular、可选 dashboardUrl）+ `getProviderName`（命中返回 name / 未知回退 id）
 - "primary 失效判定"计算属性（拆 `<provider>/<model>` + 与 `listAvailable.byProvider` membership 比对；清单未到=先不下结论、不误报）
 
 ### 按现行规范

@@ -2,6 +2,16 @@
 
 非阻塞改进点登记。每条记录"问题 / 修复方向 / 关联 commit"。
 
+## model-config.md 陈旧：API key 输入仍写"password 类型"，实际早已 type=text + CSS 打码
+
+**发现日期**：2026-06-29
+**来源**：provider 品牌名展示改动（feat/provider-display-name）评审顺带核出，与本次改动无关的陈旧文档
+
+- 现状：`ui/docs/model-config.md` 约 L222（§5.2 "input type 用 password"）与约 L578 仍描述 API key 输入框为 `password` 类型；但实现早已改为 `type=text` + CSS 打码（`cc-secret-mask` / `-webkit-text-security`），刻意避开浏览器密码管家弹"保存密码"（见 `AddProviderDialog.vue` 注释与 `reference_coclaw_secret_input_masking` 记录）。
+- 影响：纯文档与实现脱节，不影响运行；读者照文档会以为是 password 框。
+- 修复方向：把这两处描述同步为 "type=text + CSS 打码（cc-secret-mask），不用 password 以避开密码管家"，并指向 AddProviderDialog 的现有说明。
+- 范围：仅文档（`ui/docs/model-config.md`）。本轮不顺手修（与品牌名改动无关）。
+
 ## 发布前审查（2026-06-24）发现的非阻塞项
 
 **来源**：对一批未 push ui commit 做发布前 8 路并行 review（4 claude + 4 codex 双路对照）。两个被 codex 标阻断的缺口（来源前缀对未命名 topic 不生效、NOT_FOUND 静音过宽）已在 `f5868a59` 修复；下列为非阻塞的测试加固残留与覆盖深度缺口，登记备查。
@@ -724,12 +734,3 @@ X4 触及面比 X1 广，需要重新评估：
 - 为何不强写：这两条要求**真实**的 RTC 断开→恢复时序，项目已确认极难稳定触发（[[project_rtc_connection_hard_to_break]]：ICE restart 有 3min 恢复预算、DC alive 时 `connReady` watcher 不翻、`dcReady` 几乎不翻）。纯内存态注入只能伪造"某一帧的状态值"，无法忠实驱动"断→恢复→刷新"这条经状态机的真实路径——硬注入等于把状态机重写一遍，断言的是脚手架而非真行为，属假绿。
 - 可行的真实触发探索方向（任一落定后再补，避免假绿）：(a) 在 plugin/coturn 侧提供可控的"掐断 relay / 强制 ICE 失败"测试钩子；(b) 用 CDP `Network.emulateNetworkConditions(offline)` 配合 `forceCloseWs` 制造信令+传输双断后再恢复，观察 `__refreshIfStale` 是否触发对应 store 的 reload RPC；(c) 注入一个带**真实 conn** 的测试 claw 走 `webrtc-connection.js` 的 restart 路径。三者都需要先验证能稳定复现"DC 真断又真恢复"才有意义。
 
-## 添加服务商对话框的 provider 卡片显示原始 provider id（缺友好品牌名）
-
-**发现日期**：2026-06-28
-**来源**：重排"常用"分组成员/顺序时顺带核实
-
-- 现状：添加服务商对话框（`AddProviderDialog.vue`）的 provider 卡片、搜索、标题统一直接显示 OpenClaw 原生 provider id（如 `volcengine` 实为豆包/火山方舟、`minimax-portal`、`google-gemini-cli` 等），不直观。`provider-meta.js` 的 `displayName` 字段已为部分 provider 预留品牌名，但**全 UI 无消费点**（卡片/搜索/分组标题/主模型选择器均渲染原始 id）。
-- 为何暂缓：接友好名渲染涉及面较大——多处卡片/搜索过滤/分组标题、i18n（品牌名是否进 i18n 的口径）、且 `displayName` 仅覆盖少数 provider（其余仍要 fallback 原 id），还需保证搜索同时命中 id 与品牌名。非小改。
-- 根因：当前设计刻意统一展示原生 id（见 `provider-meta.js` 文件头注释），混用 id/品牌名既不一致又是维护负担。
-- 修复方向（将来）：把 `displayName` 接到卡片/搜索/标题渲染（缺省 fallback 原 id），并同步 i18n 与多语言文件；先确认 `displayName` 覆盖率与 fallback 体验可接受再动。

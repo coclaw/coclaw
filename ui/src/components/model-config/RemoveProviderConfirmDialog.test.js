@@ -46,12 +46,17 @@ function makeWrapper(props = {}) {
 }
 
 describe('RemoveProviderConfirmDialog', () => {
-	test('renders normal text variant when not primary carrier (uses raw provider id)', () => {
+	test('renders normal text variant when not primary carrier (uses friendly brand name)', () => {
 		const w = makeWrapper({ isPrimaryCarrier: false });
 		const text = w.text();
-		expect(text).toContain('modelConfig.providerAuth.remove.title:provider=groq');
-		expect(text).toContain('modelConfig.providerAuth.remove.descNormal:provider=groq');
+		// provider 展示经 getProviderName（groq → 'Groq'）；i18n 模板 key 不变
+		expect(text).toContain('modelConfig.providerAuth.remove.title:provider=Groq');
+		expect(text).toContain('modelConfig.providerAuth.remove.descNormal:provider=Groq');
 		expect(text).not.toContain('descAffectPrimary');
+		// desc 带 testid（E2E 锚点，避免断言整段 i18n 文案）；展示亦为品牌名
+		const desc = w.find('[data-testid="remove-provider-desc"]');
+		expect(desc.exists()).toBe(true);
+		expect(desc.text()).toContain('provider=Groq');
 	});
 
 	test('renders strong-warning text variant when primary carrier (passes primary string)', () => {
@@ -61,8 +66,10 @@ describe('RemoveProviderConfirmDialog', () => {
 		});
 		const text = w.text();
 		expect(text).toContain('descAffectPrimary');
+		// primary 是完整模型标识，保持裸串（不过 getProviderName）
 		expect(text).toContain('primary=groq/llama-3.3-70b-versatile');
-		expect(text).toContain('provider=groq');
+		// provider 展示用友好品牌名
+		expect(text).toContain('provider=Groq');
 	});
 
 	test('confirm button label changes between normal and strong', () => {
@@ -133,7 +140,7 @@ describe('RemoveProviderConfirmDialog', () => {
 		expect(w.find('.modal-title').exists()).toBe(false);
 	});
 
-	test('renders raw provider id verbatim (no brand-name mapping)', () => {
+	test('unknown provider (no brand name) falls back to the raw id verbatim', () => {
 		const w = makeWrapper({ provider: 'mystery' });
 		expect(w.text()).toContain('provider=mystery');
 	});

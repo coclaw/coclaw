@@ -1,80 +1,91 @@
 /**
  * provider 元数据映射表（UI 端硬编码）
  *
- * displayName 现状：暂无消费点。模型设置页所有界面（API 密钥列表、撤销弹窗、
- * 添加 provider 选择器、主模型选择器）统一直接展示 OpenClaw 原生 provider id，
- * 排序也按 id——这张表只覆盖少数常用 provider，混用 id/品牌名既不一致又是维护负担。
- * 本字段保留、不删，待将来真要做品牌名展示时再启用（删除前请确认仍无引用）。
+ * name（原 displayName）现已有消费点：添加 provider 弹窗、API 密钥列表、撤销确认、
+ * Dashboard 机型标签都经 getProviderName 走它显示品牌名（provider id 仍是唯一真值，
+ * 仅展示文本换名）。Tier-2 的 provider/model 复合标识处（主模型行 / claw 卡片 / 选模型器）
+ * 仍维持裸 id。
  *
  * 字段说明：
- * - displayName：品牌官方名，不进 i18n（品牌不翻译）；当前无消费点（见上）
- * - popular：是否在"添加 provider"流程的"常用"分组里（仍在用）
- * - dashboardUrl：去 provider 官网创建 key 的入口；缺省则不显示"去官网"链接（仍在用）
+ * - name：品牌官方名，不进 i18n（品牌不翻译）；经 getProviderName 消费
+ * - popular：是否在"添加 provider"流程的"常用"分组里
+ * - dashboardUrl：去 provider 官网创建 key 的入口；缺省则不显示"去官网"链接
  *
- * 未在表中的 provider：fallback 为 { displayName: <id>, popular: false }，
+ * 未在表中的 provider：fallback 为 { name: <id>, popular: false }，
  * 不显示"去官网"链接。完整 provider 清单由 `coclaw.providerAuth.catalog` 运行时拿。
  *
  * 设计文档：ui/docs/model-config.md § 8.1
  */
 export const PROVIDER_META = {
 	anthropic: {
-		displayName: 'Anthropic Claude',
+		name: 'Anthropic Claude',
 		popular: false,
 		dashboardUrl: 'https://console.anthropic.com/settings/keys',
 	},
 	openai: {
-		displayName: 'OpenAI',
+		name: 'OpenAI',
 		popular: true,
 		dashboardUrl: 'https://platform.openai.com/api-keys',
 	},
 	google: {
-		displayName: 'Google Gemini',
+		name: 'Google Gemini',
 		popular: false,
 		dashboardUrl: 'https://aistudio.google.com/apikey',
 	},
 	// groq 不进"常用"组：它当前不在 providerAuth.catalog 发现集（只走 model-catalog 推断路径），
-	// 添加对话框里压根看不到它；保留 meta（displayName/dashboardUrl）备它将来真进 catalog 时正常展示。
+	// 添加对话框里压根看不到它；保留 meta（name/dashboardUrl）备它将来真进 catalog 时正常展示。
 	groq: {
-		displayName: 'Groq',
+		name: 'Groq',
 		popular: false,
 		dashboardUrl: 'https://console.groq.com/keys',
 	},
 	deepseek: {
-		displayName: 'DeepSeek',
+		name: 'DeepSeek',
 		popular: true,
 		dashboardUrl: 'https://platform.deepseek.com/api_keys',
 	},
 	moonshot: {
-		displayName: 'Moonshot (Kimi)',
+		name: 'Moonshot (Kimi)',
 		popular: true,
 		dashboardUrl: 'https://platform.moonshot.cn/console/api-keys',
 	},
 	// 智谱：OpenClaw 真实 provider id 是 zai（非 zhipuai），key 必须与 catalog 一致才能匹配上、进"常用"组
 	zai: {
-		displayName: '智谱 AI (GLM)',
+		name: 'ZhipuAI (GLM)',
 		popular: true,
 		dashboardUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
 	},
-	// 以下国内厂商进"常用"组：dashboardUrl 暂缺（不显示"去官网"链接），displayName 当前无消费点（见文件头）
+	// 以下国内厂商进"常用"组：dashboardUrl 暂缺（不显示"去官网"链接），name 经 getProviderName 显示品牌名（见文件头）
 	minimax: {
-		displayName: 'MiniMax',
+		name: 'MiniMax',
 		popular: true,
 	},
 	'minimax-portal': {
-		displayName: 'MiniMax (Portal)',
+		name: 'MiniMax (Portal)',
 		popular: true,
 	},
 	qwen: {
-		displayName: 'Qwen',
+		name: 'Qwen',
 		popular: true,
 	},
 	volcengine: {
-		displayName: 'Volcengine',
+		name: 'Volcengine',
 		popular: true,
 	},
 	openrouter: {
-		displayName: 'OpenRouter',
+		name: 'OpenRouter',
 		popular: true,
+	},
+	// 以下两条无 dashboardUrl、不进"常用"组：主要为 Dashboard 机型标签的 provider 名提供品牌名
+	// （getProviderName 是共享 helper，故这两个 id 在任何展示点都会取到品牌名）。
+	// 从原 model-tags.js 的 PROVIDER_NAMES 并入，避免标签退化为裸 id。
+	meta: {
+		name: 'Meta',
+		popular: false,
+	},
+	mistral: {
+		name: 'Mistral',
+		popular: false,
 	},
 };
 
@@ -101,10 +112,21 @@ export const POPULAR_ORDER = [
  * 取一个 provider 的元数据；未知 provider 走 fallback
  *
  * @param {string} id - provider id
- * @returns {{ displayName: string, popular: boolean, dashboardUrl?: string }}
+ * @returns {{ name: string, popular: boolean, dashboardUrl?: string }}
  */
 export function getProviderMeta(id) {
 	const hit = PROVIDER_META[id];
 	if (hit) return hit;
-	return { displayName: id, popular: false };
+	return { name: id, popular: false };
+}
+
+/**
+ * 取一个 provider 的友好品牌名；未知 provider 回退为 id 本身。
+ * 纯显示用——provider id 仍是唯一真值，仅展示文本经此换名。
+ *
+ * @param {string} id - provider id
+ * @returns {string}
+ */
+export function getProviderName(id) {
+	return PROVIDER_META[id]?.name || id;
 }

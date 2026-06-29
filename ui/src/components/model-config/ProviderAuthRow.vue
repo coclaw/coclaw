@@ -1,5 +1,7 @@
 <template>
+	<!-- 行 testid 带裸 provider id（id 是唯一真值；展示 label 已换品牌名，故 E2E 锚 testid 而非文案） -->
 	<div
+		:data-testid="`provider-auth-row-${profile?.provider ?? ''}`"
 		class="flex min-h-12 items-center gap-3 px-3 py-2 border-b border-default last:border-b-0"
 		:class="{ 'opacity-75': source === 'env' }"
 	>
@@ -49,6 +51,8 @@
 </template>
 
 <script>
+import { getProviderName } from '../../constants/provider-meta.js';
+
 export default {
 	name: 'ProviderAuthRow',
 	props: {
@@ -66,11 +70,11 @@ export default {
 	emits: ['remove'],
 	computed: {
 		/**
-		 * 直接展示 OpenClaw 原生 provider id：管理界面与选择器统一显示原生 id，
-		 * 不用 provider-meta 的映射品牌名（见 constants/provider-meta.js 顶部说明）。
+		 * 展示友好品牌名（getProviderName）：provider id 仍是唯一真值（emit/比对仍用裸 id），
+		 * 仅这行展示文本换成品牌名；未知 provider 回退为 id 本身。
 		 */
 		providerLabel() {
-			return this.profile?.provider ?? '';
+			return getProviderName(this.profile?.provider ?? '');
 		},
 		/**
 		 * 凭据来源：profile（账本）/ inline（配置文件）/ env（环境变量）。

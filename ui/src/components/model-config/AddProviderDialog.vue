@@ -39,8 +39,8 @@
 								:data-testid="`add-provider-item-${p.id}`"
 								@click="onPickProvider(p.id)"
 							>
-								<!-- 直接显示 OpenClaw 原生 provider id（映射的 displayName 不全且二者大致相同，暂不用映射） -->
-								<span class="min-w-0 truncate -mt-0.5">{{ p.id }}</span>
+								<!-- 显示友好品牌名（getProviderName）；key/点击传参/选中态仍用裸 p.id（唯一真值） -->
+								<span class="min-w-0 truncate -mt-0.5">{{ providerName(p.id) }}</span>
 								<!-- oauth 能力徽章：authMethods 含 oauth 入口才贴（api-key 默认不贴，降噪）；样式同已配栏 -->
 								<UBadge
 									v-if="p.hasOauth"
@@ -67,8 +67,8 @@
 								:data-testid="`add-provider-item-${p.id}`"
 								@click="onPickProvider(p.id)"
 							>
-								<!-- 直接显示 OpenClaw 原生 provider id（映射的 displayName 不全且二者大致相同，暂不用映射） -->
-								<span class="min-w-0 truncate -mt-0.5">{{ p.id }}</span>
+								<!-- 显示友好品牌名（getProviderName）；key/点击传参/选中态仍用裸 p.id（唯一真值） -->
+								<span class="min-w-0 truncate -mt-0.5">{{ providerName(p.id) }}</span>
 								<!-- oauth 能力徽章：authMethods 含 oauth 入口才贴（api-key 默认不贴，降噪）；样式同已配栏 -->
 								<UBadge
 									v-if="p.hasOauth"
@@ -160,14 +160,14 @@
 	
 						<!-- "去官网创建"提示：问句与链接分两行——窄卡片宽度更从容，整体高度更协调 -->
 						<div v-if="dashboardUrl" class="flex flex-col gap-1 text-sm text-muted">
-							<span>{{ $t('modelConfig.providerAuth.add.noKeyHint', { provider: selectedProvider }) }}</span>
+							<span data-testid="add-provider-no-key-hint">{{ $t('modelConfig.providerAuth.add.noKeyHint', { provider: providerName(selectedProvider) }) }}</span>
 							<a
 								data-testid="add-provider-dashboard-link"
 								class="self-start text-primary underline cursor-pointer"
-								:aria-label="$t('modelConfig.providerAuth.add.dashboardLink', { provider: selectedProvider })"
+								:aria-label="$t('modelConfig.providerAuth.add.dashboardLink', { provider: providerName(selectedProvider) })"
 								@click="onOpenDashboard"
 							>
-								{{ $t('modelConfig.providerAuth.add.dashboardLink', { provider: selectedProvider }) }}
+								{{ $t('modelConfig.providerAuth.add.dashboardLink', { provider: providerName(selectedProvider) }) }}
 							</a>
 						</div>
 					</form>
@@ -247,7 +247,7 @@
 </template>
 
 <script>
-import { getProviderMeta, PROVIDER_META, POPULAR_ORDER } from '../../constants/provider-meta.js';
+import { getProviderMeta, getProviderName, PROVIDER_META, POPULAR_ORDER } from '../../constants/provider-meta.js';
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
 import { mapModelConfigErrorKey, isCanceledError } from '../../utils/model-config-errors.js';
 import { openExternalUrl } from '../../utils/external-url.js';
@@ -380,14 +380,14 @@ export default {
 			return this.isMobile && this.step === 'select';
 		},
 		/**
-		 * 标题文案：Step 1 是 "选择 provider"，Step 2 是 "配置 <provider id>"（统一用原生 id，不用映射名）
+		 * 标题文案：Step 1 是 "选择 provider"，Step 2 是 "配置 <品牌名>"（展示用友好名，selectedProvider 仍是裸 id）
 		 */
 		title() {
 			if (this.step === 'select') {
 				return this.$t('modelConfig.providerAuth.add.stepSelectTitle');
 			}
 			return this.$t('modelConfig.providerAuth.add.stepConfigTitle', {
-				provider: this.selectedProvider,
+				provider: getProviderName(this.selectedProvider),
 			});
 		},
 		dashboardUrl() {
@@ -424,10 +424,12 @@ export default {
 		filteredProviders() {
 			const q = this.searchText.trim().toLowerCase();
 			if (!q) return this.availableProviders;
-			// hasOauth 的项把字面量 "oauth"（列表里那枚 oauth 徽章的文字）也当可搜文本，
-			// 否则搜 "oauth" 命中为空，与界面上明明贴着的 oauth 徽章割裂
+			// 匹配口径（OR）：裸 id + 友好品牌名 + hasOauth 项的字面量 "oauth"（列表里那枚 oauth 徽章的文字）。
+			// 叠品牌名让用户可按"Claude/智谱/MiniMax"等搜到对应 provider；oauth 字面量避免搜 "oauth" 命中为空、
+			// 与界面上明明贴着的 oauth 徽章割裂。
 			return this.availableProviders.filter(p =>
 				p.id.toLowerCase().includes(q) ||
+				getProviderName(p.id).toLowerCase().includes(q) ||
 				(p.hasOauth && 'oauth'.includes(q))
 			);
 		},
@@ -524,6 +526,10 @@ export default {
 		onOauthRetry() {
 			this.$refs.oauthStep?.start();
 		},
+		/** provider 友好品牌名（列表项展示用）；id 仍是唯一真值，仅展示文本换名 */
+		providerName(id) {
+			return getProviderName(id);
+		},
 		/** configure 入口的人类可读标签（chooser 列表项用） */
 		methodLabel(method) {
 			if (method === 'api-key') return this.$t('modelConfig.providerAuth.add.methodApiKey');
@@ -549,7 +555,7 @@ export default {
 			// 避免切屏导致列表滚动位置丢失（select / configure 互斥渲染，返回会从头重渲染）。
 			if (methods.length === 1 && methods[0] === 'oauth-login') {
 				this.selectedProvider = '';
-				this.notify.warning(this.$t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: providerId }));
+				this.notify.warning(this.$t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: getProviderName(providerId) }));
 				return;
 			}
 			this.step = 'configure';
@@ -564,7 +570,7 @@ export default {
 			if (!method) return;
 			// oauth-login（cb 回环回调）暂不支持：留在 chooser、弹 toast（不进配置子屏，移动端更友好）。
 			if (method === 'oauth-login') {
-				this.notify.warning(this.$t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: this.selectedProvider }));
+				this.notify.warning(this.$t('modelConfig.providerAuth.add.oauthLoginUnsupported', { provider: getProviderName(this.selectedProvider) }));
 				return;
 			}
 			this.selectedMethod = method;

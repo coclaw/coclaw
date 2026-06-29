@@ -170,6 +170,7 @@ import RemoveProviderConfirmDialog from '../components/model-config/RemoveProvid
 import AddProviderDialog from '../components/model-config/AddProviderDialog.vue';
 import PrimaryModelPickerDialog from '../components/model-config/PrimaryModelPickerDialog.vue';
 import { navBack } from '../utils/nav-back.js';
+import { getProviderName } from '../constants/provider-meta.js';
 import { parseModelId } from '../utils/model-id.js';
 import { useClawsStore } from '../stores/claws.store.js';
 import { useDashboardStore, computePrimaryEffective } from '../stores/dashboard.store.js';
@@ -722,7 +723,8 @@ export default {
 					msg = this.$t(key);
 				}
 				else {
-					msg = this.$t('modelConfig.providerAuth.removeFailed', { provider });
+					// 失败 toast 显示友好品牌名（与撤销确认弹窗同屏一致）；上面 RPC 仍用裸 provider id
+					msg = this.$t('modelConfig.providerAuth.removeFailed', { provider: getProviderName(provider) });
 				}
 				this.notify.error(msg);
 				console.warn('[ModelConfigPage] remove provider failed code=%s msg=%s', code ?? 'n/a', err?.message ?? 'n/a');

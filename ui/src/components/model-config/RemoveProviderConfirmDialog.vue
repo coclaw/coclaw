@@ -7,7 +7,7 @@
 		@update:open="onOpenChange"
 	>
 		<template #body>
-			<p class="text-sm text-muted">{{ description }}</p>
+			<p data-testid="remove-provider-desc" class="text-sm text-muted">{{ description }}</p>
 		</template>
 		<template #footer>
 			<div class="flex w-full justify-end gap-2">
@@ -35,6 +35,7 @@
 
 <script>
 import { promptModalUi } from '../../constants/prompt-modal-ui.js';
+import { getProviderName } from '../../constants/provider-meta.js';
 
 export default {
 	name: 'RemoveProviderConfirmDialog',
@@ -43,7 +44,7 @@ export default {
 			type: Boolean,
 			default: false,
 		},
-		/** 待撤的 provider id（直接展示，不映射品牌名） */
+		/** 待撤的 provider id（唯一真值；展示时经 getProviderName 换成品牌名） */
 		provider: {
 			type: String,
 			default: '',
@@ -69,9 +70,9 @@ export default {
 		return { promptUi: promptModalUi };
 	},
 	computed: {
-		/** 直接展示原生 provider id（统一不用映射品牌名，见 provider-meta.js 顶部说明） */
+		/** 展示友好品牌名（getProviderName）；provider prop 仍是裸 id（撤销 RPC 用裸 id，由父组件持有） */
 		providerLabel() {
-			return this.provider;
+			return getProviderName(this.provider);
 		},
 		description() {
 			// 撤内联不再单独提示"会改配置文件"：来源已由列表行标签表达，弹窗与普通删除一致（2026-05-28 拍板）。

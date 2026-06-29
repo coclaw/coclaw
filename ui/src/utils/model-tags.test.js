@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, test, expect } from 'vitest';
-import { generateModelTags, PROVIDER_NAMES } from './model-tags.js';
+import { generateModelTags } from './model-tags.js';
 
 describe('generateModelTags', () => {
 	test('model 为 null → 返回空数组', () => {
@@ -28,7 +28,8 @@ describe('generateModelTags', () => {
 		expect(types).toContain('context');
 		expect(tags.find(t => t.type === 'name').label).toBe('Claude 3 Opus');
 		expect(tags.find(t => t.type === 'provider').labelKey).toBe('dashboard.model.provider');
-		expect(tags.find(t => t.type === 'provider').labelParams).toEqual({ name: 'Anthropic' });
+		// provider 名经 getProviderName 取（anthropic → 'Anthropic Claude'，单一数据源 PROVIDER_META）
+		expect(tags.find(t => t.type === 'provider').labelParams).toEqual({ name: 'Anthropic Claude' });
 		expect(tags.find(t => t.labelKey === 'dashboard.model.reasoning')).toBeTruthy();
 		expect(tags.find(t => t.labelKey === 'dashboard.model.vision')).toBeTruthy();
 		expect(tags.find(t => t.labelKey === 'dashboard.model.document')).toBeTruthy();
@@ -76,9 +77,17 @@ describe('generateModelTags', () => {
 		expect(generateModelTags({})).toEqual([]);
 	});
 
-	test('PROVIDER_NAMES 包含主流 provider', () => {
-		expect(PROVIDER_NAMES.anthropic).toBe('Anthropic');
-		expect(PROVIDER_NAMES.openai).toBe('OpenAI');
-		expect(PROVIDER_NAMES.google).toBe('Google');
+	test('provider 名走 getProviderName：品牌名经 PROVIDER_META 单一数据源', () => {
+		// google → 'Google Gemini'（单一数据源后比旧 PROVIDER_NAMES 的 'Google' 更具体）
+		expect(generateModelTags({ provider: 'google' }).find(t => t.type === 'provider').labelParams)
+			.toEqual({ name: 'Google Gemini' });
+		// meta / mistral：从原 model-tags.PROVIDER_NAMES 并入 PROVIDER_META，标签不退化为裸 id
+		expect(generateModelTags({ provider: 'meta' }).find(t => t.type === 'provider').labelParams)
+			.toEqual({ name: 'Meta' });
+		expect(generateModelTags({ provider: 'mistral' }).find(t => t.type === 'provider').labelParams)
+			.toEqual({ name: 'Mistral' });
+		// openai / deepseek 维持原品牌名
+		expect(generateModelTags({ provider: 'openai' }).find(t => t.type === 'provider').labelParams)
+			.toEqual({ name: 'OpenAI' });
 	});
 });

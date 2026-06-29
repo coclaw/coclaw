@@ -1237,7 +1237,11 @@ describe('ModelConfigPage — remove flow', () => {
 		await w.find('.rd-confirm').trigger('click');
 		await flushPromises();
 		const errCalls = mockNotify.error.mock.calls.map(c => c[0]);
-		expect(errCalls.some(t => t.startsWith('modelConfig.providerAuth.removeFailed'))).toBe(true);
+		const removeFailedMsg = errCalls.find(t => t.startsWith('modelConfig.providerAuth.removeFailed'));
+		expect(removeFailedMsg).toBeDefined();
+		// 失败 toast 显示友好品牌名（groq → 'Groq'），不再露裸 id（与撤销确认弹窗同屏一致）
+		expect(removeFailedMsg).toContain('"provider":"Groq"');
+		expect(removeFailedMsg).not.toContain('"provider":"groq"');
 		w.unmount();
 	});
 

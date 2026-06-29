@@ -154,6 +154,18 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(false);
 	});
 
+	test('list item label renders the friendly brand name (testid-anchored; locks getProviderName)', () => {
+		const w = makeWrapper({ catalog: [
+			{ provider: 'anthropic', authMethods: ['api-key'], hasCred: false },
+			{ provider: 'zai', authMethods: ['api-key'], hasCred: false },
+		] });
+		// 锚到行 testid 断言可见 label 文本：删掉 getProviderName（退回裸 id）会让这两条失败
+		expect(w.find('[data-testid="add-provider-item-anthropic"]').text()).toContain('Anthropic Claude');
+		expect(w.find('[data-testid="add-provider-item-zai"]').text()).toContain('ZhipuAI (GLM)');
+		// 反向：label 不再裸露 id（大小写敏感子串：'anthropic' 不出现在 'Anthropic Claude' 里）
+		expect(w.find('[data-testid="add-provider-item-anthropic"]').text()).not.toContain('anthropic');
+	});
+
 	test('deduplicates by provider (defensive: duplicate provider entries collapse to one item)', () => {
 		const w = makeWrapper({ catalog: [
 			{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
@@ -185,12 +197,9 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		expect(w.find('[data-testid="add-provider-oauth-tag-openai"]').exists()).toBe(true);
 	});
 
-	test('search filters by provider id only (case-insensitive; brand name not searched)', async () => {
+	test('search matches provider id (case-insensitive)', async () => {
 		const w = makeWrapper();
 		const search = w.find('[data-testid="add-provider-search"]');
-		// 品牌名（displayName）不再参与搜索：搜 "claude" 不命中 anthropic（其 id 不含 claude）
-		await search.setValue('claude');
-		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(false);
 		// 按原生 id 命中（大小写不敏感）
 		await search.setValue('ANTHRO');
 		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(true);
@@ -212,7 +221,7 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 			{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
 		] });
 		await w.find('[data-testid="add-provider-search"]').setValue('oauth');
-		// "oauth" 是徽章字面量、不进 id/displayName，但 hasOauth 项应被当作可搜文本命中
+		// "oauth" 是徽章字面量、不进 id/name，但 hasOauth 项应被当作可搜文本命中
 		expect(w.find('[data-testid="add-provider-item-openai-codex"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
 	});
@@ -220,9 +229,9 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 	test('clicking a provider transitions to Step 2 (configure)', async () => {
 		const w = makeWrapper();
 		await w.find('[data-testid="add-provider-item-groq"]').trigger('click');
-		// 标题切到 stepConfigTitle，带原生 provider id（不再用映射名）
+		// 标题切到 stepConfigTitle，带友好品牌名（getProviderName('groq') = 'Groq'）
 		expect(w.find('.modal-header').text()).toContain('modelConfig.providerAuth.add.stepConfigTitle');
-		expect(w.find('.modal-header').text()).toContain('groq');
+		expect(w.find('.modal-header').text()).toContain('Groq');
 		// Step 2 元素出现
 		expect(w.find('[data-testid="add-provider-key-input"]').exists()).toBe(true);
 		expect(w.find('[data-testid="add-provider-submit"]').exists()).toBe(true);
@@ -235,6 +244,69 @@ describe('AddProviderDialog — Step 1 (select)', () => {
 		await w.vm.$nextTick();
 		expect(w.emitted('update:open')).toBeTruthy();
 		expect(w.emitted('update:open')[0]).toEqual([false]);
+	});
+});
+
+describe('AddProviderDialog — brand-name search (Step 1)', () => {
+	// 含已知品牌名的 provider（含 zai 真实 id + 双 MiniMax 变体）+ 一个无品牌名的 mystery
+	const brandCatalog = [
+		{ provider: 'anthropic', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'openai', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'zai', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'minimax', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'minimax-portal', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'groq', authMethods: ['api-key'], hasCred: false },
+		{ provider: 'mystery', authMethods: ['api-key'], hasCred: false }, // 无品牌名，回退裸 id
+	];
+
+	test('brand substring "Claude" surfaces anthropic (id has no "claude"); unrelated ones excluded', async () => {
+		const w = makeWrapper({ catalog: brandCatalog });
+		await w.find('[data-testid="add-provider-search"]').setValue('Claude');
+		// 正向：品牌名 'Anthropic Claude' 命中 anthropic
+		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(true);
+		// 负向：品牌名/ id 都不含 "claude" 的无关 provider 不被带进来
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-groq"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-minimax"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-mystery"]').exists()).toBe(false);
+	});
+
+	test('brand substring "Zhipu" surfaces zai (id is "zai", brand "ZhipuAI (GLM)"); unrelated excluded', async () => {
+		const w = makeWrapper({ catalog: brandCatalog });
+		await w.find('[data-testid="add-provider-search"]').setValue('Zhipu');
+		expect(w.find('[data-testid="add-provider-item-zai"]').exists()).toBe(true);
+		// 负向
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-minimax"]').exists()).toBe(false);
+	});
+
+	test('brand substring "MiniMax" surfaces both minimax and minimax-portal; unrelated excluded', async () => {
+		const w = makeWrapper({ catalog: brandCatalog });
+		await w.find('[data-testid="add-provider-search"]').setValue('MiniMax');
+		expect(w.find('[data-testid="add-provider-item-minimax"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-minimax-portal"]').exists()).toBe(true);
+		// 负向：无关 provider 不混入
+		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-zai"]').exists()).toBe(false);
+		expect(w.find('[data-testid="add-provider-item-openai"]').exists()).toBe(false);
+	});
+
+	test('id-based match still works alongside brand match (search "zai" by id)', async () => {
+		const w = makeWrapper({ catalog: brandCatalog });
+		await w.find('[data-testid="add-provider-search"]').setValue('zai');
+		expect(w.find('[data-testid="add-provider-item-zai"]').exists()).toBe(true);
+		expect(w.find('[data-testid="add-provider-item-anthropic"]').exists()).toBe(false);
+	});
+
+	test('provider without a brand name only matches by id (brand substring does not surface it)', async () => {
+		const w = makeWrapper({ catalog: brandCatalog });
+		// 按裸 id 能搜到
+		await w.find('[data-testid="add-provider-search"]').setValue('mystery');
+		expect(w.find('[data-testid="add-provider-item-mystery"]').exists()).toBe(true);
+		// 品牌名子串搜不到它（它无品牌名、回退裸 id，不会被任意品牌词命中）
+		await w.find('[data-testid="add-provider-search"]').setValue('Claude');
+		expect(w.find('[data-testid="add-provider-item-mystery"]').exists()).toBe(false);
 	});
 });
 
@@ -329,6 +401,22 @@ describe('AddProviderDialog — Step 2 (configure / key input)', () => {
 		const w = await goToStep2(makeWrapper(), 'groq');
 		await w.find('[data-testid="add-provider-dashboard-link"]').trigger('click');
 		expect(openExternalUrlMock).toHaveBeenCalledWith('https://console.groq.com/keys');
+	});
+
+	test('Step 2 same-screen consistency: title + noKeyHint + dashboard link all show the friendly brand name (href stays raw)', async () => {
+		// anthropic 既有品牌名（'Anthropic Claude' ≠ id）又有 dashboardUrl，能同时验标题/提示/链接的一致性
+		const w = await goToStep2(makeWrapper(), 'anthropic');
+		// 标题用品牌名
+		expect(w.find('.modal-header').text()).toContain('Anthropic Claude');
+		const link = w.find('[data-testid="add-provider-dashboard-link"]');
+		expect(link.exists()).toBe(true);
+		// 链接文字 + noKeyHint 同屏一致用品牌名（$t mock 把 params 拼进文本）；noKeyHint 单独 testid 锁住（防整体文本被标题/链接满足而假绿）
+		expect(link.text()).toContain('Anthropic Claude');
+		expect(w.find('[data-testid="add-provider-no-key-hint"]').text()).toContain('Anthropic Claude');
+		expect(w.find('[data-testid="add-provider-dialog"]').text()).toContain('Anthropic Claude');
+		// href 仍是裸 id 对应的真实 dashboardUrl，不受展示换名影响
+		await link.trigger('click');
+		expect(openExternalUrlMock).toHaveBeenCalledWith('https://console.anthropic.com/settings/keys');
 	});
 
 	test('UModal close (mask / Esc / X) on Step 2 closes the dialog without calling RPC', async () => {
@@ -721,6 +809,21 @@ describe('AddProviderDialog — multi-entry (authMethods)', () => {
 		expect(w.vm.notify.warning).toHaveBeenCalledTimes(1);
 		expect(w.vm.notify.warning.mock.calls[0][0]).toContain('modelConfig.providerAuth.add.oauthLoginUnsupported');
 		expect(w.vm.notify.warning.mock.calls[0][0]).toContain('gemini-cli');
+	});
+
+	test('oauth-login-only provider with a brand name: notify uses the friendly name, not the raw id', async () => {
+		// minimax-portal 有品牌名 'MiniMax (Portal)'（≠ id），能锁住 onPickProvider 单 oauth 路径的 toast 用 getProviderName
+		const w = makeWrapper({ catalog: [
+			{ provider: 'minimax-portal', authMethods: ['oauth-login'], hasCred: false },
+		] });
+		await w.find('[data-testid="add-provider-item-minimax-portal"]').trigger('click');
+		expect(w.vm.step).toBe('select');
+		expect(w.vm.notify.warning).toHaveBeenCalledTimes(1);
+		const msg = w.vm.notify.warning.mock.calls[0][0];
+		expect(msg).toContain('modelConfig.providerAuth.add.oauthLoginUnsupported');
+		// 友好品牌名而非裸 id（还原成裸 id 即红）
+		expect(msg).toContain('MiniMax (Portal)');
+		expect(msg).not.toContain('minimax-portal');
 	});
 
 	test('device-code present hides oauth-login; chooser shows api-key + device-code in fixed order', async () => {

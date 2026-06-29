@@ -27,14 +27,26 @@ function makeWrapper(profile, extraProps = {}) {
 }
 
 describe('ProviderAuthRow', () => {
-	test('renders raw provider id + keyPreview as secondary', () => {
+	test('renders friendly brand name (getProviderName) + keyPreview as secondary', () => {
 		const w = makeWrapper({ provider: 'groq', type: 'api_key', keyPreview: 'gsk_…ABCD', profileId: 'groq:default', source: 'profile', removable: true });
 		const text = w.text();
-		expect(text).toContain('groq');
+		// 展示友好品牌名（groq → 'Groq'），不再是裸 id
+		expect(text).toContain('Groq');
 		expect(text).toContain('gsk_…ABCD');
 	});
 
-	test('renders provider id verbatim for any provider (no brand-name mapping)', () => {
+	test('row carries a testid keyed by the raw provider id (E2E anchor, decoupled from displayed label)', () => {
+		const w = makeWrapper({ provider: 'groq', type: 'api_key', keyPreview: 'gsk_…ABCD', profileId: 'groq:default', source: 'profile', removable: true });
+		// testid 用裸 id（id 是唯一真值）；即便 label 展示 'Groq'，E2E 仍可按裸 id 锚定该行
+		expect(w.find('[data-testid="provider-auth-row-groq"]').exists()).toBe(true);
+	});
+
+	test('renders friendly brand name for a known provider (anthropic → "Anthropic Claude")', () => {
+		const w = makeWrapper({ provider: 'anthropic', type: 'api_key', keyPreview: 'sk-an…XYZW', profileId: 'anthropic:default', source: 'profile', removable: true });
+		expect(w.text()).toContain('Anthropic Claude');
+	});
+
+	test('unknown provider (no brand name) falls back to the raw id verbatim', () => {
 		const w = makeWrapper({ provider: 'mystery', type: 'api_key', keyPreview: 'k…1', profileId: 'mystery:default', source: 'profile', removable: true });
 		expect(w.text()).toContain('mystery');
 	});

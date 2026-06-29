@@ -47,7 +47,8 @@
 						:key="g.provider"
 					>
 						<!-- 所有分组标题统一 pt-1：分组名本身已起分隔作用，不再按首组/其余区别加间距 -->
-						<!-- 直接显示原生 provider id（与 AddProviderDialog 一致，不用映射 displayName；排序也按 provider id） -->
+						<!-- 分组标题刻意显示裸 provider id：Tier-2 复合标识维持裸 id，不映射 name；排序也按 provider id。
+						     与展示品牌名的 AddProviderDialog / 密钥列表不同（见 provider-meta.js 顶部说明） -->
 						<p
 							class="px-2 pt-1 pb-1 text-xs font-medium text-muted"
 							:data-testid="`primary-picker-group-${g.provider}`"
