@@ -222,7 +222,7 @@ test('模型配置 S2：撤销主模型载体 provider——强提示分支→�
 	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
 
 	// 子页：groq 凭据行消失、anthropic 保留、主模型区切"失效"
-	// 注意：撤掉载体后 primary 仍为 groq/...（失效态），主模型区 primary-current-provider 仍显示裸 "groq"（Tier-2 维持裸 id）。
+	// 注意：撤掉载体后 primary 仍为 groq/...（失效态），主模型区 primary-current-provider 现显示品牌名 "Groq"（getProviderName）。
 	// 故按凭据行 testid 锚定（裸 id），避免被主模型区误命中、也不受展示 label 换名影响。
 	await expect(page.getByTestId('provider-auth-row-groq')).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByTestId('provider-auth-row-anthropic')).toBeVisible();
@@ -443,7 +443,7 @@ test('模型配置 S6：内联 key 列出可撤（强提示）、env 行只读�
 	await expect(page.getByTestId('btn-remove-confirm')).not.toBeVisible({ timeout: 15_000 });
 
 	// 内联 groq 凭据行消失、主模型切失效；env anthropic 行仍在（不可撤）
-	// 同 S2：失效 primary 仍在主模型区显示裸 "groq"（Tier-2 维持裸 id），故按凭据行 testid（裸 id）锚定。
+	// 同 S2：失效 primary 在主模型区现显示品牌名 "Groq"（getProviderName），故按凭据行 testid（裸 id）锚定。
 	await expect(page.getByTestId('provider-auth-row-groq')).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toBeVisible({ timeout: 15_000 });
 	await expect(page.getByTestId('primary-warning')).toContainText(await tr(page, 'modelConfig.primary.invalidWarning'));

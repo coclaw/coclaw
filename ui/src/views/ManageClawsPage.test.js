@@ -1250,7 +1250,7 @@ describe('claw 卡片「模型行」（复用便宜信号，不碰可用清单�
 
 		const row = wrapper.find('[data-testid="claw-model-1"]');
 		expect(row.exists()).toBe(true);
-		expect(row.text()).toContain('groq');
+		expect(row.text()).toContain('Groq');
 		expect(row.text()).toContain('llama-3.3-70b');
 		await row.trigger('click');
 		expect(wrapper.vm.$router.push).toHaveBeenCalledWith('/claws/1/models');

@@ -70,7 +70,7 @@
 								<div class="min-w-0 flex-1 space-y-1">
 									<!-- provider 暗一号 + model 等宽，各自 truncate；移动端不溢出（不换行，靠 truncate 收口、按钮钉右，见外层去掉 flex-wrap） -->
 									<template v-if="primaryParsed">
-										<span v-if="primaryParsed.provider" data-testid="primary-current-provider" class="block truncate text-xs text-muted">{{ primaryParsed.provider }}</span>
+										<span v-if="primaryParsed.provider" data-testid="primary-current-provider" class="block truncate text-xs text-muted">{{ providerName(primaryParsed.provider) }}</span>
 										<span data-testid="primary-current" class="block truncate font-mono text-sm">{{ primaryParsed.model }}</span>
 									</template>
 									<p v-if="primaryState !== 'effective'" data-testid="primary-warning" class="text-sm text-warning">
@@ -334,6 +334,11 @@ export default {
 	methods: {
 		goBack() {
 			navBack(this.$router, '/claws');
+		},
+
+		/** provider 友好品牌名（展示用）；id 仍是唯一真值，仅展示文本换名 */
+		providerName(id) {
+			return getProviderName(id);
 		},
 
 		/**

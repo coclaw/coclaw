@@ -941,7 +941,7 @@ describe('ModelConfigPage — listAvailable (picker source) + catalog.hasCred (a
 		// 移动端友好：provider/model 拆两行（provider 暗一号 text-muted），各自 truncate 防溢出
 		const providerLine = w.find('[data-testid="primary-current-provider"]');
 		expect(providerLine.exists()).toBe(true);
-		expect(providerLine.text()).toBe('groq');
+		expect(providerLine.text()).toBe('Groq');
 		expect(providerLine.classes()).toContain('text-muted');
 		expect(providerLine.classes()).toContain('truncate');
 		expect(w.find('[data-testid="primary-current"]').text()).toBe('llama-3.3-70b-versatile');

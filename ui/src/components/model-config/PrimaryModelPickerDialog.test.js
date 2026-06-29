@@ -144,10 +144,10 @@ describe('PrimaryModelPickerDialog — byProvider (listAvailable) sole data sour
 		expect(other.find('[data-icon="i-lucide-check"]').exists()).toBe(false);
 	});
 
-	test('groups labeled by raw provider id (no displayName mapping)', () => {
+	test('groups labeled by friendly brand name (testid stays raw id)', () => {
 		const w = makeWrapper();
-		expect(w.find('[data-testid="primary-picker-group-openai"]').text()).toBe('openai');
-		expect(w.find('[data-testid="primary-picker-group-groq"]').text()).toBe('groq');
+		expect(w.find('[data-testid="primary-picker-group-openai"]').text()).toBe('OpenAI');
+		expect(w.find('[data-testid="primary-picker-group-groq"]').text()).toBe('Groq');
 	});
 
 	test('current invalid format (no slash) → no highlight, no crash', () => {
@@ -191,6 +191,27 @@ describe('PrimaryModelPickerDialog — search', () => {
 		const w = makeWrapper();
 		await w.find('[data-testid="primary-picker-search"]').setValue('zzz-nope');
 		expect(w.find('[data-testid="primary-picker-empty"]').exists()).toBe(true);
+	});
+});
+
+describe('PrimaryModelPickerDialog — friendly provider names', () => {
+	test('covered variant id renders friendly brand name in group title', () => {
+		const w = makeWrapper({ usable: { 'minimax-portal': ['abab6.5-chat'], openai: ['gpt-4'] }, current: null });
+		expect(w.find('[data-testid="primary-picker-group-minimax-portal"]').text()).toBe('MiniMax (Portal)');
+		expect(w.find('[data-testid="primary-picker-group-openai"]').text()).toBe('OpenAI');
+		// testid 仍裸 id（item 锚点用裸 id 仍可定位）
+		expect(w.find('[data-testid="primary-picker-item-minimax-portal__abab6.5-chat"]').exists()).toBe(true);
+	});
+
+	// 强 token：'zhipu' 只命中 zai 的友好名 'ZhipuAI (GLM)'，裸 id 'zai' 与 model 'glm-4' 都不含 'zhipu'
+	// → 唯一能命中的路径是新加的 getProviderName(provider).includes(q) 分支。
+	// （反例：用 'minimax' 搜 minimax-portal 是弱 token——裸 id 本就含 'minimax'，旧的 provider.includes 分支
+	//   已命中，漏写新分支测试照样过，mutation 存活、假覆盖。故必须挑 id+model 都不含的词。）
+	test('search by friendly brand name only (strong token) surfaces the provider', async () => {
+		const w = makeWrapper({ usable: { zai: ['glm-4'], openai: ['gpt-4'] }, current: null });
+		await w.find('[data-testid="primary-picker-search"]').setValue('zhipu');
+		expect(w.find('[data-testid="primary-picker-item-zai__glm-4"]').exists()).toBe(true);
+		expect(w.find('[data-testid="primary-picker-item-openai__gpt-4"]').exists()).toBe(false);
 	});
 });
 

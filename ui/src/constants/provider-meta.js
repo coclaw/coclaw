@@ -3,8 +3,8 @@
  *
  * name（原 displayName）现已有消费点：添加 provider 弹窗、API 密钥列表、撤销确认、
  * Dashboard 机型标签都经 getProviderName 走它显示品牌名（provider id 仍是唯一真值，
- * 仅展示文本换名）。Tier-2 的 provider/model 复合标识处（主模型行 / claw 卡片 / 选模型器）
- * 仍维持裸 id。
+ * 仅展示文本换名）。Tier-2 的 provider/model 复合标识处（主模型行 / claw 卡片 / 选模型器分组
+ * 标题 + 搜索 + 排序）现也经 getProviderName 显示品牌名；id 仍是唯一真值，未覆盖的变体优雅回退裸 id。
  *
  * 字段说明：
  * - name：品牌官方名，不进 i18n（品牌不翻译）；经 getProviderName 消费

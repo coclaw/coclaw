@@ -47,13 +47,12 @@
 						:key="g.provider"
 					>
 						<!-- 所有分组标题统一 pt-1：分组名本身已起分隔作用，不再按首组/其余区别加间距 -->
-						<!-- 分组标题刻意显示裸 provider id：Tier-2 复合标识维持裸 id，不映射 name；排序也按 provider id。
-						     与展示品牌名的 AddProviderDialog / 密钥列表不同（见 provider-meta.js 顶部说明） -->
+						<!-- 分组标题显示友好品牌名（providerName）；排序也按品牌名。testid / key / 选中比对 / 点击传参仍用裸 g.provider（唯一真值）；未覆盖变体优雅回退裸 id -->
 						<p
 							class="px-2 pt-1 pb-1 text-xs font-medium text-muted"
 							:data-testid="`primary-picker-group-${g.provider}`"
 						>
-							{{ g.provider }}
+							{{ providerName(g.provider) }}
 						</p>
 
 						<button
@@ -96,6 +95,7 @@
 <script>
 import { mapModelConfigErrorKey, isCanceledError } from '../../utils/model-config-errors.js';
 import { parseModelId } from '../../utils/model-id.js';
+import { getProviderName } from '../../constants/provider-meta.js';
 import { useEnvStore } from '../../stores/env.store.js';
 import { useNotify } from '../../composables/use-notify.js';
 
@@ -171,13 +171,13 @@ export default {
 		},
 		/**
 		 * 按 provider 分组：直接吃 listAvailable 的 byProvider（含别名变体，已是干净目录∩别名感知凭据，无幽灵）。
-		 * 每个 group 内按 model id 字典序；搜索词过滤 model id（命中 provider id 也算）；group 间按 provider id 排序。
+		 * 每个 group 内按 model id 字典序；搜索词过滤 model id（命中裸 provider id 或友好品牌名也算）；group 间按友好品牌名排序。
 		 *
 		 * @returns {{ provider: string, models: { id: string }[] }[]}
 		 */
 		groups() {
 			const q = this.searchText.trim().toLowerCase();
-			const hit = (id, provider) => !q || id.toLowerCase().includes(q) || provider.toLowerCase().includes(q);
+			const hit = (id, provider) => !q || id.toLowerCase().includes(q) || provider.toLowerCase().includes(q) || getProviderName(provider).toLowerCase().includes(q);
 			/** @type {Map<string, { id: string }[]>} */
 			const byProvider = new Map();
 			// 唯一数据源：listAvailable 的 byProvider（provider→modelId[]）
@@ -198,7 +198,7 @@ export default {
 				const sorted = models.slice().sort((a, b) => a.id.localeCompare(b.id));
 				out.push({ provider, models: sorted });
 			}
-			out.sort((a, b) => a.provider.localeCompare(b.provider));
+			out.sort((a, b) => getProviderName(a.provider).localeCompare(getProviderName(b.provider)));
 			return out;
 		},
 	},
@@ -212,6 +212,10 @@ export default {
 		},
 	},
 	methods: {
+		/** provider 友好品牌名（展示用）；id 仍是唯一真值，仅展示文本换名 */
+		providerName(id) {
+			return getProviderName(id);
+		},
 		/**
 		 * 该行是否是当前 primary
 		 *

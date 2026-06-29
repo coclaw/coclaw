@@ -73,7 +73,7 @@
 								>
 									<span class="min-w-0">
 										<template v-if="modelView.kind === 'model'">
-											<span v-if="modelView.provider" class="block truncate text-xs text-muted">{{ modelView.provider }}</span>
+											<span v-if="modelView.provider" class="block truncate text-xs text-muted">{{ providerName(modelView.provider) }}</span>
 											<span class="block truncate font-mono text-sm">{{ modelView.model }}</span>
 										</template>
 										<span v-else :data-testid="`claw-model-cta-${claw.id}`" class="block truncate text-sm text-muted">{{ $t(modelView.textKey) }}</span>
@@ -199,6 +199,7 @@ import { useAgentRunsStore } from '../stores/agent-runs.store.js';
 import { useDashboardStore } from '../stores/dashboard.store.js';
 import { pickGuidanceState } from '../utils/guidance-state.js';
 import { parseModelId } from '../utils/model-id.js';
+import { getProviderName } from '../constants/provider-meta.js';
 import AgentCard from '../components/AgentCard.vue';
 
 /** 前台恢复刷新的 freshness gate：60s 内不重复 reload */
@@ -308,6 +309,10 @@ export default {
 		}
 	},
 	methods: {
+		/** provider 友好品牌名（展示用）；id 仍是唯一真值，仅展示文本换名 */
+		providerName(id) {
+			return getProviderName(id);
+		},
 		/** 格式化本月花费为本地化货币字符串 */
 		formatCost(cost) {
 			if (cost && typeof cost.total === 'number') {

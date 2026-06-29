@@ -1,6 +1,6 @@
 # 模型配置（UI 侧）
 
-> 创建时间：2026-05-25（2026-05-31 补 OAuth 设备码 UI 流 + catalog 驱动加 provider + 去 view:all）
+> 创建时间：2026-05-25（2026-05-31 补 OAuth 设备码 UI 流 + catalog 驱动加 provider + 去 view:all；2026-06-30：Tier-2 三处（主模型行 / claw 卡片 / 选模型器）改友好名）
 > 状态：已实施（过程稿，完结归档；当前真相以代码为准）
 > 范围：CoClaw UI 端"模型配置"功能的产品定义与 UX 设计，覆盖 API key 凭据管理 + **OAuth 设备码登录** + 默认主模型设置
 > 前置依赖：`plugins/openclaw/docs/model-config-api.md`（API 契约；provider 目录 `providerAuth.catalog` § 2.7、可用清单 `model.listAvailable` § 3.2.1）
@@ -201,7 +201,7 @@ else router.replace(fallback);   // 模型设置子页的 fallback = '/claws'
 - 列表数据源：`coclaw.providerAuth.catalog` 返回的 provider 中 **`hasCred === false`** 的那些（即"还没配过、可加"的）；不再从 `models.list view:"all"` distinct provider 取（已去 view:all）
 - **排除已配 provider 用别名归一名（修订 6，#8 闭合）**：列表里要排掉用户已有凭据的 provider，排除口径**两侧都按别名基座名归一**（`resolveProviderIdForAuth`，插件侧做——UI 拿不到该函数）。否则套餐用户持 `volcengine` 基座 key，仍被提供去重复加 `volcengine`/`volcengine-plan`。归一后的"已配 provider"集由插件随凭据信号或专门字段给 UI
 - "常用"分组的 provider 由 UI 端硬编码（一期人工维护一份"热门 provider"清单，按用户分布 + 国内外平衡选取）
-- 品牌名 `name`（原 `displayName`）由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**经共享 helper `getProviderName` 在以下展示点换名**（完整清单与 dormant 说明见 § 8.1）：添加 provider 弹窗（列表项 label + 第二步标题 / noKeyHint / 去官网链接 / oauth-login 暂不支持 toast，外加按品牌名搜索）、API 密钥列表行、撤销确认弹窗 + 撤销失败 toast、Dashboard 机型标签（当前 dormant）；列表**排序仍按 id**。这些处均**纯展示换名**——provider id 仍是唯一真值（testid / 点击 / 比对 / RPC 一律用裸 id）。Tier-2 的 `provider/model` 复合标识处（主模型行 / 选模型器 / claw 卡片）维持裸 id
+- 品牌名 `name`（原 `displayName`）由 UI 端硬编码映射表给（plugin 端 § 1.2 决策）。**经共享 helper `getProviderName` 在以下展示点换名**（完整清单与 dormant 说明见 § 8.1）：添加 provider 弹窗（列表项 label + 第二步标题 / noKeyHint / 去官网链接 / oauth-login 暂不支持 toast，外加按品牌名搜索）、API 密钥列表行、撤销确认弹窗 + 撤销失败 toast、Dashboard 机型标签（当前 dormant）；添加 provider 列表排序仍按 id（popular 按 POPULAR_ORDER）。这些处均**纯展示换名**——provider id 仍是唯一真值（testid / 点击 / 比对 / RPC 一律用裸 id）。Tier-2 的 `provider/model` 复合标识处（主模型行 / 选模型器 / claw 卡片）现也经 getProviderName 显示品牌名（id 仍唯一真值，未覆盖变体回退裸 id；选模型器搜索叠加友好名匹配、分组按品牌名排序）
 
 **Step 2 输入 API key**（移动端为居中 confirm 小卡片、非全屏；桌面端为模态。输 key 步套用项目统一 confirm 弹窗样式，不随 Step 1 全屏）：
 
@@ -470,9 +470,9 @@ export function getProviderName(id) { return PROVIDER_META[id]?.name || id; }
 约定：
 
 - **本期"常用" provider 共 9 个**（上表 `popular: true`，显示顺序由 `POPULAR_ORDER` 定），以国内主流为主：DeepSeek / 智谱 / MiniMax（含 Portal OAuth）/ Moonshot / Qwen（阿里）/ Volcengine（豆包），外加 OpenAI、OpenRouter；Anthropic、Google 归"其它"组
-- `name`（原 `displayName`）用品牌官方名，**不进 i18n**（品牌不翻译）。**经共享 helper `getProviderName` 在以下展示点换名**：添加 provider 弹窗（列表项 label + 第二步标题 / noKeyHint / 去官网链接 / oauth-login 暂不支持 toast，外加按品牌名搜索）、API 密钥列表行、撤销确认弹窗 + 撤销失败 toast、Dashboard 机型标签。这些处都是**纯展示换名**：provider id 仍是唯一真值（testid / 点击传参 / 选中态比对 / RPC payload / 相等去重判断一律继续用裸 id）
+- `name`（原 `displayName`）用品牌官方名，**不进 i18n**（品牌不翻译）。**经共享 helper `getProviderName` 在以下展示点换名**：添加 provider 弹窗（列表项 label + 第二步标题 / noKeyHint / 去官网链接 / oauth-login 暂不支持 toast，外加按品牌名搜索）、API 密钥列表行、撤销确认弹窗 + 撤销失败 toast、Dashboard 机型标签、主模型行（ModelConfigPage）、claw 卡片模型行（ManageClawsPage）、选模型器分组标题 + 搜索匹配 + 排序（PrimaryModelPickerDialog）。这些处都是**纯展示换名**：provider id 仍是唯一真值（testid / 点击传参 / 选中态比对 / RPC payload / 相等去重判断一律继续用裸 id）
   - **Dashboard 机型标签当前 dormant**：`dashboard.store.js` 现把 modelCatalog 写死为 `[]`（§7.4，仪表盘不拉全量目录）→ `generateModelTags` 拿不到 model、走不到 provider 分支，故换名对 Dashboard 标签**当前无可见效果**。本次合表（`PROVIDER_NAMES` → `getProviderName` 单一数据源）是为 phase-2 接上 catalog 后正确点亮做准备，且 fallback 保留旧行为、无回归
-- **Tier-2 的 `provider/model` 复合标识处维持裸 id**：主模型行（ModelConfigPage / PrimaryModelPickerDialog）、claw 卡片（ManageClawsPage）刻意保持裸 id，不换品牌名
+- **Tier-2 的 `provider/model` 复合标识处现已换品牌名**：主模型行（ModelConfigPage / PrimaryModelPickerDialog）、claw 卡片（ManageClawsPage）现也经 `getProviderName` 显示品牌名（provider id 仍是唯一真值，未覆盖变体优雅回退裸 id）；选模型器搜索叠加友好名匹配、分组按品牌名排序
 - `meta` / `mistral` 无 `dashboardUrl`、非 popular，仅供 Dashboard 机型标签经 `getProviderName` 展示（从原 `model-tags.js` 的 `PROVIDER_NAMES` 并入，避免标签退化为裸 id）
 - `dashboardUrl` 实施时由队员核验是否仍可用；若变更则在 PR 描述中标注
 - 未在表中的 provider：`name` fallback 为 provider id 本身、`popular: false`、不显示"去官网"链接
