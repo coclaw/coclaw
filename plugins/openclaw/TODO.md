@@ -813,12 +813,12 @@ systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行�
 
 ## pion ICE 网卡过滤黑名单只拦 docker0，TUN 的 utun 伪候选漏网
 
-**发现日期**：2026-06-15（本机配置 sing-box TUN 系统级翻墙分流时发现；预存窄黑名单，非本次造成）
+**发现日期**：2026-06-15（本机运行 VPN/utun 类虚拟网卡工具时发现；预存窄黑名单，非本次造成）
 **关联**：`plugins/openclaw/src/webrtc/webrtc-peer.js` pion `SettingEngine.SetInterfaceFilter` 的 `denyPrefixes`
 
-**问题**：`interfaceFilter` 的 `denyPrefixes` 只列了 `['docker0']`（注释自陈是极保守黑名单）。宿主一旦跑 sing-box TUN（或任何 VPN/utun 类工具），会多出 `utun` 虚拟网卡、带私网地址（如 sing-box 默认 `172.19.0.x/30`）。pion 枚举本机网卡时不拦它 → 把这个无用的 utun 地址当 host 候选收进来发给对端。
+**问题**：`interfaceFilter` 的 `denyPrefixes` 只列了 `['docker0']`（注释自陈是极保守黑名单）。宿主一旦跑 VPN/utun 类工具，会多出 `utun` 虚拟网卡、带私网地址（如 `172.19.0.x/30` 之类）。pion 枚举本机网卡时不拦它 → 把这个无用的 utun 地址当 host 候选收进来发给对端。
 
-**影响**：多数情况只是噪音——对端连不上该私网地址，ICE 回落真 LAN/srflx/relay，浪费几次连通性探测。**真隐患**：若**对端也跑同款 sing-box TUN、同一 `172.19` 网段**，可能凑出"伪 ICE pair"误判 P2P 成功（与代码里防 `docker0` 注释所述失败模式同源）。2026-06-15 本机实测：网关侧开 TUN 后 ICE 仍正确 nominate 真 LAN 候选（192.168.0.102），未观测到实际故障——属硬化项不是阻塞 bug。
+**影响**：多数情况只是噪音——对端连不上该私网地址，ICE 回落真 LAN/srflx/relay，浪费几次连通性探测。**真隐患**：若**对端也跑同类 VPN/utun 工具、落在同一 `172.19` 私网段**，可能凑出"伪 ICE pair"误判 P2P 成功（与代码里防 `docker0` 注释所述失败模式同源）。2026-06-15 本机实测：网关侧开 TUN 后 ICE 仍正确 nominate 真 LAN 候选（192.168.0.102），未观测到实际故障——属硬化项不是阻塞 bug。
 
 **为什么不修**：2026-06-15 用户明确暂不动。属预防性硬化。
 

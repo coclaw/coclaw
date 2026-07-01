@@ -91,9 +91,7 @@ Last updated: 2026-02-23 18:22 (Asia/Shanghai)
     - keepalive timeout baseline: `65s`
 27. App domain: `im.coclaw.net`
 28. Build-time proxy support (confirmed):
-    - support HTTP/HTTPS proxy via `i.coclaw.net:8080`
-    - support SOCKS5 proxy via `i.coclaw.net:1080`
-    - expose build proxy settings through compose interpolation vars
+    - support HTTP/HTTPS/SOCKS5 proxy for builds behind restricted networks via compose interpolation vars
 29. Server image build policy (confirmed):
     - multi-stage Dockerfile with `pnpm deploy --legacy --prod` for minimal production image
     - base image: `node:22-slim`
