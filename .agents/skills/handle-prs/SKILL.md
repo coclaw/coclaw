@@ -23,7 +23,7 @@ description: 处理 GitHub Pull Requests。Use when 用户要求处理、审查�
 批量处理 PR 时，主对话应保持轻量：
 
 - **列表整理委派 sonnet 级 subagent**
-- **分析与 review 委派 general-purpose subagent**，继承当前 model，给出具体的审查要求
+- **分析与 review 委派 general-purpose subagent**，显式传 model（review 把关用最强档，档位策略见全局规范「模型选择倾向」节），给出具体的审查要求
 - 主对话只保留 subagent 返回的结论和决策点
 - 这样一轮对话可以处理多个 PR，且 PR 之间的关系清晰可见
 
