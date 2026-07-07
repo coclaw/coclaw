@@ -2,6 +2,8 @@
 
 Build AI chat interfaces with message streams, prompts, and Vercel AI SDK integration.
 
+> CoClaw：本仓聊天走 OpenClaw 通道，**不用 Vercel AI SDK**——别照本文引入 `ai`/`@ai-sdk/*` 或 server endpoint。本文仅作 `UChat*` 组件组合参考；Nuxt 脚手架（`definePageMeta` 等）按 SKILL.md 项目对齐节换写。
+
 ## Component tree
 
 ```

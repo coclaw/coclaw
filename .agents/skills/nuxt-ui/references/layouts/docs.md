@@ -3,6 +3,8 @@
 Build documentation sites with sidebar navigation, table of contents, and surround links.
 
 > Requires `@nuxt/content` module for navigation, search, and TOC.
+>
+> CoClaw：本仓无 `@nuxt/content`，此布局当前不适用，仅作上游参考保留。
 
 ## Component tree
 

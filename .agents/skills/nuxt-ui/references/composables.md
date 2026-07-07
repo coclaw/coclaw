@@ -4,6 +4,8 @@
 
 Show notifications. Requires `<UApp>` wrapper.
 
+> CoClaw：业务代码的操作反馈统一走全局 `useNotify()`（见 `ui-notify` skill），不直接调 `useToast()`；store 里不 import nuxt-ui（notify 走 DI bridge）。
+
 ```ts
 const toast = useToast()
 
@@ -23,6 +25,8 @@ toast.clear()
 ## useOverlay
 
 Programmatically create modals, slideovers, drawers.
+
+> CoClaw：全局入口 / 跨组件打开的对话框优先函数式打开（`ui/AGENTS.md`）；confirm / 单行输入用 `prompt-confirm-dialog` skill 的现成封装，别手搭。
 
 ```ts
 const overlay = useOverlay()

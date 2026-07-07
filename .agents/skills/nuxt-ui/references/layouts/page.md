@@ -2,6 +2,8 @@
 
 Build public-facing pages — landing, blog, changelog, pricing — using the Header + Main + Footer shell with Page components.
 
+> CoClaw：Nuxt 语境示例（`NuxtPage`/`useAsyncData`/`queryCollection` 依赖 @nuxt/content，本仓没有）——取组件组合结构，数据/路由自行换写（SKILL.md 项目对齐节）。
+
 ## App shell
 
 ```vue [app.vue]

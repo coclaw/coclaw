@@ -2,6 +2,8 @@
 
 Build a rich text editor with toolbars, slash commands, mentions, and drag-and-drop.
 
+> CoClaw：本仓当前未用富文本编辑器，仅作上游参考保留；如启用，Nuxt 脚手架按 SKILL.md 项目对齐节换写。
+
 ## Component tree
 
 ```

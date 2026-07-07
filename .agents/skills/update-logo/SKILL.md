@@ -9,13 +9,13 @@ description: 更新 CoClaw App logo/icon。Use when 用户上传新 logo 图片�
 
 ## 源图片
 
-用户会上传或指定一张源图片（建议 512x512 以上的 PNG/JPG）。
+用户会上传或指定一张源图片。要求**方形** PNG/JPG（脚本与各平台输出都按方形假设处理，非方形会拉伸/裁错——先造一张方形 master 再执行），建议 1024x1024 以上（macOS ICNS 中间图输出 1024，源图过小会放大）。
 
 ## 工具依赖
 
 - `npx sharp-cli` — PNG 缩放
 - `npx png2icons` — ICO/ICNS 生成（`-icowe` 生成 Windows EXE 兼容 ICO，`-icns` 生成 macOS ICNS，`-bz` 使用最佳质量）
-- `python3` + PIL（Pillow）— 仅给 Electron 的 `.ico`/`.icns` 烘焙圆角（见 `mask-electron-icons.py`）
+- `python3` + PIL（Pillow）+ numpy — 仅给 Electron 的 `.ico`/`.icns` 烘焙圆角（见 `mask-electron-icons.py`）
 
 ## 硬规则：只圆 Electron 的 .ico/.icns
 
@@ -25,7 +25,7 @@ description: 更新 CoClaw App logo/icon。Use when 用户上传新 logo 图片�
 
 ## 需要更新的文件清单
 
-所有路径相对于 `ui/`。
+清单路径相对 `ui/`；下方命令模板从**仓库根**执行。
 
 ### 1. Web/PWA — public/
 
@@ -48,34 +48,17 @@ description: 更新 CoClaw App logo/icon。Use when 用户上传新 logo 图片�
 
 ### 3. Android (Capacitor) — android/app/src/main/res/
 
-每个 mipmap 密度目录下 3 个文件：`ic_launcher.png`、`ic_launcher_round.png`、`ic_launcher_foreground.png`。
+每个 mipmap 密度目录下 3 个文件：`ic_launcher.png`、`ic_launcher_round.png`（直接缩放到标准尺寸）、`ic_launcher_foreground.png`（**不能直接缩放**，须按安全区处理，见下）。
 
-| 密度 | 标准尺寸 | 前景层尺寸 |
-|---|---|---|
-| mipmap-mdpi | 48x48 | 108x108 |
-| mipmap-hdpi | 72x72 | 162x162 |
-| mipmap-xhdpi | 96x96 | 216x216 |
-| mipmap-xxhdpi | 144x144 | 324x324 |
-| mipmap-xxxhdpi | 192x192 | 432x432 |
+| 密度 | 标准尺寸 | 前景层安全区 | Padding | 前景层最终 |
+|---|---|---|---|---|
+| mipmap-mdpi | 48x48 | 72x72 | 18px | 108x108 |
+| mipmap-hdpi | 72x72 | 108x108 | 27px | 162x162 |
+| mipmap-xhdpi | 96x96 | 144x144 | 36px | 216x216 |
+| mipmap-xxhdpi | 144x144 | 216x216 | 54px | 324x324 |
+| mipmap-xxxhdpi | 192x192 | 288x288 | 72px | 432x432 |
 
-- `ic_launcher.png` 和 `ic_launcher_round.png`：直接缩放到标准尺寸
-- `ic_launcher_foreground.png`：**不能直接缩放到前景层尺寸**，必须处理安全区域（详见下方说明）
-
-#### Adaptive Icon 前景层安全区域
-
-Android Adaptive Icon 会对前景层施加遮罩（圆形/圆角方形等），裁掉外围约 33% 的区域。因此前景层的 logo 内容必须位于内部 66.7% 的安全区域内（72dp / 108dp），否则边缘会被裁切。
-
-**处理方式**（两步）：
-1. 先将源图缩放到安全区尺寸（safe zone size）
-2. 再用 `extend` 在四周添加 padding 到前景层尺寸，背景色取自 `res/values/ic_launcher_background.xml`
-
-| 密度 | 安全区尺寸 | Padding | 最终尺寸 |
-|---|---|---|---|
-| mdpi | 72x72 | 18px | 108x108 |
-| hdpi | 108x108 | 27px | 162x162 |
-| xhdpi | 144x144 | 36px | 216x216 |
-| xxhdpi | 216x216 | 54px | 324x324 |
-| xxxhdpi | 288x288 | 72px | 432x432 |
+Adaptive Icon 会对前景层施加遮罩（圆形/圆角方形等），裁掉外围约 33%，logo 内容必须位于内部 66.7% 安全区（72dp / 108dp）。处理两步：先缩放源图到安全区尺寸，再用 `extend` 四周补 padding 到最终尺寸，背景色取自 `res/values/ic_launcher_background.xml`。
 
 ### 4. Electron — build-resources/
 
@@ -97,10 +80,9 @@ Android Adaptive Icon 会对前景层施加遮罩（圆形/圆角方形等），
 |---|---|---|
 | `AppIcon-512@2x.png` | 1024x1024 | 唯一必需尺寸（Xcode 15+ 自动生成其余尺寸） |
 
-- iOS 图标**不需要**安全区域 padding，直接缩放填满画布
-- 系统自动应用圆角遮罩
+- iOS 图标**不需要**安全区域 padding，直接缩放填满画布；系统自动应用圆角遮罩
 
-## 生成命令模板
+## 生成命令模板（从仓库根执行）
 
 ```bash
 SRC="<源图片路径>"
@@ -140,9 +122,6 @@ for density_spec in "mdpi 48 72 18" "hdpi 72 108 27" "xhdpi 96 144 36" "xxhdpi 1
 done
 rm -f "$TMP"
 
-# === 5. iOS (Capacitor) ===
-npx sharp-cli -i "$SRC" -o "$IOS_ICON/AppIcon-512@2x.png" resize 1024 1024
-
 # === 4. Electron ===
 # icon.png / tray 保持方形 master（绝不圆角）
 npx sharp-cli -i "$SRC" -o "$BUILD/icon.png" resize 512 512
@@ -155,6 +134,9 @@ mkdir -p /tmp/icon-build
 python3 "$SKILL_DIR/mask-electron-icons.py" "$SRC" /tmp/icon-build/win.png /tmp/icon-build/mac.png
 npx png2icons /tmp/icon-build/win.png "$BUILD/icon" -icowe -bz   # Windows 圆角 ICO
 npx png2icons /tmp/icon-build/mac.png "$BUILD/icon" -icns -bz    # macOS 方圆 ICNS
+
+# === 5. iOS (Capacitor) ===
+npx sharp-cli -i "$SRC" -o "$IOS_ICON/AppIcon-512@2x.png" resize 1024 1024
 ```
 
 ## 注意事项

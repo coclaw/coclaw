@@ -64,6 +64,8 @@ Comprehensive form components for user input.
 | `UForm` | `schema`, `state`, `@submit` — validation wrapper |
 | `UFormField` | `name`, `label`, `description`, `hint`, `required` |
 
+> CoClaw：`UInput` 内置主题在 `md:`+ 视口把字号缩到 `md:text-sm`（按宽度判桌面的 iOS 聚焦缩放守卫，横屏 iPhone/iPad 仍会命中缩放）。桌面保 16px 的正解是在全局配置**追加** `compoundVariants`——修法与红线见 `nuxt-ui-global-config` skill。
+
 ### Form validation
 
 Uses Standard Schema — works with Zod, Valibot, Yup, or Joi.
@@ -188,6 +190,9 @@ Floating UI elements that appear above the main content. **All require `<UApp>` 
 ```
 
 Slots: `#content`, `#header`, `#body`, `#footer`
+
+- **A provided slot renders its chrome even when empty** — the padded footer bar renders as soon as `#footer` exists, even if everything inside is `v-if`-false. For a conditional footer, put the condition on the template itself: `<template v-if="cond" #footer>` (Vue then drops the slot entirely).
+- Default `content` caps height with a `dvh`-based `max-h-[calc(100dvh-…)]` while `body` scrolls (`overflow-y-auto`). `dvh` is unsupported on this repo's baseline browsers — tall desktop modals lose their viewport cap there; see SKILL.md「CoClaw 项目对齐」for the vh fallback pattern. Fullscreen (mobile) modals use `content: inset-0` and are unaffected.
 
 ### Slideover
 

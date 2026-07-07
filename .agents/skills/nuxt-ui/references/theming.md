@@ -177,7 +177,9 @@ Components are styled with [Tailwind Variants](https://www.tailwind-variants.org
 
 The `ui` prop overrides slots **after** variants are computed. If the `size: 'md'` variant applies `size-5` to `trailingIcon`, and you set `:ui="{ trailingIcon: 'size-3' }"`, the `size-3` wins.
 
-Tailwind Variants uses [tailwind-merge](https://github.com/dcastil/tailwind-merge) under the hood so conflicting classes are resolved automatically.
+Tailwind Variants uses [tailwind-merge](https://github.com/dcastil/tailwind-merge) under the hood — but only **direct** conflicts (same property, same breakpoint) are deduped. Defaults are **concatenated** with your classes, not replaced, so built-in classes survive in the final DOM unless directly beaten.
+
+> CoClaw：全套实测合并红线（简写残留、variant 字符串叶子替换、`defaultVariants` 空操作、`compoundVariants` 追加取胜等）单点维护在 `nuxt-ui-global-config` skill，动全局覆盖前先读。
 
 ### Understanding the generated theme
 
@@ -208,7 +210,7 @@ For example, the card theme:
 
 ### Global config
 
-Override the theme for all instances of a component:
+Override the theme for all instances of a component (this repo: the `ui:` option of the `ui()` plugin in `ui/vite.config.js` — playbook in the `nuxt-ui-global-config` skill):
 
 ```ts
 // Nuxt — app.config.ts

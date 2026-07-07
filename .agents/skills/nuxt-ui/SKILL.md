@@ -5,109 +5,57 @@ description: Build UIs with @nuxt/ui v4 — 125+ accessible Vue components with 
 
 # Nuxt UI
 
-Vue component library built on [Reka UI](https://reka-ui.com/) + [Tailwind CSS](https://tailwindcss.com/) + [Tailwind Variants](https://www.tailwind-variants.org/). Works with Nuxt, Vue (Vite), Laravel (Inertia), and AdonisJS (Inertia).
+Vue component library built on [Reka UI](https://reka-ui.com/) + [Tailwind CSS](https://tailwindcss.com/) + [Tailwind Variants](https://www.tailwind-variants.org/). Works with Nuxt and plain Vue (Vite).
 
-## Installation
+> 维护约定：`references/` 是 vendored 上游参考（口径 @nuxt/ui v4）——上游事实有误才改英文正文，项目差异只写进下方对齐节与 "> CoClaw：" 插注（grep 该前缀可整体检视/重放）；本 SKILL.md 是项目化入口，可自由重组。@nuxt/ui 升大版本时以新上游文本为底、机械重放对齐节与插注，版本敏感行为以 `ui/package.json` 与安装版为准重核。
 
-### Nuxt
+## CoClaw 项目对齐（动手前先读）
 
-```bash
-pnpm add @nuxt/ui tailwindcss
-```
+- **本仓不用 Nuxt 框架**：Vue 3 + Vite + Vue Router + Pinia。示例里的 Nuxt 专属物（`app.config.ts`、`NuxtPage`/`NuxtLayout`、`definePageMeta`、`useAsyncData`、`@nuxt/content`）本仓都没有——成对示例一律取 "Vue —" 变体；layout 参考取组件组合结构，路由/取数自行换写。
+- **代码风格**：JS + Options API，不用 `<script setup>`/TS（见 `ui/AGENTS.md`）——上游示例照抄前先转换。
+- **接线已就绪，勿重装**：`ui/vite.config.js` 挂 `ui()` 插件；`ui/src/main.js` `app.use(ui)`（`@nuxt/ui/vue-plugin`）；`ui/src/assets/main.css` 已引 tailwindcss + @nuxt/ui；`App.vue` 已包 `<UApp>`。
+- **全局主题/组件覆盖**：入口是 `ui/vite.config.js` 里 `ui()` 的 `ui:` 选项（无 app.config 文件）。合并是**拼接不是替换**、内置默认 class 会残留——全套实测合并红线（简写残留、variant 字符串叶子替换、`defaultVariants` 空操作、`compoundVariants` 追加取胜等）单点维护在 `nuxt-ui-global-config` skill，动全局覆盖前先读。
+- **查组件 slot 名/默认 class 的权威**：`ui/node_modules/.nuxt-ui/ui/<component>.ts`（构建时生成）。
+- **dvh 基线缺口**：基线浏览器（`build.target`：Chrome/Edge 90、Safari 15、Firefox 90）不支持 `dvh`，而默认 modal 主题用 `max-h-[calc(100dvh-…)]` 封顶 → 基线上桌面 modal 失去视口封顶，超高内容被裁切且滚不动。修法：给 modal 内的高内容容器加 **vh** 上限（如 `md:max-h-[calc(100vh-Nrem)]`，N ≈ 面板边距 + header + padding 总和，低于该地板会让 body 溢出冒滚动条）。移动端全屏 modal（`content: 'inset-0'`）不受影响。dvh 全局政策（必须 fallback、`.h-dvh-safe`）见 `ui/AGENTS.md`。
+- **操作反馈别直接 `useToast()`**：本仓统一走全局 `useNotify()`（何时 notify、测试 mock 见 `ui-notify` skill）；store 里不 import nuxt-ui。
+- **confirm / 单行输入弹窗**：有现成封装（UModal + `promptModalUi`），见 `prompt-confirm-dialog` skill，别重复搭。
+- **vitest 不挂 `@nuxt/ui` 插件**：单测里无 U* 自动导入、全局主题不生效——组件测试显式 import 或 stub（UModal 普遍被 stub）；全局主题只能做「配置对象形态」级单测。
 
-```ts
-// nuxt.config.ts
-export default defineNuxtConfig({
-  modules: ['@nuxt/ui'],
-  css: ['~/assets/css/main.css']
-})
-```
+## Setup (Vue + Vite)
 
-```css
-/* app/assets/css/main.css */
-@import "tailwindcss";
-@import "@nuxt/ui";
-```
-
-```vue
-<!-- app.vue -->
-<template>
-  <UApp>
-    <NuxtPage />
-  </UApp>
-</template>
-```
-
-### Vue (Vite)
-
-```bash
-pnpm add @nuxt/ui tailwindcss
-```
+Already wired in this repo — kept as compact reference:
 
 ```ts
-// vite.config.ts
-import { defineConfig } from 'vite'
+// vite.config — this repo: ui/vite.config.js
 import vue from '@vitejs/plugin-vue'
 import ui from '@nuxt/ui/vite'
 
 export default defineConfig({
-  plugins: [
-    vue(),
-    ui()
-  ]
+  plugins: [vue(), ui({ ui: { colors: { primary: 'indigo' } } })]
 })
 ```
 
 ```ts
-// src/main.ts
-import './assets/main.css'
-import { createApp } from 'vue'
-import { createRouter, createWebHistory } from 'vue-router'
+// main entry — this repo: ui/src/main.js
 import ui from '@nuxt/ui/vue-plugin'
-import App from './App.vue'
-
-const app = createApp(App)
-
-const router = createRouter({
-  routes: [],
-  history: createWebHistory()
-})
 
 app.use(router)
 app.use(ui)
-app.mount('#app')
 ```
 
 ```css
-/* assets/main.css */
+/* main.css */
 @import "tailwindcss";
 @import "@nuxt/ui";
 ```
 
-```vue
-<!-- src/App.vue -->
-<template>
-  <UApp>
-    <RouterView />
-  </UApp>
-</template>
-```
-
-> **Vue**: Add `class="isolate"` to your root `<div id="app">` in `index.html`.
-
-> **Vue + Inertia**: Use `ui({ router: 'inertia' })` in `vite.config.ts`.
-
-### UApp
-
-Wrapping your app in `UApp` is **required** — it provides global config for toasts, tooltips, and programmatic overlays. It also accepts a `locale` prop for i18n (see [composables reference](references/composables.md)).
+- **`UApp` is required** at the root — it provides global config for toasts, tooltips, and programmatic overlays, and accepts a `locale` prop for i18n (see [composables reference](references/composables.md)).
+- Plain Vue: add `class="isolate"` to the root `<div id="app">` in `index.html`.
+- Nuxt / Laravel (Inertia) / AdonisJS setup: see upstream docs — not used in this repo.
 
 ## Icons
 
-Nuxt UI uses [Iconify](https://iconify.design/) for 200,000+ icons. In Nuxt, `@nuxt/icon` is auto-registered. In Vue, icons work out of the box via the Vite plugin.
-
-### Naming convention
-
-Icons use the format `i-{collection}-{name}`:
+Nuxt UI uses [Iconify](https://iconify.design/) — icons follow `i-{collection}-{name}` and work out of the box via the Vite plugin:
 
 ```vue
 <UIcon name="i-lucide-sun" class="size-5" />
@@ -115,36 +63,9 @@ Icons use the format `i-{collection}-{name}`:
 <UAlert icon="i-lucide-info" title="Heads up" />
 ```
 
-> Browse all icons at [icones.js.org](https://icones.js.org). The `lucide` collection is used throughout Nuxt UI defaults.
-
-### Install icon collections locally
-
-```bash
-pnpm i @iconify-json/lucide
-pnpm i @iconify-json/simple-icons
-```
-
-### Custom local collections (Nuxt)
-
-```ts
-// nuxt.config.ts
-export default defineNuxtConfig({
-  icon: {
-    customCollections: [{
-      prefix: 'custom',
-      dir: './app/assets/icons'
-    }]
-  }
-})
-```
-
-```vue
-<UIcon name="i-custom-my-icon" />
-```
+Browse icons at [icones.js.org](https://icones.js.org); the `lucide` collection is used throughout Nuxt UI defaults. Install collections locally: `pnpm i @iconify-json/lucide`.
 
 ## Theming & Branding
-
-Nuxt UI ships with a default look. The goal is to adapt it to your brand so every app looks unique.
 
 **Always use semantic utilities** (`text-default`, `bg-elevated`, `border-muted`), never raw Tailwind palette colors. See [references/theming.md](references/theming.md) for the full list.
 
@@ -153,50 +74,33 @@ Nuxt UI ships with a default look. The goal is to adapt it to your brand so ever
 7 semantic colors (`primary`, `secondary`, `success`, `info`, `warning`, `error`, `neutral`) configurable at runtime:
 
 ```ts
-// Nuxt — app.config.ts
-export default defineAppConfig({
+// Vue — vite.config (this repo: ui/vite.config.js maps them to the custom cc-* palette)
+ui({
   ui: { colors: { primary: 'indigo', neutral: 'zinc' } }
 })
 ```
 
-```ts
-// Vue — vite.config.ts
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import ui from '@nuxt/ui/vite'
-
-export default defineConfig({
-  plugins: [
-    vue(),
-    ui({
-      ui: { colors: { primary: 'indigo', neutral: 'zinc' } }
-    })
-  ]
-})
-```
+(Nuxt projects put the same `ui: {...}` object in `app.config.ts` via `defineAppConfig`.)
 
 ### Customizing components
 
 **Override priority** (highest wins): `ui` prop / `class` prop > global config > theme defaults.
 
-The `ui` prop overrides a component's **slots** after variants are computed — it wins over everything:
+The `ui` prop overrides a component's **slots** after variants are computed:
 
 ```vue
 <UButton :ui="{ base: 'rounded-none', trailingIcon: 'size-3 rotate-90' }" />
 <UCard :ui="{ header: 'bg-muted', body: 'p-8' }" />
 ```
 
-**Read the generated theme file** to find slot names for any component:
+**Read the generated theme file** to find slot names for any component: `node_modules/.nuxt-ui/ui/<component>.ts` (Vue) / `.nuxt/ui/<component>.ts` (Nuxt).
 
-- **Nuxt**: `.nuxt/ui/<component>.ts`
-- **Vue**: `node_modules/.nuxt-ui/ui/<component>.ts`
-
-> For CSS variables, custom colors, global config, compound variants, and a **full brand customization playbook**, see [references/theming.md](references/theming.md)
+> Merge semantics（defaults concatenate and survive — 全套实测红线）: `nuxt-ui-global-config` skill. CSS variables, custom colors, theme structure, and the brand playbook: [references/theming.md](references/theming.md)
 
 ## Composables
 
 ```ts
-// Notifications
+// Notifications (CoClaw: use the project-global `useNotify()` instead — see alignment notes above)
 const toast = useToast()
 toast.add({ title: 'Saved', color: 'success', icon: 'i-lucide-check' })
 
@@ -213,45 +117,22 @@ defineShortcuts({
 })
 ```
 
-> For full composable reference, see [references/composables.md](references/composables.md)
+> Full reference: [references/composables.md](references/composables.md)
 
 ## Form validation
 
-Uses Standard Schema — works with Zod, Valibot, Yup, or Joi.
+Uses Standard Schema — works with Zod, Valibot, Yup, or Joi (this repo bundles none yet; adding one is a dependency decision).
 
 ```vue
-<script setup lang="ts">
-import { z } from 'zod'
-
-const schema = z.object({
-  email: z.string().email('Invalid email'),
-  password: z.string().min(8, 'Min 8 characters')
-})
-
-type Schema = z.output<typeof schema>
-const state = reactive<Partial<Schema>>({ email: '', password: '' })
-
-function onSubmit() {
-  // UForm validates before emitting @submit — state is valid here
-}
-</script>
-
-<template>
-  <UForm :schema="schema" :state="state" @submit="onSubmit">
-    <UFormField name="email" label="Email" required>
-      <UInput v-model="state.email" type="email" />
-    </UFormField>
-
-    <UFormField name="password" label="Password" required>
-      <UInput v-model="state.password" type="password" />
-    </UFormField>
-
-    <UButton type="submit">Sign in</UButton>
-  </UForm>
-</template>
+<UForm :schema="schema" :state="state" @submit="onSubmit">
+  <UFormField name="email" label="Email" required>
+    <UInput v-model="state.email" type="email" />
+  </UFormField>
+  <UButton type="submit">Sign in</UButton>
+</UForm>
 ```
 
-> For all form components and validation patterns, see [references/components.md](references/components.md#form)
+`UForm` validates before emitting `@submit` — state is valid inside the handler. Full patterns (Zod/Valibot examples, file upload): [references/components.md](references/components.md#form)
 
 ## Overlays
 
@@ -270,16 +151,7 @@ function onSubmit() {
   <template #body>Content</template>
 </USlideover>
 
-<!-- Dropdown menu (flat array) -->
-<UDropdownMenu :items="[
-  { label: 'Edit', icon: 'i-lucide-pencil' },
-  { type: 'separator' },
-  { label: 'Delete', icon: 'i-lucide-trash', color: 'error' }
-]">
-  <UButton icon="i-lucide-ellipsis-vertical" variant="ghost" />
-</UDropdownMenu>
-
-<!-- Dropdown menu (nested array — groups with automatic separators) -->
+<!-- Dropdown menu (nested array = groups with automatic separators) -->
 <UDropdownMenu :items="[
   [{ label: 'Edit', icon: 'i-lucide-pencil' }, { label: 'Duplicate', icon: 'i-lucide-copy' }],
   [{ label: 'Delete', icon: 'i-lucide-trash', color: 'error' }]
@@ -288,7 +160,7 @@ function onSubmit() {
 </UDropdownMenu>
 ```
 
-> For all overlay components, see [references/components.md](references/components.md#overlay)
+Modal gotchas (conditional `#footer`, `dvh` height cap) and all overlay components: [references/components.md](references/components.md#overlay)
 
 ## Layouts
 
@@ -302,27 +174,11 @@ Nuxt UI provides components to compose full page layouts. Load the reference mat
 | Chat | AI chat with messages and prompt | [layouts/chat.md](references/layouts/chat.md) |
 | Editor | Rich text editor with toolbars | [layouts/editor.md](references/layouts/editor.md) |
 
+> Layout 参考全部是上游 Nuxt 语境（`NuxtLayout`/`definePageMeta`/`@nuxt/content`/Vercel AI SDK）——取组件组合结构，脚手架按上文对齐节换写。CoClaw 聊天走 OpenClaw 通道、**不用 Vercel AI SDK**；docs/editor 布局本仓当前未用。
+
 ## Templates
 
-Official starter templates at [github.com/nuxt-ui-templates](https://github.com/nuxt-ui-templates):
-
-| Template | Framework | GitHub |
-|---|---|---|
-| Starter | Nuxt | [nuxt-ui-templates/starter](https://github.com/nuxt-ui-templates/starter) |
-| Starter | Vue | [nuxt-ui-templates/starter-vue](https://github.com/nuxt-ui-templates/starter-vue) |
-| Dashboard | Nuxt | [nuxt-ui-templates/dashboard](https://github.com/nuxt-ui-templates/dashboard) |
-| Dashboard | Vue | [nuxt-ui-templates/dashboard-vue](https://github.com/nuxt-ui-templates/dashboard-vue) |
-| SaaS | Nuxt | [nuxt-ui-templates/saas](https://github.com/nuxt-ui-templates/saas) |
-| Landing | Nuxt | [nuxt-ui-templates/landing](https://github.com/nuxt-ui-templates/landing) |
-| Docs | Nuxt | [nuxt-ui-templates/docs](https://github.com/nuxt-ui-templates/docs) |
-| Portfolio | Nuxt | [nuxt-ui-templates/portfolio](https://github.com/nuxt-ui-templates/portfolio) |
-| Chat | Nuxt | [nuxt-ui-templates/chat](https://github.com/nuxt-ui-templates/chat) |
-| Editor | Nuxt | [nuxt-ui-templates/editor](https://github.com/nuxt-ui-templates/editor) |
-| Changelog | Nuxt | [nuxt-ui-templates/changelog](https://github.com/nuxt-ui-templates/changelog) |
-| Starter | Laravel | [nuxt-ui-templates/starter-laravel](https://github.com/nuxt-ui-templates/starter-laravel) |
-| Starter | AdonisJS | [nuxt-ui-templates/starter-adonis](https://github.com/nuxt-ui-templates/starter-adonis) |
-
-> When starting a new project, clone the matching template instead of setting up from scratch.
+Official starter templates (Nuxt & Vue: starter, dashboard, SaaS, docs, chat, editor, …): [github.com/nuxt-ui-templates](https://github.com/nuxt-ui-templates) — for greenfield projects, not this repo.
 
 ## Additional references
 
@@ -331,4 +187,4 @@ Load based on your task — **do not load all at once**:
 - [references/theming.md](references/theming.md) — CSS variables, custom colors, component theme overrides
 - [references/components.md](references/components.md) — all 125+ components by category with props and usage
 - [references/composables.md](references/composables.md) — useToast, useOverlay, defineShortcuts
-- Generated theme files — all slots, variants, and default classes for any component (Nuxt: `.nuxt/ui/<component>.ts`, Vue: `node_modules/.nuxt-ui/ui/<component>.ts`)
+- Generated theme files — all slots, variants, and default classes: `ui/node_modules/.nuxt-ui/ui/<component>.ts`

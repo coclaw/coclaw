@@ -2,6 +2,8 @@
 
 Build admin interfaces with resizable sidebars, multi-panel layouts, and toolbars.
 
+> CoClaw：Nuxt 语境示例（`NuxtPage`/`definePageMeta`）——取组件组合结构，路由按 Vue Router、代码按 JS + Options API 换写（SKILL.md 项目对齐节）。
+
 ## Component tree
 
 ```

@@ -77,8 +77,13 @@ def build_mac(src, size=1024):
 
 
 def main():
+	if len(sys.argv) != 4:
+		raise SystemExit("Usage: python3 mask-electron-icons.py <src.png> <out_win.png> <out_mac.png>")
 	src_path, out_win, out_mac = sys.argv[1], sys.argv[2], sys.argv[3]
 	src = Image.open(src_path)
+	# 全流程按方形假设处理（build_win 直接 resize 会拉伸、build_mac 用宽度钳 bbox）——非方形先造方形 master
+	if src.size[0] != src.size[1]:
+		raise SystemExit("Source image must be square; create a square master before masking Electron icons.")
 	build_win(src).save(out_win)      # 512x512
 	build_mac(src).save(out_mac)      # 1024x1024，给 icns 更清晰
 
