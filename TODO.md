@@ -52,3 +52,14 @@
 
 - `docs/versioning.md` 表格写根包"有变更时 bump / 手动（GitHub Release 时）"；release skill（权威口径）是"A/B 每次必做：root 取所有工作区当前版本的最高"。
 - 修复方向：把 versioning.md 该行改为与 release skill 一致，防有人按旧文档反向改回。
+
+## nginx /releases/ root 落点错位，疑影响 Electron 更新/APK 分发（2026-07-08，R6 skills 打磨终审核实，预存疑似线上 bug）
+
+- 两个 mode 模板 server 级 `root .../ui/current`，`location ^~ /releases/` 无 root/alias 覆盖 → 请求解析到 `ui/current/releases/*`；而 `init.sh` 建的是 html 根下的 `releases/{win,mac,android}`。两处必有一错。
+- 修法方向：location 内加 `root /usr/share/nginx/html;`；**改前先线上 `curl -I` 核实现状**（本轮红线禁 ssh 未验线上——不排除线上 current 下恰有 releases 目录在兜着）。
+- 涉及面：桌面端自动更新与 APK 下载分发；`coclaw-deploy-web-routing-cache` skill 已以"已知隐患"入文。
+
+## docs/architecture/gateway-agent-rpc-protocol.md 过期，与上游源码相反（2026-07-08，R6 skills 打磨终审核实，预存文档失真）
+
+- ① Status 表 error 行写"ok=true 业务错"，与源码相反（执行失败是 `ok=false` 走 reject）；② "前端实现要点"第 4 条同方向过期、第 5 条 `client.ts:394` 指针漂移（真身在 `openclaw-repo/packages/gateway-client`）；③ status 枚举缺 `in_flight`（幂等去重单帧回包）。
+- 该文件属"当前真相"类架构文档，失真会误导后续前端实现；`gateway-agent-rpc` skill 已加过期警示并以 skill 为准，文档本体待按 skill 终态形态表重写。

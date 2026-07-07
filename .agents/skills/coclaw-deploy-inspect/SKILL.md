@@ -1,6 +1,6 @@
 ---
 name: coclaw-deploy-inspect
-description: SSH 到 CoClaw 部署机，获取 server/coturn 等容器日志（server 的包含 UI/plugin remote log）。Use when 用户要求"到服务器排查/看日志"，以排查运行时问题。
+description: SSH 到 CoClaw 部署机，获取 server/coturn 等容器日志（server 的包含 UI/plugin remote log），排查线上运行时问题。Use when 用户要求"到服务器排查/看日志"，或需要还原线上问题的时间线。
 ---
 
 # CoClaw 服务器排查
@@ -22,18 +22,21 @@ description: SSH 到 CoClaw 部署机，获取 server/coturn 等容器日志（s
 ## 1. 目标主机
 
 - 默认 `im.coclaw.net`。**用户明示其他主机**（自部署）时优先使用用户给的。
-- 远端工作目录：`~/coclaw`（`docker compose` 文件所在）。
+- 远端工作目录：`~/coclaw`（`docker compose` 文件所在，内容即本仓 `deploy/` 的 rsync 镜像）。
 - SSH key 已配：直接 `ssh im.coclaw.net`，不需要密码。首次可用 `ssh -o BatchMode=yes <host> 'echo OK'` 探活。
 
-## 2. 容器拓扑（`docker ps`）
+## 2. 容器拓扑（`docker ps -a`）
+
+容器名前缀由 compose 的 `name: coclaw` 钉死，与远端目录名无关。
 
 | 容器 | 作用 | 排查价值 |
 |---|---|---|
 | `coclaw-server-1` | Node server（内部 3000） | **核心**。UI/plugin 的 `remoteLog` 都汇到这里的 stdout |
 | `coclaw-nginx-1` | 反向代理 / TLS | HTTP/上传/证书问题时查 access log |
-| `coclaw-coturn-1` | TURN/STUN（3478, 443） | 罕用。P2P 直连问题基本从 UI/plugin rtc log 就能定位 |
+| `coclaw-coturn-1` | TURN/STUN（host 网络；默认 3478，配置了 `TURN_TLS_PORT` 时另有 TLS 端口） | 罕用。P2P 直连问题基本从 UI/plugin rtc log 就能定位 |
 | `coclaw-mysql-1` | DB | 只在确认 schema / 特定记录时进入 |
-| `coclaw-certbot-renew-1` | 证书续期 | 仅证书过期相关 |
+| `coclaw-certbot-renew-1` | 证书续期（profile `auto-https`） | 仅证书过期相关 |
+| `coclaw-ui-init-1` | 一次性任务：自部署用户的 UI 静态来源 | `Exited (0)` 是正常态，不是故障。内部部署 UI 走 `deploy-ui.sh`，与它无关 |
 
 与 CoClaw 无关的容器忽略。
 
@@ -53,13 +56,13 @@ ssh <host> 'cd ~/coclaw && docker compose logs --since=<DURATION> --no-color -t 
 
 1. **别 `docker compose logs -f`**：会阻塞 SSH；用 `--since` 拉快照。
 2. **grep 要 binary-safe**：日志混有二进制字节，普通 `grep` 会返回 `Binary file (standard input) matches` 然后丢弃行。**必须 `LC_ALL=C grep -a`**。
-3. **先 dump 再过滤**：把原始日志落到远端 `/tmp/srv.log`，后面多次 grep 复用。不要每次都重新 `docker compose logs`。落盘→过滤→拉回的三步模板见第 9 节"快速自检模板"。
+3. **先 dump 再过滤**：把原始日志落盘一次（本地或远端皆可——上面这条落本地，第 9 节模板落远端再拉回），后面多次 grep 复用同一份，不要每次都重新 `docker compose logs`。
 
 ## 4. 日志标签字典
 
 | 前缀 | 来源 | 含义 |
 |---|---|---|
-| `[remote][ui][user:<userId>]` | UI | UI 通过 WS 把 `remoteLog` 汇报上来，server 转打印 |
+| `[remote][ui][user:<userId>]` | UI | UI 经 HTTP `POST /api/v1/log/ui` 批量上报、server 转打印，行内带 `[batch=<sid>:<seq>]` 段；信令 WS 上保留回滚上报分支（同前缀、无 batch 段），两种来源并存 |
 | `[remote][plugin][claw:<clawId>]` | plugin | plugin 通过 realtime-bridge WS 汇报 |
 | `[coclaw/rtc-sig]` | server | 信令路由（WS 连接、offer/answer/ICE 转发） |
 | `[coclaw/rtc]` | server | RTC 信令路由器（signal-router forwarded） |
@@ -104,9 +107,9 @@ ssh <host> 'docker inspect coclaw-server-1 --format "{{.Config.Env}}" | tr " " "
 # nginx access
 ssh <host> 'cd ~/coclaw && docker compose logs --since=10m --no-color -t nginx 2>&1 | tail -200'
 
-# mysql（只读查询示例）
-ssh <host> 'docker compose -f ~/coclaw/compose.yaml exec -T mysql mysql -ucoclaw -p"$PW" coclaw -e "SHOW TABLES"'
-# 密码从 server 容器 env DB_URL 里解析，避免写死
+# mysql（只读查询示例；<DB_USER>/<DB_PW>/<DB_NAME> 先从 server 容器 env 的
+# DB_URL 解析（见第 6 节）再代入，别写死——凭据来自部署机 .env，可能因部署而异）
+ssh <host> 'cd ~/coclaw && docker compose exec -T mysql mysql -u<DB_USER> -p<DB_PW> <DB_NAME> -e "SHOW TABLES"'
 ```
 
 `docker compose --profile auto-https ps` 看全部 profile 下的服务。
@@ -126,7 +129,7 @@ ssh <host> 'docker compose -f ~/coclaw/compose.yaml exec -T mysql mysql -ucoclaw
 # (a) 健康摘要
 ssh <host> 'docker ps --format "table {{.Names}}\t{{.Status}}"'
 
-# (b) 时间窗落盘
+# (b) 时间窗落盘（远端）
 ssh <host> 'cd ~/coclaw && docker compose logs --since=30m --no-color -t server > /tmp/srv.log 2>&1; wc -l /tmp/srv.log'
 
 # (c) 按实体过滤（user / claw / connId 中至少一个）
@@ -160,7 +163,7 @@ LC_ALL=C grep -aE 'agent\.run\.|conn\.rejectPending' tmp/diag-window.log
 
 | 文档 | 适用场景 |
 |---|---|
-| [docs/diagnosis-playbook.md](docs/diagnosis-playbook.md) | 按用户描述的现象（"任务未完成"、"断了又恢复"等）找诊断决策树和 grep 模板 |
+| [docs/diagnosis-playbook.md](docs/diagnosis-playbook.md) | 按用户描述的现象（"任务未完成"、"断了又恢复"、"修过的 bug 又出现/前端像旧版"、证书告警等）找诊断决策树和 grep 模板 |
 | [docs/remote-log-namespace.md](docs/remote-log-namespace.md) | 看到陌生 `<模块>.<事件>` 时查含义、字段、触发位置；新加事件也补到这里 |
 
 ## 11. 脚本目录

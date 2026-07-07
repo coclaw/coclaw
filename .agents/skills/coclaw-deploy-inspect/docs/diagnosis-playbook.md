@@ -149,6 +149,37 @@ LC_ALL=C grep -aE "restart.trigger|ICE restart succeeded|sig.resume|claw.recover
 
 ---
 
+## "修过的 bug 又出现 / 前端行为像旧版" — 产物陈旧 vs 浏览器缓存
+
+**触发现象**：用户报某个早已在源码修复的前端 bug 复现，或界面行为对不上最新代码。
+
+先分清两层：**服务器在发旧产物**（`static/ui/current` 指错/未更新）还是**浏览器拿的旧**（缓存头 / WebView 缓存）。
+
+### 第 1 步：看服务器实际在发什么
+
+```bash
+# current 真实指向 + releases 目录概览
+ssh <host> 'readlink -f ~/coclaw/static/ui/current && ls -lt ~/coclaw/static/ui/releases 2>/dev/null | head'
+
+# 在被指向的 bundle 里直接确认目标改动是否存在（抠 minified js 特征串）
+ssh <host> 'LC_ALL=C grep -aoE "<修复特征串>" ~/coclaw/static/ui/current/assets/*.js | head'
+```
+
+- **别信目录名里的日期**——build 目录名带新日期不代表内容新，以 bundle 内容为准。
+- **自部署形态不同**：内部部署是 `deploy-ui.sh` 生成的 `releases/<tag>` + `current` 软链；自部署由 ui-init 容器把 dist **复制成 `current/` 目录**——`readlink` 返回目录自身、没有 `releases/` 都属正常，直接看目录内容。
+
+分流：
+- bundle 里没有修复 → 服务器产物旧。修复 = 重跑 `deploy-ui.sh`（写操作，先与用户确认）。
+- bundle 已含修复 → 浏览器缓存方向，转 `coclaw-deploy-web-routing-cache` skill 查缓存头（微信 Android WebView 是重灾区）。
+
+### 版本号解读戒律
+
+server 与 ui **独立编号**（changesets independent 策略）——server 版本号低得多不代表部署陈旧，别据此推断需要升级。
+
+> 案例（2026-05-30）：欠费恢复后"连不上任何 agent"，真因是 current 指向旧 bundle：旧代码给 `turns:` URL 不带凭据 → `RTCPeerConnection` 构造直接抛错；源码早已修复。重新发布 UI 纠正指向即愈。
+
+---
+
 ## 常用日志拉取命令模板
 
 按 runKey 全链路（最常用）：

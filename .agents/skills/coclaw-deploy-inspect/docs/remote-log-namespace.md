@@ -2,6 +2,8 @@
 
 UI / plugin 通过 `remoteLog(text)` 把关键事件汇到 server。每条形如 `<模块>.<事件> key=value key=value ...`。
 
+上报通道：UI 走 HTTP `POST /api/v1/log/ui`（server 打印为 `[remote][ui][user:<userId>][batch=<sid>:<seq>][ts=...]`，batch 段标识上报批次）；plugin 走 bot WS `type:"log"`（打印为 `[remote][plugin][claw:<clawId>][ts=...]`）。信令 WS 上还保留 UI 日志的回滚分支（同前缀、无 batch 段），线上两种 UI 来源并存。
+
 排查时熟悉每个事件的**触发位置**和**字段语义**比通读日志快十倍。新加事件请同步补到本字典。
 
 ## agent.run.* — Agent run 生命周期
@@ -56,7 +58,7 @@ UI / plugin 通过 `remoteLog(text)` 把关键事件汇到 server。每条形如
 
 （其余 cancel.* 事件待补充。）
 
-## 其他常见事件（来自历史 SKILL.md "常见事件关键词"）
+## 其他常见事件（高频关键词）
 
 - **RTC 生命周期**：`sig.state`、`sig.resume`、`restart.trigger`、`ICE restart succeeded`、`stats.pre-restart`、`stats.post-restart-success`、`plugin-probe`、`claw.recover`、`rtc.state`、`rtc.iceState`、`rtc.dump`、`connectionState:`、`iceState:`
 - **RPC 异常**：`rpc.timeout`、`rpc-queue.overflow-start`、`rpc-queue.overflow-end`、`rpc-queue.close`、`drop reason=queue-full`、`drop reason=single-msg-oversize`

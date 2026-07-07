@@ -11,6 +11,7 @@ description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redire
 
 - 应用域名通过 `.env` 的 `APP_DOMAIN` 配置（默认 `im.coclaw.net`）
 - Nginx 用 envsubst 模板机制。**真模板在 `deploy/nginx/modes/app-{https,http}.conf.template`**（含全部路由与缓存规则），代理片段在 `deploy/nginx/includes/`（proxy-common / proxy-ws / proxy-sse）；容器启动时 `nginx/scripts/init.sh` 按 `HTTPS_MODE`（auto|custom|off）把对应 mode 模板复制为 `templates/app.conf.template` 再渲染
+- `init.sh` 还会幂等创建发布产物目录 `releases/{win,mac,android}`（容器内 html 根下，对应宿主 `~/coclaw/static/releases/`）
 - `deploy/nginx/templates/default.conf.template` 只是兜底 server（非法 Host 返回 444 + localhost 健康检查），**不含应用路由**，别在这里找缓存规则
 - 模板中只使用 `${APP_DOMAIN}` 一个变量（compose 的 `NGINX_ENVSUBST_FILTER: "APP_DOMAIN"` 保护 nginx 内置变量），不要引入其他变量
 - 备选模板不能直接放进 `nginx/templates/`——nginx 会自动渲染该目录下所有 `*.template`
@@ -23,14 +24,15 @@ description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redire
 - `/releases/`（Electron 安装包 / APK，按 win|mac|android 分子目录）：
   - `latest*.yml` 版本清单（任意一级子目录深度）：no-cache
   - 安装包 / blockmap（文件名含版本号）：`public, max-age=2592000, immutable`（30d）
-
-注意：子 `location` 一旦自己 `add_header`，父级安全头不再继承——须补齐三件套：`X-Content-Type-Options nosniff` / `X-Frame-Options SAMEORIGIN` / `Referrer-Policy strict-origin-when-cross-origin`。
+  - ⚠️ 已知隐患：server 级 `root` 指向 `ui/current`，而该 location 未覆盖 root/alias，静态解析落点与 init.sh 创建的 html 根 `releases/` 目录不一致——动 /releases/ 前先在线上核实真实行为（此条待模板修复后删除）
+- 安全头继承规则：子 `location` 一旦自己 `add_header`，父级安全头不再继承。按现状分层补齐——**HTML 类 location**（`/`、`index.html`）补三件套 `X-Content-Type-Options nosniff` / `X-Frame-Options SAMEORIGIN` / `Referrer-Policy strict-origin-when-cross-origin`；**非 HTML**（`version.json`、`/releases/`）只补 `nosniff`（frame/referrer 头对非 HTML 无意义）。没有 `add_header` 的 location（如 `/assets/`）自然继承父级，不用补
 
 ## 3) 证书策略
 
 - 使用 certbot webroot（`/var/www/certbot`）
 - certbot 容器使用 compose profiles 控制启停（`auto-https` 续期、`init-cert` 首签）
 - 首次签发：`docker compose --profile init-cert run --rm certbot-init`
+- `HTTPS_MODE=custom` 时 `init.sh` 若发现证书不存在，会自动生成自签名证书（CN=APP_DOMAIN）占位
 
 ## 4) 发布与验证
 
@@ -38,7 +40,7 @@ description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redire
 
 ```bash
 docker compose exec -T nginx nginx -t
-docker compose exec nginx nginx -s reload
+docker compose exec -T nginx nginx -s reload
 ```
 
 最少验证：
@@ -53,7 +55,7 @@ curl -I https://${APP_DOMAIN}/api/v1/auth/session
 - HTML / `version.json` 返回 `no-cache, max-age=0, must-revalidate`
 - `/assets/` 返回 `max-age=3600`
 - `/api/` 仍可用
-- 若缓存头正确但用户仍看到旧版：检查部署机 `static/ui/current` 软链真实指向——UI 静态根是 `deploy-ui.sh` 运行时生成的 `static/ui/releases/<tag>` + `current` 软链（不在 git），nginx root 指 `/usr/share/nginx/html/ui/current`
+- 若缓存头正确但用户仍看到旧版：多半不是缓存而是**服务器发的产物旧**——nginx root 指 `/usr/share/nginx/html/ui/current`；内部部署的 UI 静态根是 `deploy-ui.sh` 生成的 `static/ui/releases/<tag>` + `current` 软链（不在 git），自部署则由 ui-init 容器把 dist 复制成 `current/` **目录**（无 releases/ 属正常）。用 `readlink -f ~/coclaw/static/ui/current` 看真实形态与指向；完整判定流程（含"别信目录名日期"）见 `coclaw-deploy-inspect` skill 的 diagnosis-playbook"前端行为像旧版"一节
 
 ## 5) 当前明确不做
 
