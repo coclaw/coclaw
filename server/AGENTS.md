@@ -38,4 +38,4 @@
 
 ## 跑单测前置
 
-`pnpm test` 不会像 `pnpm dev` 那样自动拉起 dev docker。前置：mysql 已起、迁移已应用（`pnpm prisma:migrate:deploy`）、已 `export DB_URL=...`（`node --test` 不读 `.env`）。
+`pnpm test` 不会像 `pnpm dev` 那样自动拉起 dev docker。前置：mysql 已起、迁移已应用（`pnpm prisma:migrate:deploy`）、当前 shell 已 `export DB_URL=...`——别靠改 `.env` 影响单测，`node --test` 不读它。

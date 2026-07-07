@@ -16,7 +16,7 @@
 
 - `deploy/README.md` — 目录结构、HTTPS 模式、服务管理、UI 发布与回滚的完整说明（部署者视角）
 - `docs/operations/deploy-ops.md` — 内部运维补充（磁盘维护、应急操作）
-- `.agents/skills/coclaw-deploy-web-routing-cache/` — Nginx 域名路由、缓存头、证书策略的唯一事实源；改 nginx 模板或排查缓存问题前必读
+- `.agents/skills/coclaw-deploy-web-routing-cache/` — Nginx 域名路由、缓存头、证书策略的唯一事实源；改 `deploy/nginx/modes/`、`includes/` 或排查缓存问题前必读（应用路由模板在 `modes/`；`templates/default.conf.template` 只是兜底 server）
 - `.agents/skills/coclaw-deploy-inspect/` — SSH 到部署机取容器日志（只读排查）
 - `deploy/docs/dual-ip-deployment-notes.md` — TURNS 双 IP 部署形态与生产配置记录
 - `deploy/docs/desktop-releases.md` — 桌面端（Electron）发布产物分发
@@ -25,7 +25,7 @@
 
 - 镜像构建：`ghcr.io/coclaw/server` ← `scripts/build-server.sh`；`ghcr.io/coclaw/ui` ← `scripts/build-ui.sh`
 - 服务清单以 `deploy/compose.yaml` 为准；certbot 由 profiles 控制启停（`auto-https` 续期、`init-cert` 首签）
-- `ui-init` 是一次性服务（`restart: "no"`），从 UI 镜像复制静态文件到 static 目录；开发者走 `deploy-ui.sh` rsync 部署，不依赖它
+- `ui-init` 是一次性服务（`restart: "no"`），从 UI 镜像复制静态文件到 static 目录；开发者走 `deploy-ui.sh` rsync 部署，不依赖它。线上前端异常先看 `static/ui/current` 真正指向的 release
 - `deploy/compose.dev.yaml` 供本地开发，含 mysql 与 coturn 两个服务
 
 ## TURNS / 双 IP（可选）
@@ -36,7 +36,7 @@ coturn 可通过 TURNS（TLS on 443）穿透限制性网络，需独立 IP 或�
 
 - `compose.yaml` 中 certbot 的环境变量需写 `$$VAR`，避免被 compose 提前展开
 - `NGINX_ENVSUBST_FILTER` 是匹配环境变量名的正则，值为 `APP_DOMAIN` 而非 `$APP_DOMAIN`
-- 备选模板（如 `app-http.conf.template`）不能放进 `nginx/templates/`——nginx 会自动渲染该目录下所有 `*.template` 文件
+- 应用模板放 `nginx/modes/`（由 init 脚本选择渲染）；备选模板不能直接放进 `nginx/templates/`——nginx 会自动渲染该目录下所有 `*.template` 文件
 - 新增/修改 redirect 统一使用 301，且保留 `$request_uri`
 - 不要把 `/api/` 的代理配置与静态站点缓存规则混在一起
 - 启用 TURNS 时，发布后验收需确认：coturn 日志 TLS 证书加载成功、`/api/v1/turn/creds` 返回 `turns:` URL

@@ -33,9 +33,9 @@ disable-model-invocation: true
 
 **不要只对着清单打勾**——清单只是起点，代码演进会带来新的风险面。正确的姿势：
 
-1. **先读权威禁令**：`plugins/openclaw/CLAUDE.md` 的"绝对禁止清单"是项目踩过的坑的沉淀，新违规往往就是 blocker
+1. **先读权威禁令**：`plugins/openclaw/CLAUDE.md` 的「硬约束（写代码前必读）」是项目踩过的坑的沉淀，新违规往往就是 blocker
 2. **历史踩坑补课**：`plugins/openclaw/docs/auto-upgrade-review-*.md`（若存在）记录了自动升级相关的已知风险，顺带一读
-3. **定位本次 diff**：用 `git log/diff <上次发布 tag>..HEAD -- plugins/openclaw` 看本次改了什么。发布 tag 可能形如 `openclaw-coclaw@X.Y.Z`，或通过 `git log --all --grep='publish @coclaw/openclaw-coclaw' -n 1` 找最近一次发布 commit
+3. **定位本次 diff**：以 npm 线上版对应的 bump commit 为基线——`npm view @coclaw/openclaw-coclaw version` 取线上版（注意本机可能残留 `@coclaw:registry` scope 覆盖、且它会压过 `--registry`，拿不准就直连 `https://registry.npmjs.org/@coclaw%2fopenclaw-coclaw` 核实），再 `git log -S'"version": "<线上版>"' -- plugins/openclaw/package.json` 定位 bump commit，`git diff <该 commit>..HEAD -- plugins/openclaw` 看本次改了什么。注意：仓库的 `vX.Y.Z` tag 是仓级发布 tag，与插件独立版本号不对应，别拿它当基线
 4. **对每块改动按不变量追问**：
    - 若这块改动带 bug，用户装上后 gateway 还能起来吗？（加载不变量）
    - 若起不来了，自动升级 scheduler 还能跑吗？它能发现并尝试下一个版本吗？（自愈不变量）
@@ -56,9 +56,9 @@ disable-model-invocation: true
 
 - `register()` 同步路径里存在可能抛异常的操作，无 try-catch
 - `register()` 内直接启动 WebSocket / `setInterval` / 外部 IO（违反 `plugins/openclaw/CLAUDE.md` 禁令）
-- 默认导出缺少 `id` 或 `register`；或 `register` 返回 Promise / 有顶层 `await`
+- ESM 默认导出缺少 `id` 或 `register`；或 `register` 返回 Promise / 有顶层 `await`
 - `plugin.id` 与 `openclaw.plugin.json` 的 `id` 不一致
-- gateway method 错误响应用了旧格式 `respond(false, { error })`（禁令要求 `respond(false, undefined, { code, message })`）
+- gateway method 错误响应用了旧格式 `respond(false, { error })`（禁令要求错误走第 3 参 `{ code, message }`；注意**两阶段方法**的终态 error 帧合法地在 payload 带 `{ status }`，别按单发规则误报——细则见插件硬约束）
 - 引入了只在**未发布**版本 gateway 才有的 API
 
 ### 自愈不变量相关
@@ -85,17 +85,17 @@ disable-model-invocation: true
 
 **一次性、单主 session 完成**（不做多轮迭代、不启 subagent）：
 
-1. 读 `plugins/openclaw/CLAUDE.md` 的禁止清单
+1. 读 `plugins/openclaw/CLAUDE.md` 的硬约束清单
 2. 扫 `plugins/openclaw/docs/` 里历史相关的 review / 风险记录
 3. 读 `plugins/openclaw/package.json`、`index.js`、`openclaw.plugin.json`
 4. 读 `plugins/openclaw/src/auto-upgrade/` 下所有文件，建立"当前的自动升级骨架长什么样"的心智模型
-5. 取最近发布 tag 到 HEAD 的 diff；逐块改动按方法论第 4 步追问
+5. 取上次发布基线到 HEAD 的 diff（基线=npm 线上版对应的 bump commit，定位方法见审查方法论第 3 步）；逐块改动按方法论第 4 步追问
 6. （建议）跑 `pnpm -C plugins/openclaw pack --dry-run` 看 tarball 文件清单
-7. （若可行）最小化 node load smoke：
+7. （若可行）最小化 node load smoke——插件是 ESM + default export，须用 `import()` 直指入口文件取 `default`（`require()` 拿到的是模块命名空间，`p.register` 恒 undefined 会假 FAIL；ESM 也不做目录解析）：
    ```bash
-   node -e "const p = require('/absolute/path/to/plugins/openclaw'); if (!p || typeof p.register !== 'function') { console.error('BAD export'); process.exit(1) }"
+   node --input-type=module -e "const p = (await import('/absolute/path/to/plugins/openclaw/index.js')).default; if (!p || !p.id || typeof p.register !== 'function') { console.error('BAD export'); process.exit(1) }"
    ```
-   抛异常 → 直接证明"加载不变量"被破坏，是 blocker
+   抛异常 / BAD export → 直接证明"加载不变量"被破坏，是 blocker。此 smoke 只验默认导出形状；`package.json.main` 指向与打包遗漏由第 3、6 步把关
 8. 按不变量维度累计 blockers 与 warnings
 9. 输出报告
 
@@ -142,6 +142,6 @@ disable-model-invocation: true
 
 ## 参考
 
-- 禁止清单权威：`plugins/openclaw/CLAUDE.md`
+- 硬约束权威：`plugins/openclaw/CLAUDE.md`
 - 历史踩坑：`plugins/openclaw/docs/` 下的 review / risk 文档
 - release 流程细节（仅供查阅，不调用）：`/release` skill

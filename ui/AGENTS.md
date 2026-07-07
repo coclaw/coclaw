@@ -27,6 +27,7 @@
 - 允许在 `setup()` 钩子中调用组合式函数（如 VueUse 的工具函数、项目内 `useXxx` composable）
 - 对于适合以函数式方式触发的对话框（如全局入口、跨组件打开），优先采用函数式打开（例如基于 `useOverlay`），避免仅用路由跳转或页面内状态耦合实现
 - 禁止对大对象使用 Vue deep watch 来监听少量字段变化——应先用 computed 将关心的字段收窄为简单值，再 watch 该 computed
+- `components.d.ts` 是被 git 跟踪的自动生成文件，只有 dev/build 会刷新它（vitest / `pnpm check` 不会）——增删 Vue 组件后收尾时让它再生成并随代码一并提交，别只靠测试绿判齐
 
 ## 操作反馈（Notify）
 
@@ -56,7 +57,7 @@
 - 壳子代码在 `ui/electron/`，ESM 主进程 + CommonJS preload（sandbox 要求 preload 必须是 `.cjs`）
 - 本地开发需双终端：先 `pnpm dev`，另一终端 `pnpm electron:dev`（加载 http://localhost:5173；生产模式加载 https://im.coclaw.net）
 - 壳子测试独立跑 `pnpm test:electron`（`vitest.electron.config.js`，node 环境）；`pnpm test` 含 src + electron
-- 构建：`pnpm electron:build:win | win:portable | mac`，产物在 `ui/dist-electron/`。WSL2 构建 win 包需先装 wine；mac 包仅 macOS + 代码签名环境可构建；portable 不参与自动更新。签名/公证环境变量见 `ui/.env.example`
+- 构建：`pnpm electron:build:win` / `electron:build:win:portable` / `electron:build:mac`，产物在 `ui/dist-electron/`。WSL2 构建 win 包需先装 wine；mac 包仅能在 macOS 构建（无签名凭据可 ad-hoc 构建验证，正式分发才需签名/公证环境）；portable 不参与自动更新。签名/公证环境变量见 `ui/.env.example`
 - 壳子版本独立于 `@coclaw/ui` 的 npm 版本，手工维护于 `ui/electron-builder.yaml` 的 `extraMetadata.version`，规则见 `docs/versioning.md` 的 “Electron 壳子版本独立维护” 小节
 - 发布与分发流程见 `deploy/docs/desktop-releases.md`；iOS 构建见 `ui/docs/ios-build-release.md`
 - 壳子架构、安全/权限模型、自动更新等完整设计见 `ui/docs/designs/electron-desktop-shell.md`

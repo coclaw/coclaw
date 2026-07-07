@@ -1,7 +1,7 @@
 # 项目 CoClaw
 
 > 适用范围：对整个 `coclaw` 仓库生效。
-> coclaw 旗下各 Workspace 可补充规则。
+> 各工作区（`ui`、`server`、`deploy`、`plugins/openclaw`）另有 AGENTS.md 增量规则；在未自动加载它们的上下文（worktree、subagent 等）里涉及某工作区开发时，先读对应文件（其中 ui/server/plug 也可经 `/load-*-instructions` 手动加载）。
 
 ## General Instructions
 
@@ -74,11 +74,11 @@
 - 测试文件与源码同目录，命名为 `[filename].test.js`
 - 测试运行必须非交互、可自动执行
 - 在执行单元测试前，必须先通过静态检查（至少包含 `lint`，必要时含 type check）
-- 测试框架默认用 Node 原生测试器 `node:test`；使用 `test()`，不要使用 `it()` 风格
+- 测试框架默认用 Node 原生测试器 `node:test`（例外：ui 用 Vitest，见 `ui/AGENTS.md`）；使用 `test()`，不要使用 `it()` 风格
 
 ### 统一命令语义
 
-各工作区与仓库根统一提供：
+各工作区与仓库根统一提供（例外：`admin` 冻结中，暂缺 `check`/`verify`）：
 
 - `pnpm check`：lint + typecheck 静态检查
 - `pnpm test`：运行测试 + 覆盖率门禁
@@ -112,18 +112,16 @@
 - 遵循最小变更原则：非需求要求下，不进行大范围重构/重命名/目录搬迁
 - 涉及跨模块改动（`ui <-> server <-> plugin`）时，先更新 `docs` 中的接口/协议说明，再改实现
 - 不在本阶段推进 `admin` 实质开发，除非明确指令
+- 在 git worktree 里开发/验证/跑命令（尤其要在活网关验插件改动）时，必须先加载 `worktree-dev` skill——cwd 重置假绿、活网关只认主检出插件等坑的沉淀
 - 未提及的规范默认遵循对应技术栈最佳实践；当系统或用户的要求有违最佳实践时，应明确指出，让用户确认是否修改
 
 ## Bug 修复流程
 
-修复方案确认后，主动执行：修复代码 → review → 补单元测试 → 补 E2E 测试（如涉及 UI）→ `pnpm check` + `pnpm test` 完整验证。无需用户逐项要求。
+修复方案确认后，主动执行：修复代码 → review → 补单元测试 → 补 E2E 用例（如涉及 UI 行为）→ `pnpm check` + `pnpm test` 完整验证。无需用户逐项要求；是否实际执行 E2E，按 `ui/AGENTS.md` 与 `e2e-test` skill 的触发规则走。
 
-## Review 中发现的预存问题
+## 预存问题与 TODO.md
 
-任何 review 过程中核实到的预存问题（与本次任务无关的既有 bug / 风险），主动追加到所属工作区的 `TODO.md`（跨工作区写仓库根），不顺手修。追加前去重，结束时列一下新增条目。
-
-## TODO.md 维护
-
+- review 中核实到的预存问题（与本次任务无关的既有 bug / 风险），主动追加到所属工作区 `TODO.md`（跨工作区写仓库根），不顺手修；追加前去重，结束时列一下新增条目
 - 每条写明**发现日期**，标题自解释（便于 grep 关键词回头追溯）；section 组织（平铺 / 分组）按写入情境自然来，不强制
 - 完成后整段删除；确有需要时沉淀/融入到对应文档
 
@@ -170,6 +168,6 @@
 
 ## OpenClaw 开发参考
 
-- OpenClaw 较新且迭代快，训练数据不含其最新细节——务必通过阅读源码和查阅文档获取准确信息。仓库根 `openclaw-repo/` 已同步 OpenClaw 仓库内容，与本地安装运行的版本基本一致，需要时直接查阅
+- OpenClaw 较新且迭代快，训练数据不含其最新细节——务必通过阅读源码和查阅文档获取准确信息。仓库根 `openclaw-repo/` 是上游仓的本地检出，日常查 API/机制直接读它；注意其主干含未发布内容、通常领先本地安装的发布版——涉及"是否已发布/兼容"的判断先钉安装版（`openclaw --version` 取 commit → `git -C openclaw-repo describe --tags <commit>` 得发布 tag；系统化扫描用 `/check-openclaw-compat`）
 - Gateway 守护进程用子命令控制：`openclaw gateway status / start / stop / restart`
 - Source: https://github.com/openclaw/openclaw ；Community: https://discord.com/invite/clawd

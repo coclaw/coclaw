@@ -1,5 +1,5 @@
 ---
-description: 扫描本地 openclaw-repo/ 在 baseline 之后的上游破坏性变更（重点保已安装插件的自动升级链路），发新版前必跑；只读分析、不改代码、出报告、跑完把 baseline 推进到发布 tag。手动触发：发新版前 / 看到 OpenClaw 发新版疑似撞坑 / gateway 升级后插件出现异常时用 /check-openclaw-compat。
+description: 扫描本地 openclaw-repo/ 在 baseline 之后的上游破坏性变更（重点保已安装插件的自动升级链路），发新版前必跑；只读分析、不改任何代码、出报告——唯一写操作是更新本命令文件（推进 baseline、追加踩坑清单）。手动触发：发新版前 / 看到 OpenClaw 发新版疑似撞坑 / gateway 升级后插件出现异常时用 /check-openclaw-compat。
 disable-model-invocation: true
 ---
 
@@ -18,7 +18,7 @@ disable-model-invocation: true
 - 只读分析；不修任何代码
 - 不 commit、不发布
 - 不"顺手修"发现的不兼容——只出报告，由用户决定怎么改
-- 输出报告后**必须**更新本文件的 baseline 与必要时追加新踩坑模式（见"演进规则"）
+- 输出报告后**必须**推进本文件的 baseline、并按需追加新踩坑模式（见"演进规则"）——这是本命令唯一允许的写操作、仅限本文件
 
 ## 用法
 
@@ -177,12 +177,13 @@ baseline-checked-at: 2026-06-27
    - 否则当作"附加指令"（用户希望加深的关注点）
 
 2. **取 diff 范围**：
-   - **先把扫描终点钉成"用户实际安装版"、不是 git HEAD**：`openclaw --version` 取安装版 commit → `git -C openclaw-repo describe --tags <commit>` 确认发布 tag。git `main` 通常领先实际发布版上千 commit（未发布主干），拿它当终点会把没发布的变更误当"已落地"。
-   - 核心范围 `git -C openclaw-repo log --oneline <baseline>..<安装版tag>`（已发布维度）；可选再扫 `<安装版tag>..main` 做未发布前瞻。
+   - **先把扫描终点钉成"用户实际安装版"、不是 git HEAD**：`openclaw --version` 取安装版 commit → `git -C openclaw-repo describe --tags <commit>` 确认发布 tag（为什么不能拿 `main`/HEAD 当终点或 baseline，见"当前 baseline"段锚定约定）。
+   - 核心范围 `git -C openclaw-repo log --oneline <baseline>..<安装版tag>`（已发布维度）；可选再扫 `<安装版tag>..main` 做未发布前瞻，报告里须标明前瞻项不是已落地风险。
    - 范围 > 200 commits 不必慌：本扫描按必查清单**锚点文件切片**（不逐 commit），成本取决于锚点数、与 commit 总数基本无关；仍先告诉用户、问是否继续。baseline 不存在也先告诉用户。
 
 3. **逐项过清单**：
    - 对必查清单每一项：grep / read 上游相关文件，看是否有变更
+   - 优先按清单锚点做定点读取；锚点漂移时用最窄关键词 + 最小目录范围重新定位，别对 `openclaw-repo/` 做无范围全仓 grep
    - 重点 grep："`deprecated`"、"`@deprecated`"、"`BREAKING`"、"`removed`"、"`renamed`"
    - 看 `openclaw-repo/CHANGELOG.md`（如有）的 baseline 之后段落
 
@@ -201,14 +202,14 @@ baseline-checked-at: 2026-06-27
 ```
 OpenClaw 上游兼容性扫描报告
 
-─ 范围：baseline <hash> (<日期>) → HEAD <hash>，N commits；附加指令（若有）
+─ 范围：baseline <tag/hash> (<日期>) → 安装版 <tag/hash>，N commits；未发布前瞻 <安装版tag>..main（若扫）；附加指令（若有）
 ─ Blockers (N)：影响自动升级或加载
   每条含：类别 | 一句话变更摘要 | 上游锚点（文件+符号 或 commit）| 我方依赖处 |
   影响（重点：会不会让老插件无法自升级）| 建议修复
 ─ Warnings (M)：上游变了但我方暂未依赖（记录留心），格式同上
 ─ 必查清单核查：每一项给 [PASS / NEW-BLOCKER / NEW-WARNING]，一项不漏
 ─ 新发现的踩坑模式（若有）：说明 + 已追加到本命令必查清单 ✓
-─ 结论：PASS / FAIL（二选一）；baseline 已推进至 <new HEAD hash> (<日期>)
+─ 结论：PASS / FAIL（二选一）；baseline 已推进至 <新发布 tag> (<日期>)
 ```
 
 ## 演进规则（很重要）
@@ -230,7 +231,7 @@ OpenClaw 上游兼容性扫描报告
 - 不 commit / 不发布
 - 不"顺手"修发现的不兼容
 - 不在没跑完清单的情况下就出 PASS——清单每一项都要明确给出 PASS / NEW-BLOCKER / NEW-WARNING
-- 不漏更新 baseline——下次会重复扫同样的 commits
+- 完整跑完清单后不漏更新 baseline（否则下次会重复扫同样的 commits）；中途停止或只做探针时不得推进
 - 不漏追加新发现的坑——下次还会撞同样的雷
 
 ## 参考
