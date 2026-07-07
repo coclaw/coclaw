@@ -16,7 +16,7 @@ cd <worktree绝对路径>/<工作区> && <cmd>      # 如 cd /home/.../.agents/w
 ```
 
 否则命令在主检出跑，绿是假绿（测的不是你 worktree 的改动）。worktree 真实路径在
-`<repo>/.agents/worktrees/<名>`（EnterWorktree 回显的 `.claude/...` 是同一处）。
+`<repo>/.agents/worktrees/<名>`（EnterWorktree 回显的 `.claude/...` 是同一处）。EnterWorktree 若被 `.claude → .agents` 软链挡住，手动 `git -C <repo> worktree add <repo>/.agents/worktrees/<名> -b <分支> HEAD` 即可。
 
 ## 坑 C：新 worktree 首装缺件
 
@@ -26,10 +26,10 @@ cd <worktree绝对路径>/<工作区> && <cmd>      # 如 cd /home/.../.agents/w
 ## 插件（plugins/openclaw）：还有坑 A——活主网关只认主检出
 
 主网关装的插件 `src` 是软链回**主检出**，所以 worktree 改插件 + restart 主网关**看不到**。
-两条验证路子：
+两条验证路子。注意 `wt:*` 脚本只存在于 `plugins/openclaw/package.json`——每条命令都得带 `cd <wt>/plugins/openclaw &&` 前缀（坑 B 同样适用）：
 
-- **默认（方案 A）**：worktree 里 `cd <wt>/plugins/openclaw && pnpm verify`（单测+lint）。覆盖不到加载/RPC/双实例/WebRTC。
-- **要活网关（方案 B）**：worktree 里 `pnpm wt:up` → `pnpm wt:call <method>` → 改 src 后 `pnpm wt:reload` → 用完 `pnpm wt:down`。起的是隔离 profile 网关，主网关 / 主 config 全程不动。
+- **默认（方案 A）**：`cd <wt>/plugins/openclaw && pnpm verify`（单测+lint）。覆盖不到加载/RPC/双实例/WebRTC。
+- **要活网关（方案 B）**：`pnpm wt:up` → `pnpm wt:call <method>` → 改 src 后 `pnpm wt:reload`（只重启网关，src 在 stage 里是软链；改 `index.js` / manifest / 依赖须重跑 `pnpm wt:up` 重建 stage）→ 用完 `pnpm wt:down`。起的是隔离 profile 网关，主网关 / 主 config 全程不动。fresh profile 不绑定也能验插件加载 + RPC；只有 bridge / WebRTC 端到端才需补绑定凭据。
 
 **机制、成本、红线、偶发坑的完整说明在 [`plugins/openclaw/docs/worktree-plugin-dev.md`](../../../plugins/openclaw/docs/worktree-plugin-dev.md)——动手前读它。**
 
@@ -40,5 +40,5 @@ cd <worktree绝对路径>/<工作区> && <cmd>      # 如 cd /home/.../.agents/w
 ## 红线
 
 - **别在 worktree 里 `pnpm run link`**——会把主网关共享 config 指到 worktree stage，worktree 删后主网关起不来。验活网关只走 `pnpm wt:*`。
-- 用完 `pnpm wt:down` 清隔离 profile；**`wt:down` 必须在 `git worktree remove` 之前**（先删 worktree 会留下脚本没了、网关还跑的孤儿，要 `pnpm wt:down --all` 从任意检出兜底收）。删 worktree / 分支前确认提交已合回 main（分支没合就删＝提交真丢）。
-- 别在 worktree 会话里裸 `git worktree remove` 删自己 cwd；合回站 main 执行 `git -C <main> merge worktree-<名>`。
+- 用完 `pnpm wt:down` 清隔离 profile；**`wt:down` 必须在 `git worktree remove` 之前**（先删 worktree 会留下脚本没了、网关还跑的孤儿，此时在任意检出的 `plugins/openclaw` 下 `pnpm wt:down --all` 兜底收）。
+- 删 worktree / 分支前确认提交已合回 main（分支没合就删＝提交真丢）：合回站主检出、按全局合回纪律执行（优先 rebase / cherry-pick 重放 fast-forward，不留 merge commit），`git merge-base --is-ancestor <分支> main` 通过再删。别在 worktree 会话里裸 `git worktree remove` 删自己 cwd。

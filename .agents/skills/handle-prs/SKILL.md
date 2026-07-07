@@ -10,22 +10,12 @@ description: 处理 GitHub Pull Requests。Use when 用户要求处理、审查�
 - 遵循主流最佳实践处理 PR（review 礼仪、与贡献者的沟通方式、合并/拒绝/请求修改的处理方式等）。以下仅列出项目特有的约定
 - **每个 PR 的最终处理策略（合并/拒绝/请求修改）须由用户确认后执行**
 
-## 启动流程
+## 委派与上下文管理
 
-每次开始处理 PR 时，**委派 sonnet 级 subagent** 执行列表整理：
+主对话保持轻量：分析类工作默认委派 subagent，主对话只保留返回的结论和决策点——这样一轮对话可以处理多个 PR，且 PR 之间的关系清晰可见。Claude Code 侧派单一律显式传 model，档位策略见全局规范「模型选择倾向」节（Codex 侧按全局 [仅 Codex] 规则，不指定 model）：
 
-1. `gh pr list --state open` 拉取所有 open PR
-2. 列出每个 PR 的概要（标题、作者、关联 issue、改动范围）
-3. 主对话呈现整理结果，由用户决定处理顺序和方式
-
-## 上下文管理
-
-批量处理 PR 时，主对话应保持轻量：
-
-- **列表整理委派 sonnet 级 subagent**
-- **分析与 review 委派 general-purpose subagent**，显式传 model（review 把关用最强档，档位策略见全局规范「模型选择倾向」节），给出具体的审查要求
-- 主对话只保留 subagent 返回的结论和决策点
-- 这样一轮对话可以处理多个 PR，且 PR 之间的关系清晰可见
+- **列表整理**（每次开始处理 PR 时委派，机械整理活）：`gh pr list --state open` 拉取所有 open PR，列出每个 PR 的概要（标题、作者、关联 issue、改动范围）；主对话呈现整理结果，由用户决定处理顺序和方式
+- **分析与 review**（把关，用最强档）：委派普通 subagent 并给出具体的审查要求；review 时参考对应工作区的 instructions（ui/server/plugins 各自的 AGENTS.md，CLAUDE.md 为其软链）
 
 ## 合并约定
 
@@ -38,12 +28,5 @@ description: 处理 GitHub Pull Requests。Use when 用户要求处理、审查�
 
 ## 关联 issue 校验
 
-合并前确认 PR 中的 `closes #N` 引用准确：
-
-- 验证 PR 改动是否确实解决了所引用的 issue
-- 不相关的 closes 引用应通过 review comment 请贡献者移除，而非维护者直接修改
-
-## 交叉引用
-
+- 合并前验证 PR 中的 `closes #N` 引用准确——改动是否确实解决了所引用的 issue；不相关的 closes 引用应通过 review comment 请贡献者移除，而非维护者直接修改
 - 涉及 bug 修复的 PR，合并后应确认对应 issue 被正确关闭
-- 涉及代码改动的 PR，review 时应参考对应工作区的 instructions（ui/server/plugin 的 CLAUDE.md）

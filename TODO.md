@@ -41,3 +41,14 @@
 
 - `docs/README.md:74-82` "Product — 产品文档"段列出 7 个 `docs/product/*.md`，但 `docs/product/` 目录不存在，整段为坏指针。
 - 修复方向：查 git 史确认这些文档去向（恢复目录或更新路径），否则删除该段。
+
+## release-publish.sh 镜像监控可能捞到历史 run 报假阳性（2026-07-07，R5 skills 打磨终审核实，预存脚本缺陷）
+
+- `scripts/release-publish.sh` 找 tag 触发的 publish-images run 时只 `gh run list --workflow publish-images.yaml --event push --limit 1`，未按 headSha/tag 过滤。
+- 触发场景：对已存在的 tag 重跑脚本（root 版本未变 / 误重跑）——push tag 是 no-op、不触发新构建，脚本会捞到上一次的历史 run 并可能报"镜像构建成功"假阳性。
+- release skill 已在文案层规避（root 版本不变时不走脚本、改手动 `gh workflow run`）；脚本侧加固：按 `--json headSha` 匹配本次 SHA，或检测 tag 已存在于远端时直接 WARN 跳过镜像段。
+
+## docs/versioning.md 与 release skill 的 root 版本口径漂移（2026-07-07，R5 skills 打磨终审核实，预存文档不一致）
+
+- `docs/versioning.md` 表格写根包"有变更时 bump / 手动（GitHub Release 时）"；release skill（权威口径）是"A/B 每次必做：root 取所有工作区当前版本的最高"。
+- 修复方向：把 versioning.md 该行改为与 release skill 一致，防有人按旧文档反向改回。

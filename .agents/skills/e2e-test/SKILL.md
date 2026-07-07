@@ -48,12 +48,13 @@ pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 
 某标签下具体有哪些测试文件，在 `ui/e2e/` 下 grep 标签即得。
 
-新增测试时须在 test title（或所属 describe title）中包含对应标签。
+新增测试时须在 test title（或所属 describe title）中包含对应标签；确需新标签时同步更新本表。
 
 ## 编写规范
 
-- 测试文件放在 `ui/e2e/`，命名为 `*.e2e.spec.js`（现存例外：`topic-integration.spec.js` 不符约定但因 testDir 默认 match 仍被执行，已落账 TODO，勿据此误判它没在跑）
+- 测试文件放在 `ui/e2e/`，命名为 `*.e2e.spec.js`
 - 公共 helper（登录、导航、安全输入等）统一放在 `e2e/helpers.js`，测试文件应优先从该模块导入
+- 断言锚点优先用 `data-testid`，不要断言可翻译的 UI 文案——语言随浏览器 locale 变化，文案断言换台机器就脆断
 - Bug 修复涉及 UI 行为时，须补充对应的 E2E 测试用例
 
 ## 关键约束
@@ -84,7 +85,7 @@ WSL2 下 Chrome（headless 和 headed + WSLg）的动画帧渲染异常，导致
 
 在本机用 headed Playwright 或弹 Electron 客户端做可视化测试 / 调试时，用户能否离开屏幕取决于驱动的是哪一层：
 
-- **网页 UI（渲染区）**：经 CDP 驱动，锁屏、失焦、被别的窗口完全盖住都不影响发指令与截图；Electron 主窗已设 `backgroundThrottling: false`，被遮挡也不降帧。用户可放心锁屏 / 切到别的 app。CDP 注入的输入与系统物理键盘是两条独立通道——用户在另一屏正常打字不会串进被测窗口，测试也无需抢占用户焦点（仅拉起 / 启动窗口那一下可能短暂夺焦）。
+- **网页 UI（渲染区）**：经 CDP 驱动，锁屏、失焦、被别的窗口完全盖住都不影响发指令与截图；Electron 主窗已设 `backgroundThrottling: false`，被遮挡也不降帧。CDP 注入的输入与系统物理键盘是两条独立通道——用户在另一屏正常打字不会串进被测窗口，测试也无需抢占用户焦点（仅拉起 / 启动窗口那一下可能短暂夺焦）。用户可放心锁屏 / 切到别的 app。
 - **原生外壳**（托盘菜单、自定义标题栏的系统按钮、原生右键菜单 / 对话框、Dock）：CDP 够不着，只能系统级抓屏 + 模拟点击 → 锁屏会抓到黑屏，失焦会把点击打到前台别的窗口。这类测试要求屏幕解锁且被测窗口在最前台。
 - **开测前主动告知用户**这步验的是原生外壳还是网页 UI，让其知道当下能否锁屏 / 切走。
 
@@ -94,42 +95,12 @@ WSL2 下 Chrome（headless 和 headed + WSLg）的动画帧渲染异常，导致
 - 不确定副屏原点时用 Electron 的 `screen.getAllDisplays()` 实测各屏 `bounds`（受缩放影响，别按物理像素猜）。
 - Electron 客户端的窗口位置由 `mainWindowState` 记住，手动拖到副屏一次即留在那。
 
-## 踩坑记录
+## 编写测试的常见逻辑陷阱
 
-完整踩坑记录见 `ui/docs/e2e-troubleshooting.md`。以下为编写测试时常见的逻辑陷阱：
+详细分析见 `ui/docs/e2e-troubleshooting.md` 卡点 5–7 与 `e2e/helpers.js` 的 JSDoc：
 
-### 判断发送完成：用 btn-stop 消失，不要用 btn-send 出现
-
-发送消息后输入框被清空、文件被清除，`canSend` 为 false，`btn-send` 不会渲染（`v-else-if="canSend"`）。因此 `await expect(page.getByTestId('btn-send')).toBeVisible()` 永远超时。正确做法：
-
-```js
-// ✅ 等待 stop 按钮消失 = sending 结束
-await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });
-
-// ❌ btn-send 在输入框为空时不渲染，会永远等待
-await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 180_000 });
-```
-
-### Store 中消息 content 可能是 block 数组
-
-通过 `evalStore` 检查用户消息内容时，`m.message.content` 可能是 string（乐观消息），也可能是 block 数组 `[{type:'text', text:'...'}]`（OpenClaw sessions.get 返回的服务端消息）。必须处理两种格式：
-
-```js
-const c = m.message.content;
-const texts = typeof c === 'string' ? [c]
-    : Array.isArray(c) ? c.filter(b => b.type === 'text').map(b => b.text)
-    : [];
-```
-
-### 测试数据必须跨 run 唯一
-
-Chat session 会积累历史消息，同一 session 中前次 E2E 运行残留的消息仍然存在。如果用通用文件名或固定文本做 regex 匹配，会匹配到陈旧数据。文件名和断言文本必须包含唯一标识（如 `Date.now()` 时间戳）：
-
-```js
-// ✅ 时间戳确保唯一
-const ts = Date.now();
-const fileName = `e2e-test-${ts}.txt`;
-
-// ❌ 固定名称会与历史数据碰撞
-const fileName = 'e2e-test.txt';
-```
+- **chat 输入前先 `await waitChatInputStable(page)`**——冷启动首屏的重渲染风暴会把已落键字符覆盖丢掉，别在页面刚加载就直接打字（机理见 helpers.js 该函数注释）。
+- **判断发送完成：等 `btn-stop` 消失，别等 `btn-send` 出现**——发送后输入框被清空，`canSend` 为 false，`btn-send` 不渲染（`v-else-if="canSend"`），等它可见会永远超时。
+  `await expect(page.getByTestId('btn-stop')).not.toBeVisible({ timeout: 180_000 });`
+- **消息 content 可能是 string 也可能是 block 数组**——乐观消息是 string，OpenClaw sessions.get 返回的服务端消息是 `[{type:'text', text:'...'}]`；`evalStore` 断言必须两种格式都处理（string 直接用，数组取 `type==='text'` 项的 `text`）。
+- **测试数据必须跨 run 唯一**——chat session 会积累历史消息，固定文件名 / 断言文本会匹配到前次运行的残留；文件名与断言文本须带唯一标识（如 `Date.now()` 时间戳）。

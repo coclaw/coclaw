@@ -32,7 +32,7 @@ CoClaw 的发布有三种模式，按用户意图区分。**默认是模式 A**�
 
 ### 1. 确保 changeset 文件存在
 
-检查 `.changeset/` 下是否已有 `.md` 文件（不算 README.md）；没有则先创建——文件格式、何时需要、级别规则见 `docs/versioning.md`。
+检查 `.changeset/` 下是否已有 `.md` 文件（不算 README.md）；没有则先创建——文件格式、何时需要、级别规则见 `docs/versioning.md`。归属口径：客户端壳 / 移动端壳 / 面向用户的 UI 行为归 `@coclaw/ui`；纯开发 / 部署基建改动通常不写 changeset。
 
 > **C 模式硬规则**：`.changeset/` 中只能有 `@coclaw/openclaw-coclaw` 的 changeset。如有非插件的（ui/server），先 `mv .changeset/<non-plugin>.md /tmp/` 隔离，npm 发布完再移回。
 
@@ -70,22 +70,26 @@ git commit -m "..."
 
 ### 6A. push → CI 闸 → tag → 镜像监控
 
+**前置判断**：本节脚本只适用于「root 版本本次有变化（将产生新 `v*` tag）」；若 root 版本不变（如仅 bump server/plugin 而 ui 仍最高），跳过脚本、走下方"盲区兜底"。
+
 push tag 会**立刻**触发 `publish-images.yaml` 建镜像、且没有第二道闸，所以必须**先确认这次 bump commit 的 CI 通过、再打 tag**——CI 没绿就别打 tag，远端零残留、可干净重来。这段不可逆编排沉淀进 `scripts/release-publish.sh`，一次 Bash 调用跑完：
 
 > **执行提示**：脚本要等 CI + 镜像跑完（正常 ~3–6min）。跑它时**务必把 Bash 工具超时调到上限 `600000`ms（10min），别用默认 120s**，否则没跑完就被工具超时掐断、还得善后。脚本各轮询自带上界、不会无限等。
 
 ```bash
-bash scripts/release-publish.sh <root-version>   # 0.32.11 或 v0.32.11 均可
+bash scripts/release-publish.sh <root-version>    # 0.32.11 或 v0.32.11 均可
+bash scripts/release-publish.sh --decide HEAD     # 可选预演：只打印镜像推导，不碰远端（参数是 git ref，通常在 bump commit 后用 HEAD，不是版本号）
 ```
 
 脚本一次跑完 push → CI 闸 → 打/push tag → 镜像监控，安全属性已内建（钉确切 SHA——非裸 HEAD，防等 CI 期间本地 main 被推进而 tag 套到未验 commit；CI 红/超时中止不打 tag；push tag 失败回滚本地 tag；镜像监控非门禁）。**退出语义**：
 
 - **push 失败 / CI 红 / CI 超时 → 非零退出**，均在打 tag 前中止，远端零 tag、零镜像，可干净重来。
 - **镜像监控失败 / 超时 → echo `WARN` 但 exit 0**：tag 已推、`publish-images.yaml` 已不可逆触发，这步只确认、非门禁；看到 WARN 去 Actions 页核实即可。
+- CI 超时后手动善后补打 tag 时，每个 tag 单独 `git push origin <tag>`——与 branch 或多个 tag 混推**不触发** workflow。
 
 镜像该建哪些（server / ui / 两者）由脚本**自动推导**——与 `publish-images.yaml` 同源（自上个 tag 起的路径 diff，根依赖变更则全建），据此调监控节奏（含 server 的 arm64 慢构建先等过拐点，仅 ui 从头短轮询）并校验实际构建。
 
-> **手动兜底**：若本次未 bump 根版本（无新 `v*` tag，仅动 server/plugin 而 ui 仍最高），tag 触发不发生、脚本镜像段什么都监控不到，需手动补 `gh workflow run publish-images.yaml`——它**始终全建**，是该盲区的可靠兜底；手动补建前先把 push+CI 等绿。
+> **盲区兜底：root 版本不变（tag 已存在）**：此时**别指望脚本管镜像**——对已存在 tag 的 push 是 no-op、不会触发新构建，而脚本的镜像监控只按 push 事件取最新 run、会捞到上一次的历史 run 报假阳性"构建成功"。正确做法：手动 `git push origin main` → 等该 SHA 的 CI 绿 → `gh workflow run publish-images.yaml` 补建。手动触发**始终全建**（拿不到 tag 语义、不做选择性构建），是该盲区的可靠兜底。
 
 ### 7A. Release 判断
 
@@ -107,7 +111,7 @@ cd plugins/openclaw && pnpm release
 
 ## 模式 B：只 bump push
 
-通用 0–5 → 跑 6A 的 `scripts/release-publish.sh`（同一道 CI 闸：先等该 SHA 的 CI 绿再打/push tag）→ Release 判断。**步骤完全同 A，跳过 8A**——即使本次插件有 bump 也不发 npm（用户的明确意图，留到下次 A 模式时再发）。
+通用 0–5 → 跑 6A 的 `scripts/release-publish.sh`（同一道 CI 闸与前置判断：root 版本没变同样走盲区兜底）→ Release 判断。**步骤完全同 A，跳过 8A**——即使本次插件有 bump 也不发 npm（用户的明确意图，留到下次 A 模式时再发）。
 
 > **B 后想补发 npm**（不再 bump、发当前版本）：直接 `cd plugins/openclaw && pnpm release`，相当于补做 8A。
 
