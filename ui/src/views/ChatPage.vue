@@ -1,10 +1,14 @@
 <template>
 	<!--
-		⚠️ 布局关键约束 ⚠️
+		⚠️ 布局关键约束 ⚠️（原 chat-layout-fix skill 已退役，要点固化于此）
+		整体是固定视口高度的 flex 列：header 顶部、<main> 中间滚动、ChatInput 底部，均按 flex 自然定位
 		- 原生壳：AuthedLayout 已约束视口高度，此处用 flex-1+min-h-0 填充剩余空间
 		- Web：父容器仅 min-height，需 h-dvh-safe 硬约束以固定 header/footer（临时方案，
 		  后续全面改为浏览器滚动后可移除）
 		- 勿同时加 flex-1 + h-dvh-safe，否则 flex 算法以 max-content 撑开父容器
+		- <main> 需 min-h-0（覆盖默认 min-height:auto）才能在自身内部滚动而非撑开父容器；
+		  overflow-y 非 visible 时 overflow-x 会退化为 auto，需显式 overflow-x-hidden 禁横向滚动
+		- ChatInput 禁止 sticky/fixed 定位，须作为 flex 列最后一个子元素、靠自然布局固定在底部
 	-->
 	<div ref="chatRoot" data-testid="chat-root" class="relative flex flex-col overflow-hidden" :class="chatRootClasses">
 		<MobilePageHeader :title="chatTitle">
