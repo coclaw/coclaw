@@ -59,6 +59,7 @@ server {
 	# - latest.yml / latest-mac.yml: 版本清单，必须每次回源拿最新
 	# - 安装包（.exe / .dmg / .apk / .blockmap 等）: 文件名含版本号，长期缓存
 	location ^~ /releases/ {
+		root /usr/share/nginx/html; # 覆盖 server 级 ui/current 根，指向 init.sh 建的 html 根 releases/
 		# 版本清单：no-cache（与 /version.json 同策略；允许任意一级子目录深度）
 		location ~* ^/releases/.+/latest.*\.yml$ {
 			add_header X-Content-Type-Options nosniff always;

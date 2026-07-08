@@ -37,6 +37,7 @@ server {
 	# - /releases/android/: 手动下载的 APK
 	# - latest*.yml: 版本清单，no-cache；其它（安装包、blockmap）: immutable
 	location ^~ /releases/ {
+		root /usr/share/nginx/html; # 覆盖 server 级 ui/current 根，指向 init.sh 建的 html 根 releases/
 		location ~* ^/releases/.+/latest.*\.yml$ {
 			add_header X-Content-Type-Options nosniff always;
 			add_header Cache-Control "no-cache, max-age=0, must-revalidate" always;

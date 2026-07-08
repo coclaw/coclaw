@@ -24,7 +24,7 @@ description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redire
 - `/releases/`（Electron 安装包 / APK，按 win|mac|android 分子目录）：
   - `latest*.yml` 版本清单（任意一级子目录深度）：no-cache
   - 安装包 / blockmap（文件名含版本号）：`public, max-age=2592000, immutable`（30d）
-  - ⚠️ 已知隐患：server 级 `root` 指向 `ui/current`，而该 location 未覆盖 root/alias，静态解析落点与 init.sh 创建的 html 根 `releases/` 目录不一致——动 /releases/ 前先在线上核实真实行为（此条待模板修复后删除）
+  - 静态根：该 location 显式 `root /usr/share/nginx/html;` 覆盖 server 级 `ui/current`，指向 init.sh 建的 html 根 `releases/`（缺此行会误落到 `ui/current/releases/`，即历史错配）
 - 安全头继承规则：子 `location` 一旦自己 `add_header`，父级安全头不再继承。按现状分层补齐——**HTML 类 location**（`/`、`index.html`）补三件套 `X-Content-Type-Options nosniff` / `X-Frame-Options SAMEORIGIN` / `Referrer-Policy strict-origin-when-cross-origin`；**非 HTML**（`version.json`、`/releases/`）只补 `nosniff`（frame/referrer 头对非 HTML 无意义）。没有 `add_header` 的 location（如 `/assets/`）自然继承父级，不用补
 
 ## 3) 证书策略
@@ -49,11 +49,18 @@ docker compose exec -T nginx nginx -s reload
 curl -I https://${APP_DOMAIN}/
 curl -I https://${APP_DOMAIN}/version.json
 curl -I https://${APP_DOMAIN}/api/v1/auth/session
+# /releases/ 落点核实（改过 root 后必验）
+curl -I https://${APP_DOMAIN}/releases/win/latest.yml         # 已发布桌面版后期望 200 + no-cache；未发布时返回 404 属正常，不代表修复失败
+curl -I https://${APP_DOMAIN}/releases/mac/latest-mac.yml     # 已发布桌面版后期望 200 + no-cache；未发布时返回 404 属正常，不代表修复失败
+curl -I https://${APP_DOMAIN}/releases/win/${WIN_INSTALLER}   # ${WIN_INSTALLER} 替换为实际安装包文件名（如 CoClaw-Setup-1.2.3.exe）；已发布桌面版后期望 200 + immutable，未发布时返回 404 属正常
+curl -I https://${APP_DOMAIN}/releases/does-not-exist         # 期望 404，而非 SPA index.html(200)
 ```
 
 检查点：
 - HTML / `version.json` 返回 `no-cache, max-age=0, must-revalidate`
 - `/assets/` 返回 `max-age=3600`
+- `/releases/*/latest*.yml` 返回 200 + `no-cache`；安装包 / blockmap 返回 200 + `immutable`（均需已发布桌面版后才有对应文件；未发布时返回 404 属正常，不代表修复失败）
+- 不存在的 `/releases/...` 返回 **404 而非 SPA HTML(200)**——只证 SPA 未兜底 / `/releases/` 前缀隔离成立，**不能证明 root 指向了正确目录**（修复前该 location 本就 `try_files $uri =404` 不回落 SPA，缺失路径改前改后同样 404）；root 覆盖是否真生效，要靠"放一个真实文件到 `static/releases/<平台>/` 后 curl 返回 200"验证（对应已发布桌面版后的 latest.yml=200，或临时探针文件）
 - `/api/` 仍可用
 - 若缓存头正确但用户仍看到旧版：多半不是缓存而是**服务器发的产物旧**——nginx root 指 `/usr/share/nginx/html/ui/current`；内部部署的 UI 静态根是 `deploy-ui.sh` 生成的 `static/ui/releases/<tag>` + `current` 软链（不在 git），自部署则由 ui-init 容器把 dist 复制成 `current/` **目录**（无 releases/ 属正常）。用 `readlink -f ~/coclaw/static/ui/current` 看真实形态与指向；完整判定流程（含"别信目录名日期"）见 `coclaw-deploy-inspect` skill 的 diagnosis-playbook"前端行为像旧版"一节
 
