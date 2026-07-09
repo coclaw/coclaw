@@ -36,14 +36,25 @@ description: Maintain CoClaw deploy Nginx rules for domain routing, HTTPS redire
 
 ## 4) 发布与验证
 
-先测试再重载（在部署机 `~/coclaw` 下执行）：
+先用 `nginx -t` 校验语法（在部署机 `~/coclaw` 下执行）：
 
 ```bash
 docker compose exec -T nginx nginx -t
-docker compose exec -T nginx nginx -s reload
 ```
 
-最少验证：
+**激活方式取决于改的是不是模板**——生产 nginx 配置从部署机检出 bind-mount，但模板（`modes/*.conf.template`、`templates/*.template`、`includes/` 等经 envsubst 渲染的文件）只在容器启动时由 entrypoint 渲染一次，容器活着期间不会重渲染：
+
+- **改了模板/包含文件** → `nginx -s reload` 无效（只重读上次渲染的旧结果），必须重启容器重跑 entrypoint：
+  ```bash
+  docker compose restart nginx
+  ```
+  注意别用 `docker compose up -d nginx`——compose 按服务配置哈希判断，只改了 bind-mount 文件它会认为无变化、什么都不做。restart 有几秒全站中断。
+- **改的是非模板的已渲染文件内容**（如证书续期，见 `deploy/certbot/scripts/reload-nginx.sh`）→ `nginx -s reload` 即可，graceful 重载零中断：
+  ```bash
+  docker compose exec -T nginx nginx -s reload
+  ```
+
+最少验证（**改了模板的场景，务必在 `restart` 之后再跑**，否则验的是旧配置）：
 
 ```bash
 curl -I https://${APP_DOMAIN}/
