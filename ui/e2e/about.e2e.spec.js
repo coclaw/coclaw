@@ -76,7 +76,29 @@ test('关于页：点击退出按钮跳转到登录页 @ui', async ({ page }) =>
 });
 
 // ================================================================
-// Test 5: 折叠面板展开/折叠
+// Test 5: 开源声明入口 → 声明页内容渲染
+// ================================================================
+
+test('关于页：开源声明入口可达且声明内容渲染 @ui', async ({ page }) => {
+	test.setTimeout(30_000);
+	await page.goto('/about');
+	await expect(page.getByTestId('btn-open-source-notices')).toBeVisible({ timeout: 10_000 });
+
+	await page.getByTestId('btn-open-source-notices').click();
+	await expect(page).toHaveURL(/\/about\/notices/, { timeout: 5000 });
+
+	// 声明全文渲染（public/third-party-notices.txt 固定英文内容，非可翻译文案）
+	await expect(page.getByTestId('notices-content')).toBeVisible({ timeout: 10_000 });
+	const text = await page.getByTestId('notices-content').textContent();
+	expect(text).toContain('Third-Party Software Notices');
+	expect(text).toContain('APPENDIX A');
+
+	// Web 环境不出现 Android 原生许可入口
+	await expect(page.getByTestId('btn-native-licenses')).not.toBeVisible({ timeout: 2000 });
+});
+
+// ================================================================
+// Test 6: 折叠面板展开/折叠
 // ================================================================
 
 test('关于页：折叠面板可展开收起 @ui', async ({ page }) => {

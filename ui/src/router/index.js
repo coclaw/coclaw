@@ -128,6 +128,12 @@ const routes = [
 				component: AboutPage,
 				meta: { requiresAuth: false, hideMobileNav: true },
 			},
+			{
+				path: 'about/notices',
+				name: 'open-source-notices',
+				component: () => import('../views/OpenSourceNoticesPage.vue'),
+				meta: { requiresAuth: false, hideMobileNav: true },
+			},
 		],
 	},
 	// catch-all: 未知路径回退到首页

@@ -179,6 +179,15 @@ export const viMessages = {
 		clientVersion: 'Client',
 		serverVersion: 'Server',
 	},
+	notices: {
+		title: 'Thông báo mã nguồn mở',
+		intro: 'CoClaw được xây dựng trên phần mềm mã nguồn mở. Trang này liệt kê thông báo bản quyền và thông tin giấy phép của các thành phần bên thứ ba có trong các client CoClaw. Danh sách được tạo từ các phụ thuộc được phân giải cho bản dựng này; các tệp nhị phân gốc theo nền tảng có thể khác nhau tùy nền tảng phát hành.',
+		androidNative: 'Giấy phép thành phần gốc Android',
+		androidNativeDesc: 'Thông tin giấy phép của các thành phần gốc Android do công cụ oss-licenses chính thức của Google thu thập từ siêu dữ liệu bản dựng; một số thành phần chỉ có liên kết hoặc tiêu đề giấy phép.',
+		loadFailed: 'Không tải được tài liệu thông báo.',
+		retry: 'Thử lại',
+		nativeOpenFailed: 'Không mở được màn hình giấy phép gốc.',
+	},
 	claim: {
 		title: 'Nhận Claw',
 		claiming: 'Đang nhận…',

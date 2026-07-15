@@ -23,6 +23,7 @@
 		"test": "pnpm test:src && pnpm test:electron",
 		"e2e": "node e2e/run.js",
 		"e2e:ci": "node e2e/run.js --ci",
+		"licenses:generate": "node scripts/generate-third-party-notices.js",
 		"verify": "pnpm check && pnpm test",
 		"tauri": "tauri",
 		"tauri:dev": "tauri dev",

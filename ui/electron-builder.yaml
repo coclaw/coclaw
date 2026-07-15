@@ -22,6 +22,12 @@ files:
   - build-resources/icon.icns
   - build-resources/tray-icon*.png
   - package.json
+  # lightningcss 是构建期专用原生依赖（MPL-2.0），运行时零引用；
+  # electron-builder 自动收集生产依赖树会把它打进 app.asar，显式裁剪：
+  #   - 第一条命中顶层与 fontless/node_modules/ 嵌套两处
+  #   - 第二条通配所有平台原生二进制包（lightningcss-linux-x64-gnu 等）
+  - "!**/node_modules/lightningcss/**"
+  - "!**/node_modules/lightningcss-*/**"
 
 asar: true
 

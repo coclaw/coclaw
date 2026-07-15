@@ -179,6 +179,15 @@ export const ptMessages = {
 		clientVersion: 'Cliente',
 		serverVersion: 'Servidor',
 	},
+	notices: {
+		title: 'Avisos de código aberto',
+		intro: 'O CoClaw é construído com software de código aberto. Esta página lista os avisos de copyright e as informações de licença dos componentes de terceiros incluídos nos clientes CoClaw. A lista é gerada a partir das dependências resolvidas para esta compilação; binários nativos específicos de plataforma podem variar conforme a plataforma de publicação.',
+		androidNative: 'Licenças de componentes nativos do Android',
+		androidNativeDesc: 'As informações de licença dos componentes nativos do Android são coletadas pela ferramenta oficial oss-licenses do Google a partir dos metadados de compilação; para alguns componentes há apenas um link ou título de licença.',
+		loadFailed: 'Falha ao carregar o documento de avisos.',
+		retry: 'Tentar novamente',
+		nativeOpenFailed: 'Não foi possível abrir a tela de licenças nativas.',
+	},
 	claim: {
 		title: 'Reivindicar Claw',
 		claiming: 'Reivindicando…',

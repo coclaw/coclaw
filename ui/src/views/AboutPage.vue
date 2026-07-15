@@ -73,6 +73,17 @@
 					>{{ $t('about.cloudDeployBtn') }}</UButton>
 				</div>
 			</div>
+
+			<!-- 开源声明入口 -->
+			<div class="mt-6 flex justify-center">
+				<UButton
+					data-testid="btn-open-source-notices"
+					variant="link"
+					color="neutral"
+					icon="i-lucide-scroll-text"
+					@click="$router.push('/about/notices')"
+				>{{ $t('notices.title') }}</UButton>
+			</div>
 		</div>
 	</main>
 	<footer class="sticky bottom-0 bg-default px-4 pt-4 pb-2 lg:px-5">

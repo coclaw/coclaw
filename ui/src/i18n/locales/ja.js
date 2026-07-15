@@ -179,6 +179,15 @@ export const jaMessages = {
 		clientVersion: 'クライアント',
 		serverVersion: 'サーバー',
 	},
+	notices: {
+		title: 'オープンソースライセンス',
+		intro: 'CoClaw はオープンソースソフトウェアを利用して構築されています。本ページでは、CoClaw クライアントに含まれるサードパーティコンポーネントの著作権表示およびライセンス情報を掲載しています。一覧は本ビルドで解決された依存関係に基づいて生成されており、プラットフォーム固有のネイティブバイナリは配布プラットフォームによって異なる場合があります。',
+		androidNative: 'Android ネイティブコンポーネントのライセンス',
+		androidNativeDesc: 'Android ネイティブコンポーネントのライセンス情報は、Google 公式の oss-licenses ツールがビルドメタデータから収集したものです。一部のコンポーネントについては、ライセンスへのリンクやタイトルのみの場合があります。',
+		loadFailed: 'ドキュメントの読み込みに失敗しました。',
+		retry: '再試行',
+		nativeOpenFailed: 'ネイティブのライセンス画面を開けませんでした。',
+	},
 	claim: {
 		title: 'Claw を紐付ける',
 		claiming: '紐付け中…',

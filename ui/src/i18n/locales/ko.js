@@ -179,6 +179,15 @@ export const koMessages = {
 		clientVersion: '클라이언트',
 		serverVersion: '서버',
 	},
+	notices: {
+		title: '오픈소스 고지',
+		intro: 'CoClaw는 오픈소스 소프트웨어를 기반으로 합니다. 이 페이지는 CoClaw 클라이언트에 포함된 서드파티 구성 요소의 저작권 고지 및 라이선스 정보를 안내합니다. 목록은 이번 빌드에서 해석된 의존성을 기준으로 생성되며, 플랫폼별 네이티브 바이너리는 배포 플랫폼에 따라 다를 수 있습니다.',
+		androidNative: 'Android 네이티브 구성 요소 라이선스',
+		androidNativeDesc: 'Android 네이티브 구성 요소의 라이선스 정보는 Google 공식 oss-licenses 도구가 빌드 메타데이터에서 수집한 것입니다. 일부 구성 요소는 라이선스 링크나 제목만 제공될 수 있습니다.',
+		loadFailed: '고지 문서를 불러오지 못했습니다.',
+		retry: '다시 시도',
+		nativeOpenFailed: '네이티브 라이선스 화면을 열지 못했습니다.',
+	},
 	claim: {
 		title: 'Claw 연결',
 		claiming: '연결 중…',

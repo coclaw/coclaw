@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
 	plugins: [vue()],
 	test: {
-		include: ['src/**/*.test.js'],
+		include: ['src/**/*.test.js', 'scripts/**/*.test.js'],
 		exclude: ['e2e/**'],
 		environment: 'jsdom',
 		globals: true,

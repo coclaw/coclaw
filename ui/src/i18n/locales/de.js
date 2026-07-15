@@ -179,6 +179,15 @@ export const deMessages = {
 		clientVersion: 'Client',
 		serverVersion: 'Server',
 	},
+	notices: {
+		title: 'Open-Source-Hinweise',
+		intro: 'CoClaw basiert auf Open-Source-Software. Diese Seite listet Copyright-Hinweise und Lizenzinformationen der in den CoClaw-Clients enthaltenen Drittanbieter-Komponenten auf. Die Liste wird aus den für diesen Build aufgelösten Abhängigkeiten erzeugt; plattformspezifische native Binärdateien können je nach Release-Plattform variieren.',
+		androidNative: 'Lizenzen nativer Android-Komponenten',
+		androidNativeDesc: 'Die Lizenzinformationen nativer Android-Komponenten werden mit Googles offiziellem oss-licenses-Werkzeug aus den Build-Metadaten gesammelt; für manche Komponenten liegt nur ein Lizenzlink oder Titel vor.',
+		loadFailed: 'Das Hinweisdokument konnte nicht geladen werden.',
+		retry: 'Erneut versuchen',
+		nativeOpenFailed: 'Die native Lizenzansicht konnte nicht geöffnet werden.',
+	},
 	claim: {
 		title: 'Claw beanspruchen',
 		claiming: 'Wird beansprucht…',

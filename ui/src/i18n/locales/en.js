@@ -179,6 +179,15 @@ export const enMessages = {
 		clientVersion: 'Client',
 		serverVersion: 'Server',
 	},
+	notices: {
+		title: 'Open Source Notices',
+		intro: 'CoClaw is built on open source software. This page lists copyright notices and license information for third-party components included in CoClaw clients. The list is derived from the dependencies resolved for this build; platform-specific native binaries may vary between release platforms.',
+		androidNative: 'Android native component licenses',
+		androidNativeDesc: 'License information for Android native components is collected by Google\'s official oss-licenses tool from build metadata; for some components only a license link or title is available.',
+		loadFailed: 'Failed to load the notices document.',
+		retry: 'Retry',
+		nativeOpenFailed: 'Failed to open the native licenses screen.',
+	},
 	claim: {
 		title: 'Claim Claw',
 		claiming: 'Claiming…',

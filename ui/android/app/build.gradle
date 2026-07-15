@@ -1,4 +1,6 @@
 apply plugin: 'com.android.application'
+// 构建期把 Maven 依赖的许可证收集进 res/raw，供 OssLicensesMenuActivity 展示
+apply plugin: 'com.google.android.gms.oss-licenses-plugin'
 
 // 从 local.properties 读取签名配置（可选覆盖）
 def localProps = new Properties()
@@ -65,6 +67,7 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    implementation 'com.google.android.gms:play-services-oss-licenses:17.1.0'
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
