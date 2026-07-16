@@ -843,7 +843,7 @@ systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行�
 - `index.js` 先注册 bridge service、后注册 auto-upgrade scheduler；OpenClaw 按注册顺序**串行** `await service.start()`（上游 `src/plugins/services.ts`，装机版 2026.6.11 同构）。`bridge.start()` 无条件 await `__preloadWebrtc()`，插件层无外层超时——preload 永不 settle 时 scheduler 永不启动，自动升级检查完全不开始。
 - gateway 启动期拒绝 WS 握手（装机版含 startup-unavailable 门禁）：升级 worker 重启网关后健康轮询总窗口 5min（`worker-verify.js` `HEALTH_TOTAL_TIMEOUT_MS`）；bridge 启动慢于 5min 会被误判"新版验证失败"→ 恢复备份 + 目标版本进跳过清单（误回滚）。
 - **现实缓解（当前为何不炸）**：preload 全链有界——pion-node import 失败/binary 缺失快速失败；IPC ping 20s 超时由本插件 `pion-preloader.js` 传入（`DEFAULT_IPC_REQUEST_TIMEOUT_MS`）、pion-node 执行，挂死形态实测 ~25s << 5min。敞口只剩 import 挂死（FS 病态）与 pion-node 未来版本（`^0.4.0` 漂移）超时语义回归等病态形态。
-- 相关钉子：`rtc-isolation.test.js` 已钉"入口静态闭包禁含 native RTC 包"（坏包不会炸插件注册），但"preload promise 挂死"属运行时形态，静态扫描钉不住。
+- 相关钉子：`rtc-isolation.test.js` 已钉"入口可达图禁以任何字面量形态引入 native RTC 包、无法静态分析的引入形态判红、SDK 唯一生产加载点在 pion-preloader"（坏包不会炸插件注册），但"preload promise 挂死"属运行时形态，import 面扫描钉不住。
 
 **修复方向**：`start()` 对 `__preloadWebrtc()` 加外层熔断（如 `Promise.race` 超时 → 按 impl=none 继续；晚到的 pion 结果复用既有 race 守卫的 cleanup 路径防 Go 进程孤儿）。scheduler service 注册顺序前移只解决"检查不启动"一半，网关就绪门禁导致的 worker 误回滚仍需熔断兜底。E2E 补挂死形态（binary 存在但 ping 不响应 / preload 永不返回 / 启动 >5min）验证。属行为变更，需单独评审，勿与纯清理混做。
 
