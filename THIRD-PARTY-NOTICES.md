@@ -58,7 +58,7 @@ This inventory is compiled manually (not wired into CI). To refresh it:
 
 Deduplicated union of the production dependency trees of the `server`, `ui`, and `plugin` workspaces (`pnpm licenses list --json --prod` per workspace), excluding CoClaw’s own `@coclaw/*` packages (e.g. the in-house `pion` WebRTC fork). A subset of these packages (the Capacitor plugins) also compile native code into the mobile shells and therefore carry `android` / `ios` surfaces. The `electron` surface is carried only by the desktop shell's own runtime closure (63 packages bundled into `app.asar`), not by the whole `ui` tree — see “Surfaces”.
 
-The **License** column records each package's primary license — normally as declared in its npm metadata; a handful of packages publish without a usable declaration and are recorded on other evidence instead (`pause` and `cookie-signature` from the MIT text embedded in their README, `vaul-vue` and `rx.mini` from their upstream repositories, `@shinyoshiaki/jspack` from the BSD-3-Clause LICENSE file in its published tarball — see the notes after the table). A package may additionally compile file-level material under another permissive license into a shipped binary; two such cases are flagged `[1]` / `[2]` and noted after the table. **Version sets and surface sets are independent unions**: a version listed for a package does not imply that that specific version appears on every listed surface (where different versions of one package carry different licenses, e.g. `minipass`, `sax`, the license is given per version).
+The **License** column records each package's primary license — normally as declared in its npm metadata; a handful of packages publish without a usable declaration and are recorded on other evidence instead (`pause` and `cookie-signature` from the MIT text embedded in their README, `vaul-vue` confirmed MIT from its upstream repository's LICENSE — the published tarball merely omits the license file — and `rx.mini` inferred MIT from its upstream repository, `@shinyoshiaki/jspack` from the BSD-3-Clause LICENSE file in its published tarball — see the notes after the table). Some packages additionally compile individual source files under another (still permissive) license into a shipped binary; those file-level cases are summarized in the file-level license note after the table, with the full per-file copyright lines and license texts reproduced in the applicable per-surface notices (for the mobile/desktop/web clients, `ui/public/third-party-notices.txt`), not in this package-level inventory. **Version sets and surface sets are independent unions**: a version listed for a package does not imply that that specific version appears on every listed surface (where different versions of one package carry different licenses, e.g. `minipass`, `sax`, the license is given per version).
 
 | Component | Version(s) | License | Surfaces |
 |---|---|---|---|
@@ -70,7 +70,7 @@ The **License** column records each package's primary license — normally as de
 | `@babel/runtime` | 7.28.6 | MIT | plugin |
 | `@babel/types` | 7.29.0 | MIT | server, ui |
 | `@bufbuild/protobuf` | 2.11.0 | (Apache-2.0 AND BSD-3-Clause) | ui |
-| `@capacitor/android` | 8.2.0 | MIT [1] | ui, android |
+| `@capacitor/android` | 8.2.0 | MIT | ui, android |
 | `@capacitor/app` | 8.0.1 | MIT | ui, android, ios |
 | `@capacitor/browser` | 8.0.2 | MIT | ui, android, ios |
 | `@capacitor/camera` | 8.0.2 | MIT | ui, android, ios |
@@ -82,7 +82,7 @@ The **License** column records each package's primary license — normally as de
 | `@capacitor/ios` | 8.2.0 | MIT | ui |
 | `@capacitor/keyboard` | 8.0.1 | MIT | ui, android, ios |
 | `@capacitor/local-notifications` | 8.0.2 | MIT | ui, android, ios |
-| `@capacitor/network` | 8.0.1 | MIT [2] | ui, android, ios |
+| `@capacitor/network` | 8.0.1 | MIT | ui, android, ios |
 | `@capacitor/preferences` | 8.0.1 | MIT | ui, android, ios |
 | `@capacitor/push-notifications` | 8.0.2 | MIT | ui, android, ios |
 | `@capacitor/share` | 8.0.1 | MIT | ui, android, ios |
@@ -683,17 +683,18 @@ The **License** column records each package's primary license — normally as de
 | `yjs` | 13.6.29 | MIT | ui |
 | `zod` | 4.3.6 | MIT | server, ui |
 
-**File-level license notes.** Beyond each package's primary license, two packages compile file-level material under a different (still permissive) license into a shipped mobile binary:
+**File-level license notes.** Beyond each package's own MIT license, several Capacitor packages compile individual source files under a different (still permissive) license into a shipped mobile binary:
 
-- `[1]` `@capacitor/android` — MIT overall; a few source files compiled into the Android APK carry an Apache-2.0 header (Android Open Source Project / Google), e.g. `UriMatcher.java`, `WebViewLocalServer.java`.
-- `[2]` `@capacitor/network` — MIT overall; one source file compiled into the iOS IPA carries a BSD-2-Clause header, `ios/Sources/NetworkPlugin/Reachability.swift` (Copyright (c) 2014, Ashley Mills).
+- `@capacitor/android` — a few Java source files compiled into the Android APK carry an Apache-2.0 header (Android Open Source Project / Google), e.g. `UriMatcher.java`, `WebViewLocalServer.java`.
+- `@capacitor/network` — one Swift source file compiled into the iOS IPA carries a BSD-2-Clause header, `ios/Sources/NetworkPlugin/Reachability.swift` (Copyright (c) 2014, Ashley Mills).
+- `@capacitor/ios`, `@capacitor/keyboard`, `@capacitor/core` — Apache Cordova compatibility sources under Apache-2.0: the Cordova `CDV*` / `NSDictionary+CordovaPreferences` classes and `Keyboard.m` compiled into the iOS IPA, and `cordova.js` shipped in the native app builds. These files carry the ASF licensing statement rather than a per-file copyright line.
 
-The full attribution for both cases — copyright lines plus license terms — is included as file-level entries in `ui/public/third-party-notices.txt`, which the mobile shells reach via the “About → Open Source” page.
+The full attribution for every such file — copyright lines (or the ASF statement, where the files carry no copyright line) plus license terms — is reproduced as file-level entries in `ui/public/third-party-notices.txt`, which the mobile and desktop shells reach via the “About → Open Source” page. This package-level inventory neither enumerates each file nor reproduces the texts.
 
 **Packages published without a standalone license file.** A handful of packages publish a tarball with no license field and no standalone LICENSE file. They fall into two cases:
 
 - `pause` (0.0.1) — ships in the server image; the `package.json` has no license field, but the bundled README contains the full MIT license text and copyright, so it is recorded as MIT on that basis (not inferred). `cookie-signature` is similar (its README embeds the MIT text; version 1.2.2 also ships a standalone LICENSE file).
-- `rx.mini` (1.4.0) — a plugin dependency; the published tarball carries no license field, no license file, and no license text. Its MIT is inferred from the upstream repository (the same approach used for `vaul-vue` in the `ui` notices file). Its bytes are not bundled into any CoClaw artifact — the plugin ships as source and installs it from npm.
+- `rx.mini` (1.4.0) — a plugin dependency; the published tarball carries no license field, no license file, and no license text. Its MIT is inferred from the upstream repository — weaker evidence than `vaul-vue`, whose upstream additionally carries a LICENSE file that the published tarball merely omits. Its bytes are not bundled into any CoClaw artifact — the plugin ships as source and installs it from npm.
 
 (`@shinyoshiaki/jspack` publishes a BSD-3-Clause LICENSE file, so it is recorded directly.)
 

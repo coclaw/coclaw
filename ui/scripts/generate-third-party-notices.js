@@ -46,7 +46,7 @@ export const MANUAL_ENTRIES = [
 	{
 		name: 'vaul-vue',
 		version: '0.4.1',
-		note: 'The published package does not declare a license field nor bundle a license file; the project repository (https://github.com/unovue/vaul-vue) is MIT licensed.',
+		note: 'The published package omits the license file — package.json declares no license field and the "files" whitelist ships only README and dist — but the upstream repository (https://github.com/unovue/vaul-vue) is MIT licensed, with the LICENSE present at the vaul-vue@0.4.1 release tag (Copyright (c) 2025 unovue). The tarball omission is a packaging oversight, not a missing grant.',
 		licenseText: `MIT License\n\nCopyright (c) 2025 unovue\n\n${MIT_TEXT.split('\n').slice(2).join('\n')}`,
 	},
 	{
@@ -64,9 +64,45 @@ export const MANUAL_ENTRIES = [
 ];
 
 /**
+ * Apache Cordova 兼容层源文件统一携带 ASF 许可头（无独立版权行，署名即该 ASF 授权声明），
+ * 编入移动出货物。以下常量供多个 FILE_LEVEL_ENTRIES 复用：探针作升级漂移检测，正文附 Apache-2.0 全文。
+ */
+const ASF_CORDOVA_PROBE = 'Licensed to the Apache Software Foundation (ASF) under one';
+const APACHE_CORDOVA_LICENSE_TEXT = `Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements. See the NOTICE file distributed with these files for additional information regarding copyright ownership. The ASF licenses them to you under the Apache License, Version 2.0. The full license text follows:\n\n${FALLBACK_LICENSE_TEXTS['Apache-2.0']}`;
+
+// @capacitor/ios 编入 IPA 的 Apache Cordova 兼容层源文件（另有 CDVPluginManager.* 为 Capacitor 自有 MIT，不在此列）
+const CAPACITOR_IOS_CORDOVA_FILES = [
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDV.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVAvailability.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVAvailabilityDeprecated.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVCommandDelegate.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVCommandDelegateImpl.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVCommandDelegateImpl.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVConfigParser.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVConfigParser.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVInvokedUrlCommand.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVInvokedUrlCommand.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVPlugin+Resources.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVPlugin+Resources.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVPlugin.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVPlugin.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVPluginResult.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVPluginResult.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVScreenOrientationDelegate.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVURLProtocol.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVURLProtocol.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVViewController.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVViewController.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVWebViewProcessPoolFactory.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/CDVWebViewProcessPoolFactory.m',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/NSDictionary+CordovaPreferences.h',
+	'CapacitorCordova/CapacitorCordova/Classes/Public/NSDictionary+CordovaPreferences.m',
+];
+
+/**
  * 文件级归属：包的主许可之外，个别源文件按另一宽松许可编入客户端出货物，
  * 在此补充其版权行与许可全文（包本体仍走上面的自动扫描，不从扫描中剔除）。
- * 文本静态取证自对应版本源文件头；probes 是各文件头里的版权行，
+ * 文本静态取证自对应版本源文件头；probes 是各文件头里的版权行（无独立版权行时取其许可声明行），
  * 单测据此与实际安装包对账，升级相关包后若文件头变化会先红提醒复核。
  */
 export const FILE_LEVEL_ENTRIES = [
@@ -89,6 +125,27 @@ export const FILE_LEVEL_ENTRIES = [
 		],
 		note: 'These Java source files are compiled into the Android app by the @capacitor/android platform package (whose primary license is MIT, listed above). They carry Apache-2.0 headers; their copyright notices and the license text follow:',
 		licenseText: `Copyright (C) 2006 The Android Open Source Project (UriMatcher.java)\nCopyright 2015 Google Inc. All rights reserved. (WebViewLocalServer.java)\n\n${FALLBACK_LICENSE_TEXTS['Apache-2.0']}`,
+	},
+	{
+		name: '@capacitor/keyboard',
+		files: ['ios/Sources/KeyboardPlugin/Keyboard.m'],
+		probes: [ASF_CORDOVA_PROBE],
+		note: 'This Objective-C source file is compiled into the iOS app by the @capacitor/keyboard plugin (whose primary license is MIT, listed above). It carries the Apache Cordova header (Apache-2.0, ASF contributor license agreement — no per-file copyright line); the license terms follow:',
+		licenseText: APACHE_CORDOVA_LICENSE_TEXT,
+	},
+	{
+		name: '@capacitor/ios',
+		files: CAPACITOR_IOS_CORDOVA_FILES,
+		probes: CAPACITOR_IOS_CORDOVA_FILES.map(() => ASF_CORDOVA_PROBE),
+		note: 'These Objective-C source files (the Apache Cordova compatibility layer) are compiled into the iOS app by the @capacitor/ios platform package (whose primary license is MIT, listed above). They carry the Apache Cordova header (Apache-2.0, ASF contributor license agreement — no per-file copyright line); the license terms follow:',
+		licenseText: APACHE_CORDOVA_LICENSE_TEXT,
+	},
+	{
+		name: '@capacitor/core',
+		files: ['cordova.js'],
+		probes: [ASF_CORDOVA_PROBE],
+		note: 'This JavaScript file (the Cordova-compatibility bridge shim loaded in the native WebView) is shipped in the Android and iOS app builds by @capacitor/core (whose primary license is MIT, listed above). It carries the Apache Cordova header (Apache-2.0, ASF contributor license agreement — no per-file copyright line); the license terms follow:',
+		licenseText: APACHE_CORDOVA_LICENSE_TEXT,
 	},
 ];
 
