@@ -11,8 +11,10 @@
   自动升级链路不受影响；**所有走 DataChannel 的远程功能（chat、UI RPC、文件传输）不可用**——
   任意 `rtc:*` 信令帧到达时记 `rtc.unavailable` 并放弃建连（不回发拒绝帧，UI 靠信令超时感知）。
   机器可通过发布修复版 + 自动升级捞回。该独立性的 **import 面**由 `src/auto-upgrade/rtc-isolation.test.js`
-  钉死（词法级扫描、fail-closed：升级闭包与插件入口可达图内无法静态分析的引入形态直接判红，
-  native SDK 全 src 唯一加载点钉在 pion-preloader）；**运行时形态不在其内**——已知例外是
+  守护——**仅对测试内已列明的合法语法形态钉死**（字面量 import/require 收集、createRequire /
+  非字面量 import() 等已列明的不可分析形态判红、native 包名字符串的生产加载点检查）；蓄意混淆与
+  个别词法边角（除号/正则歧义、转义包名等）仍可绕过，护栏定位是防意外回归、不防对抗
+  （缺口清单见 `TODO.md` 扫描器条目）。**运行时形态同样不在其内**——已知例外是
   preload 永不 settle 的病态挂死（预存、现实上界 ~25s，见 `TODO.md` 熔断条目）。
 - **行为分析、资源模型（如 coturn TURN 占用、ICE restart 行为）只考虑 pion**。
 
