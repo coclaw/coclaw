@@ -22,12 +22,82 @@ files:
   - build-resources/icon.icns
   - build-resources/tray-icon*.png
   - package.json
-  # lightningcss 是构建期专用原生依赖（MPL-2.0），运行时零引用；
-  # electron-builder 自动收集生产依赖树会把它打进 app.asar，显式裁剪：
-  #   - 第一条命中顶层与 fontless/node_modules/ 嵌套两处
-  #   - 第二条通配所有平台原生二进制包（lightningcss-linux-x64-gnu 等）
-  - "!**/node_modules/lightningcss/**"
-  - "!**/node_modules/lightningcss-*/**"
+  # 桌面壳远程加载线上前端（生产指向 https://im.coclaw.net，不加载本地 dist），
+  # 故 ui 整棵生产依赖树（vue/@nuxt/ui/capacitor/... + 构建工具 tailwind/esbuild/rollup/sass
+  # 及其各平台原生变体）运行时零引用。electron-builder 默认自动收集全部生产依赖进 app.asar，
+  # 这里先整棵排除，再仅重新纳入桌面主进程（electron/*.js）真正 import 的运行时闭环。
+  #   - 白名单 = 5 个 electron-* 直接依赖 + 其传递闭环，共 63 包。此清单手工维护，与根
+  #     THIRD-PARTY-NOTICES.md 的 electron surface 集合是相互独立的副本、无自动对账——
+  #     升级壳子依赖后两处须人工同步核对，存在静默漂移风险
+  #   - 收紧后跨平台原生变体 / 构建工具 / peer 超集包一次性不再出货
+  #   - electron 本体不在此列：它是运行时、由 electron-builder 单独提供，从不打进 asar
+  #   - 重新纳入 glob 锚定顶层 node_modules/<name>/（不加 **/ 前缀）：electron-builder 把
+  #     闭环全部 hoist 到顶层，锚定即只留壳子用的那份；构建工具（如 @capacitor/cli）为版本冲突
+  #     而嵌套的同名副本（.../node_modules/fs-extra 等）不匹配、随排除留在外面
+  - "!**/node_modules/**"
+  - "node_modules/ajv/**"
+  - "node_modules/ajv-formats/**"
+  - "node_modules/ansi-regex/**"
+  - "node_modules/ansi-styles/**"
+  - "node_modules/argparse/**"
+  - "node_modules/atomically/**"
+  - "node_modules/builder-util-runtime/**"
+  - "node_modules/cli-truncate/**"
+  - "node_modules/conf/**"
+  - "node_modules/debounce-fn/**"
+  - "node_modules/debug/**"
+  - "node_modules/dot-prop/**"
+  - "node_modules/electron-context-menu/**"
+  - "node_modules/electron-dl/**"
+  - "node_modules/electron-is-dev/**"
+  - "node_modules/electron-log/**"
+  - "node_modules/electron-store/**"
+  - "node_modules/electron-updater/**"
+  - "node_modules/electron-window-state/**"
+  - "node_modules/emoji-regex/**"
+  - "node_modules/env-paths/**"
+  - "node_modules/escape-goat/**"
+  - "node_modules/escape-string-regexp/**"
+  - "node_modules/ext-list/**"
+  - "node_modules/ext-name/**"
+  - "node_modules/fast-deep-equal/**"
+  - "node_modules/fast-uri/**"
+  - "node_modules/fs-extra/**"
+  - "node_modules/get-east-asian-width/**"
+  - "node_modules/graceful-fs/**"
+  - "node_modules/is-fullwidth-code-point/**"
+  - "node_modules/is-plain-obj/**"
+  - "node_modules/js-yaml/**"
+  - "node_modules/json-schema-traverse/**"
+  - "node_modules/json-schema-typed/**"
+  - "node_modules/jsonfile/**"
+  - "node_modules/lazy-val/**"
+  - "node_modules/lodash.escaperegexp/**"
+  - "node_modules/lodash.isequal/**"
+  - "node_modules/mime-db/**"
+  - "node_modules/mimic-function/**"
+  - "node_modules/minimist/**"
+  - "node_modules/mkdirp/**"
+  - "node_modules/ms/**"
+  - "node_modules/path-exists/**"
+  - "node_modules/pupa/**"
+  - "node_modules/require-from-string/**"
+  - "node_modules/sax/**"
+  - "node_modules/semver/**"
+  - "node_modules/slice-ansi/**"
+  - "node_modules/sort-keys/**"
+  - "node_modules/sort-keys-length/**"
+  - "node_modules/string-width/**"
+  - "node_modules/strip-ansi/**"
+  - "node_modules/stubborn-fs/**"
+  - "node_modules/stubborn-utils/**"
+  - "node_modules/tagged-tag/**"
+  - "node_modules/tiny-typed-emitter/**"
+  - "node_modules/type-fest/**"
+  - "node_modules/uint8array-extras/**"
+  - "node_modules/universalify/**"
+  - "node_modules/unused-filename/**"
+  - "node_modules/when-exit/**"
 
 asar: true
 

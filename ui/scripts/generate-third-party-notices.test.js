@@ -299,12 +299,14 @@ test('FILE_LEVEL_ENTRIES 与安装包内源文件头一致', () => {
 	}
 });
 
-// lightningcss 被生成器无条件排除的前提是 electron-builder 把它裁出 asar；
-// 若有人删了裁剪 glob，这条先红，防"实际分发却不披露"
-test('electron-builder 仍保留 lightningcss 裁剪 glob（与生成器排除联动）', () => {
+// lightningcss 被生成器无条件排除的前提是 electron-builder 把它裁出 asar。
+// 收紧后白名单先整棵排除 node_modules，再逐个重新纳入壳子运行时闭环；lightningcss
+// 不在重新纳入之列，故不进 asar。若有人删了整棵排除、或把 lightningcss 加进白名单，
+// 这条先红，防"实际分发却不披露"。
+test('electron-builder 把 lightningcss 裁出 asar（整棵排除 + 不重新纳入）', () => {
 	const yaml = fs.readFileSync(nodePath.join(UI_ROOT, 'electron-builder.yaml'), 'utf8');
-	expect(yaml).toContain('!**/node_modules/lightningcss/**');
-	expect(yaml).toContain('!**/node_modules/lightningcss-*/**');
+	expect(yaml).toContain('!**/node_modules/**');
+	expect(yaml).not.toMatch(/^\s*-\s*"?node_modules\/lightningcss/m);
 });
 
 // ---- 生成产物（已入库文件）守卫 ----
