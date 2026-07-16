@@ -30,7 +30,7 @@ ui: {
 
 ## 查看组件 theme
 
-覆盖前**必须**先看目标组件的生成 theme：`ui/node_modules/.nuxt-ui/ui/<component>.ts`（Vite 构建时生成）。每个组件 slot 名不同；内置 class 落在 slots 还是 variants，决定你的覆盖该落哪（见下方红线第 3 条）。
+覆盖前**必须**先看目标组件的生成 theme：`ui/node_modules/.nuxt-ui/ui/<component>.ts`（Vite 构建时生成）。每个组件 slot 名不同；内置 class 落在 slots 还是 variants，决定你的覆盖该落哪（见下方红线第 3 条）。内置主题的打包产物在 `@nuxt/ui/dist/shared/ui.<hash>.mjs`——文件名带哈希，别在测试里 import 它。
 
 ## 覆盖优先级
 
@@ -43,7 +43,7 @@ ui: {
 - **内置落在 variant 上的属性，覆盖顶层 `slots.base` 会被变体类去重吃掉**（tv 实测；如 input 各 size 的字号/文字色）——覆盖须落在同名 variant 的 base 上（`variants.size.<每档>.base`，每档都写）。与末条的分工：改**静态逐档**样式落这里；要盖内置**响应式断点**规则（带 `md:` 等前缀的）走 compoundVariants（见末条）。
 - **tailwind-merge 不认 Nuxt UI 语义色为同组**：`text-default` 压不掉内置 `text-highlighted`，两者并存只能 `text-default!` important 决胜。
 - **`input` 覆盖不传导到 `textarea`**：theme 由 input 工厂派生，但配置按组件名取——两者要分别写。
-- **compoundVariants 合并是 append**：你的排在内置之后，同断点同属性靠 tailwind-merge 后者胜出——这是盖内置响应式规则的正解（如 input 用 compoundVariants 的 `md:text-base` 盖回内置 `md:text-sm`；写进 base 无效，compound 在 base 之后应用会反盖）。另：`defaultVariants` 翻到 theme 里没定义的分支值是空操作（如 input 的 `fixed` 只定义了 `false` 分支，翻成 `true` 看着改了实际没动）。
+- **compoundVariants 合并是 append**：你的排在内置之后，同断点同属性靠 tailwind-merge 后者胜出——这是盖内置响应式规则的正解（如 input 用 compoundVariants 的 `md:text-base` 盖回内置 `md:text-sm`；写进 base 无效，compound 在 base 之后应用会反盖）。背景：input 内置的响应式字号（手机 16px、md+ 缩 14/12px）是 iOS 防聚焦缩放方案，但它按宽度 ≥768 当"桌面"，漏掉横屏 iPhone/iPad——仍是 iOS Safari，<16px 照样触发聚焦缩放，故本项目全档盖回 16px。另：`defaultVariants` 翻到 theme 里没定义的分支值是空操作（如 input 的 `fixed` 只定义了 `false` 分支，翻成 `true` 看着改了实际没动）。
 
 ## 测试限制
 
