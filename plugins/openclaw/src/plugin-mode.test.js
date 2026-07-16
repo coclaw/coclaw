@@ -68,8 +68,8 @@ test('plugin mode: /coclaw bind and unbind should succeed', async () => {
 		assert.ok(cfgAfterEnroll.clawId);
 	}
 	finally {
-		// enroll 的 fire-and-forget 路径会调 restartRealtimeBridge → preloadNdc，
-		// initLogger 注册的 native TSFN 会阻止进程退出。forceCleanup 释放该 TSFN。
+		// enroll 的 fire-and-forget 路径会调 restartRealtimeBridge → 真实 preload
+		// （pion Go 进程），文件结束时兜底停掉 singleton 释放进程/句柄。
 		await stopRealtimeBridge({ forceCleanup: true });
 		process.chdir(prevCwd);
 		await mock.close();

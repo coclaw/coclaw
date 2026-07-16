@@ -1,7 +1,7 @@
 # node-datachannel 集成方案
 
 > 创建时间：2026-03-31
-> 状态：已实施（2026-03-31）— 以代码为准，本文档为设计过程记录
+> 状态：**已退役**（依赖 2026-04-19 摘除；`ndc-preloader.js` 与 werift 兜底 2026-07-16 整体删除，现行策略见 `webrtc-impl-strategy.md`）— 本文档为设计过程记录，仅供考古
 > 前置文档：`docs/study/webrtc-connection-research.md`（附录 B：选型评估）
 > 后续文档：[node-datachannel 使用笔记](node-datachannel-notes.md) — 使用过程中的问题、排查和发现
 >

@@ -83,7 +83,6 @@ CoClaw OpenClaw 插件运行在 **OpenClaw gateway 进程内**，把"远端 CoCl
 | `webrtc/rpc-drop-monitor.js` | drop 计数 + 翻转点上报 |
 | `webrtc/pion-preloader.js` | pion-node SDK 初始化（主力实现） |
 | `rpc-routing/run-event-routes.js` | runId → connId 路由表，`event:agent` 帧按发起方 DC 单播。详见 `rpc-routing.md` |
-| `webrtc/ndc-preloader.js` | 历史路径，依赖已摘除，运行不命中（待清理） |
 | `utils/atomic-write.js` | atomic 写文件：write to tmp → rename。所有插件文件 IO 必走 |
 | `utils/mutex.js` | per-file 互斥锁（read-modify-write 必加锁） |
 | `utils/memory-queue.js` / `utils/file-backed-queue.js` | 流控用的内存队列 / 磁盘回退队列（FBQ 已实现，rpc DC 集成待) |
@@ -230,8 +229,8 @@ RPC 契约：`coclaw.chatHistory.list` **透传整个 list（含首位未归档�
 
 未来 agent 扫到这些会以为是主路径，先在这里劝退一下：
 
-- `webrtc/ndc-preloader.js`：node-datachannel 路径。npm 依赖 + vendor 预编译包 2026-04-19 已摘除，运行时必走 fallback 到 werift。代码保留只是"过渡期失败锚点"，待整体清理时一并删。判断 plugin 行为时**只考虑 pion + werift fallback**，不必再为 ndc 推算资源/兼容性。
 - `transport-adapter.js` + `message-model.js`：预留给"未来通过 OpenClaw channel outbound 接口收发消息"的适配层。当前主路径**不经过它**——所有消息走 realtime-bridge 的 server WS。改 inbound/outbound 行为时不要在这里改。
+- WebRTC 实现只有 pion（失败即 `impl=none`，无兜底）；ndc / werift 路径已移除，历史见 `webrtc-impl-strategy.md`。`webrtc-peer.js` 内残留的非 pion 兼容分支为不可达代码（未随剔除顺手重构），判断 plugin 行为时只考虑 pion。
 - `channel-plugin.js` 的 `outbound.sendText`：占位符，仅满足 OpenClaw channel 注册要求。它返回的 messageId 用不上。
 
 ## 关键陷阱速查（具体见对应 doc 或 CLAUDE.md）
@@ -241,7 +240,7 @@ RPC 契约：`coclaw.chatHistory.list` **透传整个 list（含首位未归档�
 - **realtime-bridge.js 公共 API vs 内部边界**：仅 7 个 export 是公共 API（含 1 个测试专用），其余不承诺稳定；详见 [`module-boundaries.md`](module-boundaries.md)。
 - **connId 字符集契约**：`^[A-Za-z0-9._-]+$`；违反时 rpc 队列构造抛 TypeError → 该 conn rpc 残废；详见 [`connid-contract.md`](connid-contract.md)。
 - **bridge 与 server WS 断连不应 closeAll WebRTC session**（DC 走 P2P 独立信令通道）。预存问题，见 `../TODO.md`。
-- **rpc DC 必须自建分片**——pion / werift 都不提供透明的应用层大消息分片。
+- **rpc DC 必须自建分片**——pion 不提供透明的应用层大消息分片（`max-message-size` 是应用层硬上限）。
 - **agent run 类 RPC 响应需绕过 admission 软上限**——否则网络降级时 UI 收不到 endRun 信号 → phantom run。
 
 ## 何时来读这份 doc

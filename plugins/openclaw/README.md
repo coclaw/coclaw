@@ -172,14 +172,11 @@ openclaw gateway call coclaw.upgradeHealth --json
 
 ## WebRTC 实现
 
-插件在运行时按优先级选择 WebRTC 实现：
+WebRTC 唯一实现为 **pion**——通过 `@coclaw/pion-node` SDK 驱动 Go 侧 pion-ipc 进程，实现完整 WebRTC 能力。pion 加载失败时不再兜底（`impl=none`）：RTC 不可用，但 gateway / RPC / 自动升级链路不受影响，可通过发布修复版本自动升级恢复。
 
-1. **pion**（主力）— 通过 `@coclaw/pion-node` SDK 驱动 Go 侧 pion-ipc 进程，实现完整 WebRTC 能力。
-2. **werift**（回退）— 纯 JavaScript 实现，作为 pion 加载失败时的兜底。
+加载结果通过 `coclaw.env impl=...` 日志上报。
 
-选择结果通过 `bridge.started` / `coclaw.env impl=...` 日志上报。
-
-> `ndc-preloader.js`（node-datachannel 路径）的代码仍保留但已摘除 `node-datachannel` 依赖和 vendor 预编译包（2026-04-19）——运行时必然走 fallback 到 werift，待 pion 在全部线上平台稳定观察期结束后与 werift 一并移除。
+> 历史：werift（纯 JS 兜底）与 ndc（node-datachannel）路径已于 2026-07-16 移除。werift 的 DataChannel 不触发 `onbufferedamountlow` 属性回调，而插件的 RPC 背压与文件下载恢复都挂在该回调上——werift 路径实为"能连上但文件/大流量必楔死"的负价值兜底。背景见 `docs/webrtc-impl-strategy.md`。
 
 ## 运行与排障日志
 

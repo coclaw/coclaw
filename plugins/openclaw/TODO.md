@@ -277,7 +277,7 @@
 
 **影响**：高 — 长通话过程跨 TURN 凭证 TTL 边界时，relay-only 路径恢复失败，UI 需全量 rebuild。但 TURN 凭证 TTL 一般较长（小时级），实际触发概率低。
 
-**修复方向**：在 setRemoteDescription 之前调 `existing.pc.setConfiguration({ iceServers: rebuiltFromTurnCreds })`。需先验证 pion-node 与 werift 的 setConfiguration 实现一致性。
+**修复方向**：在 setRemoteDescription 之前调 `existing.pc.setConfiguration({ iceServers: rebuiltFromTurnCreds })`。需先验证 pion-node 的 setConfiguration 实现。
 
 ### claw-binding 并发 bind/unbind R-M-W 跨调用竞态
 
@@ -538,8 +538,7 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 
 **发现日期**：2026-05-09（pre-hub release 设计 review）
 
-**锚点**：
-- `src/webrtc/ndc-preloader.js`（旧 node-datachannel 路径，依赖已摘除，运行不命中）
+**锚点**（`webrtc/ndc-preloader.js` 已于 2026-07-16 随 werift 剔除删掉，从本条移除）：
 - `src/transport-adapter.js` + `src/message-model.js`（"未来通过 channel outbound 收发消息"的预留适配层，主路径不经过）
 - `src/channel-plugin.js:42-51` `outbound.sendText` 占位 + `status.defaultRuntime.running: true` 写死
 - `package.json` `files` 字段为 `src/**/*.js`，会把上述一并发到 npm
@@ -551,7 +550,7 @@ worker 故意不读 OpenClaw 内部 state（pluginDir 由 spawner 通过 `--plug
 4. `status.defaultRuntime.running: true` 写死，admin 看到永远绿、掩盖 bridge 真实状态
 
 **修复方向**：
-- 删 `webrtc/ndc-preloader.js`、`transport-adapter.js`、`message-model.js` 及对应测试（`docs/architecture.md:172-178` 已标"别花时间读"）
+- 删 `transport-adapter.js`、`message-model.js` 及对应测试（`docs/architecture.md` 已标"别花时间读"）
 - `channel-plugin.js` 保留但 `sendText` 改成显式 throw `not-implemented`（含 error code）
 - `status.defaultRuntime.running` 接到 bridge 实状态（singleton 启动且 server WS alive）
 
@@ -824,3 +823,14 @@ systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行�
 **为什么不修**：2026-06-15 用户明确暂不动。属预防性硬化。
 
 **修复方向**：把 `'utun'` 加进 `denyPrefixes`（与现有 `docker0` 同模式，一行）；或更通用地按"私网地址的虚拟网卡"过滤。注意 HasPrefix 误杀红线见 `docs/openclaw-research/pion-interface-filter-hasprefix.md`。
+
+## webrtc-peer.js 非 pion 兼容分支已成不可达代码
+
+**发现日期**：2026-07-16（werift 兜底剔除时点名，刻意不顺手重构）
+**关联**：`src/webrtc/webrtc-peer.js` 的 impl gate 与 duck-typing 分支——ICE restart 仅 pion 放行（`__handleOffer`）、settings 仅 pion 注入、`pc.iceTransports?.[0]`（werift duck-typing，可选链安全短路）、`maxMessageSize` 的"无此属性则不限制"分支等
+
+**问题**：werift/ndc 剔除后现存 impl 只有 `pion` / `none`，而 `none` 根本不会构造 WebRtcPeer——这些 gate 对 pion 恒真/恒假，非 pion 分支成为不可达代码。保留原因：剔除窗口内保持 diff 最小（互审共识），且它们无害（多为可选链/条件短路）。
+
+**修复方向**：单独一轮清理——删除非 pion 分支与相关 JSDoc（`impl` 取值注释）、同步调整对应测试中 `impl: 'ndc'` 一类 mock 口径；顺带评估 `__ndcPreloadResult` / `__ndcCleanup` / `__preloadNdc` 遗留命名是否一并归一（改名会扩散到测试，需独立评审）。
+
+**严重度**：低（纯清理，无行为影响）

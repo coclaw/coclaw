@@ -28,7 +28,7 @@ Full license texts are not reproduced in this file. Where each shipped artifact 
 
 - `ui` (web) — `ui/public/third-party-notices.txt`, surfaced in-app via the “About → Open Source” page (the mobile and desktop shells display the same page).
 - `server` — nearly every dependency keeps its own LICENSE file inside `node_modules` in the server image; a couple (`pause`, `cookie-signature`) publish without a standalone LICENSE file but carry the license text in their bundled README, and are called out in this inventory.
-- `plugin` — the plugin ships as source, and its dependencies carry their own license texts when installed from npm; a few (the `werift` family, `ip`, `nano-time`, `rx.mini`) publish without an embedded license text and are called out here.
+- `plugin` — the plugin ships as source, and its dependencies carry their own license texts when installed from npm.
 - `android` — the in-app open-source license screen (Google oss-licenses), populated from the release dependency set; some entries carry the full license text, but many reference the upstream license by URL or title only.
 - `ios` — the shared web “About → Open Source” page (loaded at runtime by the iOS shell), i.e. `ui/public/third-party-notices.txt`; the two remote SPM packages listed below (`capacitor-swift-pm`, `ion-ios-filesystem`) are included there as manually recorded MIT entries.
 - `electron` — `LICENSE.electron.txt` and `LICENSES.chromium.html` bundled inside the desktop package; the FFmpeg / LGPL source-acquisition note is shown on the open-source notice page.
@@ -54,11 +54,11 @@ This inventory is compiled manually (not wired into CI). To refresh it:
 
 ---
 
-## pnpm JS components (620)
+## pnpm JS components (567)
 
 Deduplicated union of the production dependency trees of the `server`, `ui`, and `plugin` workspaces (`pnpm licenses list --json --prod` per workspace), excluding CoClaw’s own `@coclaw/*` packages (e.g. the in-house `pion` WebRTC fork). A subset of these packages (the Capacitor plugins) also compile native code into the mobile shells and therefore carry `android` / `ios` surfaces. The `electron` surface is carried only by the desktop shell's own runtime closure (63 packages bundled into `app.asar`), not by the whole `ui` tree — see “Surfaces”.
 
-The **License** column records each package's primary license — normally as declared in its npm metadata; a handful of packages publish without a usable declaration and are recorded on other evidence instead (`pause` and `cookie-signature` from the MIT text embedded in their README, `vaul-vue` confirmed MIT from its upstream repository's LICENSE — the published tarball merely omits the license file — and `rx.mini` inferred MIT from its upstream repository, `@shinyoshiaki/jspack` from the BSD-3-Clause LICENSE file in its published tarball — see the notes after the table). Some packages additionally compile individual source files under another (still permissive) license into a shipped binary; those file-level cases are summarized in the file-level license note after the table, with the full per-file copyright lines and license texts reproduced in the applicable per-surface notices (for the mobile/desktop/web clients, `ui/public/third-party-notices.txt`), not in this package-level inventory. **Version sets and surface sets are independent unions**: a version listed for a package does not imply that that specific version appears on every listed surface (where different versions of one package carry different licenses, e.g. `minipass`, `sax`, the license is given per version).
+The **License** column records each package's primary license — normally as declared in its npm metadata; a handful of packages publish without a usable declaration and are recorded on other evidence instead (`pause` and `cookie-signature` from the MIT text embedded in their README — see the notes after the table; `vaul-vue` confirmed MIT from its upstream repository's LICENSE — the published tarball merely omits the license file — and recorded as a manual MIT entry in the `ui` notices file). Some packages additionally compile individual source files under another (still permissive) license into a shipped binary; those file-level cases are summarized in the file-level license note after the table, with the full per-file copyright lines and license texts reproduced in the applicable per-surface notices (for the mobile/desktop/web clients, `ui/public/third-party-notices.txt`), not in this package-level inventory. **Version sets and surface sets are independent unions**: a version listed for a package does not imply that that specific version appears on every listed surface (where different versions of one package carry different licenses, e.g. `minipass`, `sax`, the license is given per version).
 
 | Component | Version(s) | License | Surfaces |
 |---|---|---|---|
@@ -67,7 +67,6 @@ The **License** column records each package's primary license — normally as de
 | `@babel/helper-string-parser` | 7.27.1 | MIT | server, ui |
 | `@babel/helper-validator-identifier` | 7.28.5 | MIT | server, ui |
 | `@babel/parser` | 7.29.0 | MIT | server, ui |
-| `@babel/runtime` | 7.28.6 | MIT | plugin |
 | `@babel/types` | 7.29.0 | MIT | server, ui |
 | `@bufbuild/protobuf` | 2.11.0 | (Apache-2.0 AND BSD-3-Clause) | ui |
 | `@capacitor/android` | 8.2.0 | MIT | ui, android |
@@ -92,8 +91,6 @@ The **License** column records each package's primary license — normally as de
 | `@capawesome/capacitor-badge` | 8.0.1 | MIT | ui, android, ios |
 | `@capsizecss/unpack` | 4.0.0 | MIT | ui |
 | `@esbuild/linux-x64` | 0.27.3; 0.27.4 | MIT | ui |
-| `@fidm/asn1` | 1.0.4 | MIT | plugin |
-| `@fidm/x509` | 1.2.1 | MIT | plugin |
 | `@floating-ui/core` | 1.7.4; 1.7.5 | MIT | ui |
 | `@floating-ui/dom` | 1.7.5; 1.7.6 | MIT | ui |
 | `@floating-ui/utils` | 0.2.10; 0.2.11 | MIT | ui |
@@ -127,11 +124,8 @@ The **License** column records each package's primary license — normally as de
 | `@jridgewell/resolve-uri` | 3.1.2 | MIT | ui |
 | `@jridgewell/sourcemap-codec` | 1.5.5 | MIT | ui |
 | `@jridgewell/trace-mapping` | 0.3.31 | MIT | ui |
-| `@leichtgewicht/ip-codec` | 2.0.5 | MIT | plugin |
-| `@minhducsun2002/leb128` | 1.0.0 | MIT | plugin |
 | `@msgpack/msgpack` | 3.1.3 | ISC | plugin |
-| `@noble/curves` | 1.9.7 | MIT | plugin |
-| `@noble/hashes` | 1.8.0 | MIT | server, plugin |
+| `@noble/hashes` | 1.8.0 | MIT | server |
 | `@nuxt/devtools-kit` | 3.2.1; 3.2.3 | MIT | ui |
 | `@nuxt/fonts` | 0.14.0 | MIT | ui |
 | `@nuxt/icon` | 2.2.1 | MIT | ui |
@@ -143,17 +137,6 @@ The **License** column records each package's primary license — normally as de
 | `@parcel/watcher` | 2.5.6 | MIT | ui |
 | `@parcel/watcher-linux-x64-glibc` | 2.5.6 | MIT | ui |
 | `@parcel/watcher-linux-x64-musl` | 2.5.6 | MIT | ui |
-| `@peculiar/asn1-cms` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-csr` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-ecc` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-pfx` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-pkcs8` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-pkcs9` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-rsa` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-schema` | 2.6.0 | MIT | plugin |
-| `@peculiar/asn1-x509` | 2.6.1 | MIT | plugin |
-| `@peculiar/asn1-x509-attr` | 2.6.1 | MIT | plugin |
-| `@peculiar/x509` | 1.14.3 | MIT | plugin |
 | `@polka/url` | 1.0.0-next.29 | MIT | ui |
 | `@prisma/client` | 6.19.0 | Apache-2.0 | server |
 | `@prisma/config` | 6.19.0 | Apache-2.0 | server |
@@ -165,9 +148,6 @@ The **License** column records each package's primary license — normally as de
 | `@remirror/core-constants` | 3.0.0 | MIT | ui |
 | `@rollup/rollup-linux-x64-gnu` | 4.57.1 | MIT | ui |
 | `@rollup/rollup-linux-x64-musl` | 4.57.1 | MIT | ui |
-| `@shinyoshiaki/binary-data` | 0.6.1 | MIT | plugin |
-| `@shinyoshiaki/ebml-builder` | 0.0.1 | MIT | plugin |
-| `@shinyoshiaki/jspack` | 0.0.6 | BSD-3-Clause | plugin |
 | `@standard-schema/spec` | 1.1.0 | MIT | server, ui |
 | `@swc/helpers` | 0.5.18 | Apache-2.0 | ui |
 | `@tailwindcss/node` | 4.2.1 | MIT | ui |
@@ -246,7 +226,6 @@ The **License** column records each package's primary license — normally as de
 | `@xmldom/xmldom` | 0.8.11 | MIT | ui |
 | `accepts` | 2.0.0 | MIT | server |
 | `acorn` | 8.15.0 | MIT | ui |
-| `aes-js` | 3.1.2 | MIT | plugin |
 | `ajv` | 8.18.0 | MIT | ui, electron |
 | `ajv-formats` | 3.0.1 | MIT | ui, electron |
 | `ansi-regex` | 5.0.1; 6.2.2 | MIT | ui, electron |
@@ -254,22 +233,20 @@ The **License** column records each package's primary license — normally as de
 | `anymatch` | 3.1.3 | ISC | ui |
 | `argparse` | 2.0.1 | Python-2.0 | ui, electron |
 | `aria-hidden` | 1.2.6 | MIT | ui |
-| `asn1js` | 3.0.7 | BSD-3-Clause | plugin |
 | `astral-regex` | 2.0.0 | MIT | ui |
 | `asynckit` | 0.4.0 | MIT | server, ui |
 | `at-least-node` | 1.0.0 | ISC | ui |
 | `atomically` | 2.1.1 | MIT | ui, electron |
 | `axios` | 1.13.5; 1.13.6 | MIT | server, ui |
 | `balanced-match` | 4.0.4 | MIT | ui |
-| `base64-js` | 1.5.1 | MIT | ui, plugin |
+| `base64-js` | 1.5.1 | MIT | ui |
 | `basic-auth` | 2.0.1 | MIT | server |
-| `big-integer` | 1.6.52 | Unlicense | ui, plugin |
+| `big-integer` | 1.6.52 | Unlicense | ui |
 | `birpc` | 2.9.0 | MIT | ui |
 | `body-parser` | 2.2.2 | MIT | server |
 | `bplist-parser` | 0.3.2 | MIT | ui |
 | `brace-expansion` | 5.0.4 | MIT | ui |
-| `buffer` | 6.0.3 | MIT | plugin |
-| `buffer-crc32` | 0.2.13; 1.0.0 | MIT | ui, plugin |
+| `buffer-crc32` | 0.2.13 | MIT | ui |
 | `builder-util-runtime` | 9.5.1 | MIT | ui, electron |
 | `bytes` | 3.1.2 | MIT | server |
 | `c12` | 3.1.0; 3.3.3 | MIT | server, ui |
@@ -301,9 +278,8 @@ The **License** column records each package's primary license — normally as de
 | `crossws` | 0.3.5 | MIT | ui |
 | `css-tree` | 3.2.1 | MIT | ui |
 | `csstype` | 3.2.3 | MIT | ui |
-| `date-fns` | 2.30.0 | MIT | plugin |
 | `debounce-fn` | 6.0.0 | MIT | ui, electron |
-| `debug` | 2.6.9; 4.4.3 | MIT | server, ui, plugin, electron |
+| `debug` | 2.6.9; 4.4.3 | MIT | server, ui, electron |
 | `deepmerge-ts` | 7.1.5 | BSD-3-Clause | server |
 | `define-lazy-prop` | 2.0.0 | MIT | ui |
 | `defu` | 6.1.4 | MIT | server, ui |
@@ -311,7 +287,6 @@ The **License** column records each package's primary license — normally as de
 | `depd` | 2.0.0 | MIT | server |
 | `destr` | 2.0.5 | MIT | server, ui |
 | `detect-libc` | 2.1.2 | Apache-2.0 | ui |
-| `dns-packet` | 5.6.1 | MIT | plugin |
 | `dot-prop` | 10.1.0 | MIT | ui, electron |
 | `dotenv` | 16.6.1; 17.3.1 | BSD-2-Clause | server, ui |
 | `dunder-proto` | 1.0.1 | MIT | server, ui |
@@ -377,7 +352,6 @@ The **License** column records each package's primary license — normally as de
 | `fs-extra` | 9.1.0; 10.1.0; 11.3.4 | MIT | ui, electron |
 | `function-bind` | 1.1.2 | MIT | server, ui |
 | `fuse.js` | 7.1.0 | Apache-2.0 | ui |
-| `generate-function` | 2.3.1 | MIT | plugin |
 | `get-east-asian-width` | 1.6.0 | MIT | ui, electron |
 | `get-intrinsic` | 1.3.0 | MIT | server, ui |
 | `get-proto` | 1.0.1 | MIT | server, ui |
@@ -387,7 +361,7 @@ The **License** column records each package's primary license — normally as de
 | `gopd` | 1.2.0 | MIT | server, ui |
 | `graceful-fs` | 4.2.11 | ISC | ui, electron |
 | `h3` | 1.15.6 | MIT | ui |
-| `has-flag` | 3.0.0; 4.0.0 | MIT | server, ui, plugin |
+| `has-flag` | 3.0.0; 4.0.0 | MIT | server, ui |
 | `has-symbols` | 1.1.0 | MIT | server, ui |
 | `has-tostringtag` | 1.0.2 | MIT | server, ui |
 | `hasown` | 2.0.2 | MIT | server, ui |
@@ -398,13 +372,10 @@ The **License** column records each package's primary license — normally as de
 | `http-errors` | 2.0.1 | MIT | server |
 | `human-signals` | 5.0.0 | Apache-2.0 | ui |
 | `iconv-lite` | 0.7.2 | MIT | server |
-| `ieee754` | 1.2.1 | BSD-3-Clause | plugin |
 | `ignore` | 7.0.5 | MIT | ui |
 | `immutable` | 5.1.5 | MIT | ui |
 | `inherits` | 2.0.4 | ISC | server, ui |
 | `ini` | 4.1.3 | ISC | ui |
-| `int64-buffer` | 1.1.0 | MIT | plugin |
-| `ip` | 2.0.1 | MIT | plugin |
 | `ipaddr.js` | 1.9.1 | MIT | server |
 | `iron-webcrypto` | 1.2.1 | MIT | ui |
 | `is-docker` | 2.2.1 | MIT | ui |
@@ -412,14 +383,11 @@ The **License** column records each package's primary license — normally as de
 | `is-fullwidth-code-point` | 3.0.0; 4.0.0 | MIT | ui, electron |
 | `is-glob` | 4.0.3 | MIT | ui |
 | `is-plain-obj` | 1.1.0 | MIT | ui, electron |
-| `is-plain-object` | 2.0.4 | MIT | plugin |
 | `is-promise` | 4.0.0 | MIT | server |
-| `is-property` | 1.0.2 | MIT | plugin |
 | `is-stream` | 3.0.0 | MIT | ui |
 | `is-what` | 5.5.0 | MIT | ui |
 | `is-wsl` | 2.2.0 | MIT | ui |
 | `isexe` | 2.0.0 | ISC | ui |
-| `isobject` | 3.0.1 | MIT | plugin |
 | `isomorphic.js` | 0.2.5 | MIT | ui |
 | `jiti` | 2.6.1 | MIT | server, ui |
 | `js-tokens` | 9.0.1 | MIT | ui |
@@ -439,10 +407,8 @@ The **License** column records each package's primary license — normally as de
 | `linkify-it` | 5.0.0 | MIT | ui |
 | `linkifyjs` | 4.3.2 | MIT | ui |
 | `local-pkg` | 1.1.2 | MIT | ui |
-| `lodash` | 4.17.23 | MIT | plugin |
 | `lodash.escaperegexp` | 4.1.2 | MIT | ui, electron |
 | `lodash.isequal` | 4.5.0 | MIT | ui, electron |
-| `lodash.memoize` | 4.1.2 | MIT | plugin |
 | `lru-cache` | 11.2.6 | BlueOak-1.0.0 | ui |
 | `magic-regexp` | 0.10.0 | MIT | ui |
 | `magic-string` | 0.30.21 | MIT | ui |
@@ -471,12 +437,9 @@ The **License** column records each package's primary license — normally as de
 | `motion-dom` | 12.34.3 | MIT | ui |
 | `motion-utils` | 12.29.2 | MIT | ui |
 | `motion-v` | 1.10.3 | MIT | ui |
-| `mp4box` | 0.5.4 | BSD-3-Clause | plugin |
 | `mrmime` | 2.0.1 | MIT | ui |
-| `ms` | 2.0.0; 2.1.3 | MIT | server, ui, plugin, electron |
-| `multicast-dns` | 7.2.5 | MIT | plugin |
+| `ms` | 2.0.0; 2.1.3 | MIT | server, ui, electron |
 | `mute-stream` | 3.0.0 | ISC | server |
-| `nano-time` | 1.0.0 | ISC | plugin |
 | `nanoid` | 3.3.11; 5.1.11 | MIT | ui |
 | `native-run` | 2.0.3 | MIT | ui |
 | `negotiator` | 1.0.0 | MIT | server |
@@ -497,7 +460,6 @@ The **License** column records each package's primary license — normally as de
 | `onetime` | 6.0.0 | MIT | ui |
 | `open` | 8.4.2 | MIT | ui |
 | `orderedmap` | 2.1.1 | MIT | ui |
-| `p-cancelable` | 2.1.1 | MIT | plugin |
 | `package-json-from-dist` | 1.0.1 | BlueOak-1.0.0 | ui |
 | `package-manager-detector` | 1.6.0 | MIT | ui |
 | `parseurl` | 1.3.3 | MIT | server |
@@ -543,8 +505,6 @@ The **License** column records each package's primary license — normally as de
 | `punycode.js` | 2.3.1 | MIT | ui |
 | `pupa` | 3.3.0 | MIT | ui, electron |
 | `pure-rand` | 6.1.0 | MIT | server |
-| `pvtsutils` | 1.3.6 | MIT | plugin |
-| `pvutils` | 1.1.5 | MIT | plugin |
 | `qs` | 6.15.0 | BSD-3-Clause | server |
 | `quansync` | 0.2.11 | MIT | ui |
 | `radix3` | 1.1.2 | MIT | ui |
@@ -554,7 +514,6 @@ The **License** column records each package's primary license — normally as de
 | `rc9` | 2.1.2; 3.0.0 | MIT | server, ui |
 | `readable-stream` | 3.6.2 | MIT | ui |
 | `readdirp` | 4.1.2; 5.0.0 | MIT | server, ui |
-| `reflect-metadata` | 0.2.2 | Apache-2.0 | plugin |
 | `regexp-tree` | 0.1.27 | MIT | ui |
 | `reka-ui` | 2.8.2 | MIT | ui |
 | `require-from-string` | 2.0.2 | MIT | ui, electron |
@@ -563,7 +522,6 @@ The **License** column records each package's primary license — normally as de
 | `rollup` | 4.57.1 | MIT | ui |
 | `rope-sequence` | 1.3.4 | MIT | ui |
 | `router` | 2.2.0 | MIT | server |
-| `rx.mini` | 1.4.0 | MIT | plugin |
 | `rxjs` | 7.8.2 | Apache-2.0 | ui |
 | `safe-buffer` | 5.1.2; 5.2.1 | MIT | server, ui |
 | `safer-buffer` | 2.1.2 | MIT | server |
@@ -602,7 +560,7 @@ The **License** column records each package's primary license — normally as de
 | `stubborn-fs` | 2.0.0 | MIT | ui, electron |
 | `stubborn-utils` | 1.0.2 | MIT | ui, electron |
 | `superjson` | 2.2.6 | MIT | ui |
-| `supports-color` | 5.5.0; 8.1.1 | MIT | server, ui, plugin |
+| `supports-color` | 5.5.0; 8.1.1 | MIT | server, ui |
 | `sync-child-process` | 1.0.2 | MIT | ui |
 | `sync-message-port` | 1.2.0 | MIT | ui |
 | `tagged-tag` | 1.0.0 | MIT | ui, electron |
@@ -612,7 +570,6 @@ The **License** column records each package's primary license — normally as de
 | `tapable` | 2.3.0 | MIT | ui |
 | `tar` | 7.5.10 | BlueOak-1.0.0 | ui |
 | `through2` | 4.0.2 | MIT | ui |
-| `thunky` | 1.1.0 | MIT | plugin |
 | `tiny-inflate` | 1.0.3 | MIT | ui |
 | `tiny-typed-emitter` | 2.1.0 | MIT | ui, electron |
 | `tinyexec` | 1.0.2 | MIT | server, ui |
@@ -620,10 +577,7 @@ The **License** column records each package's primary license — normally as de
 | `toidentifier` | 1.0.1 | MIT | server |
 | `totalist` | 3.0.1 | MIT | ui |
 | `tree-kill` | 1.2.2 | MIT | ui |
-| `tslib` | 1.14.1; 2.8.1 | 0BSD | ui, plugin |
-| `tsyringe` | 4.10.0 | MIT | plugin |
-| `turbo-crc32` | 1.0.1 | MIT | plugin |
-| `tweetnacl` | 1.0.3 | Unlicense | plugin |
+| `tslib` | 2.8.1 | 0BSD | ui |
 | `type-fest` | 5.4.4 | (MIT OR CC0-1.0) | ui, electron |
 | `type-is` | 2.0.1 | MIT | server |
 | `type-level-regexp` | 0.1.17 | MIT | ui |
@@ -650,7 +604,6 @@ The **License** column records each package's primary license — normally as de
 | `unused-filename` | 4.0.1 | MIT | ui, electron |
 | `util-deprecate` | 1.0.2 | MIT | ui |
 | `utils-merge` | 1.0.1 | MIT | server |
-| `uuid` | 9.0.1 | MIT | plugin |
 | `varint` | 6.0.0 | MIT | ui |
 | `vary` | 1.1.2 | MIT | server |
 | `vaul-vue` | 0.4.1 | MIT | ui |
@@ -663,12 +616,6 @@ The **License** column records each package's primary license — normally as de
 | `w3c-keyname` | 2.2.8 | MIT | ui |
 | `wavesurfer.js` | 7.12.2 | BSD-3-Clause | ui |
 | `webpack-virtual-modules` | 0.6.2 | MIT | ui |
-| `werift` | 0.19.9 | MIT | plugin |
-| `werift-common` | 0.0.3 | MIT | plugin |
-| `werift-dtls` | 0.5.7 | MIT | plugin |
-| `werift-ice` | 0.2.2 | MIT | plugin |
-| `werift-rtp` | 0.8.8 | MIT | plugin |
-| `werift-sctp` | 0.0.11 | MIT | plugin |
 | `wheel-gestures` | 2.2.48 | MIT | ui |
 | `when-exit` | 2.1.5 | MIT | ui, electron |
 | `which` | 2.0.2 | ISC | ui |
@@ -691,12 +638,9 @@ The **License** column records each package's primary license — normally as de
 
 The full attribution for every such file — copyright lines (or the ASF statement, where the files carry no copyright line) plus license terms — is reproduced as file-level entries in `ui/public/third-party-notices.txt`, which the mobile and desktop shells reach via the “About → Open Source” page. This package-level inventory neither enumerates each file nor reproduces the texts.
 
-**Packages published without a standalone license file.** A handful of packages publish a tarball with no license field and no standalone LICENSE file. They fall into two cases:
+**Packages published without a standalone license file.** A couple of packages publish a tarball with no license field and no standalone LICENSE file:
 
 - `pause` (0.0.1) — ships in the server image; the `package.json` has no license field, but the bundled README contains the full MIT license text and copyright, so it is recorded as MIT on that basis (not inferred). `cookie-signature` is similar (its README embeds the MIT text; version 1.2.2 also ships a standalone LICENSE file).
-- `rx.mini` (1.4.0) — a plugin dependency; the published tarball carries no license field, no license file, and no license text. Its MIT is inferred from the upstream repository — weaker evidence than `vaul-vue`, whose upstream additionally carries a LICENSE file that the published tarball merely omits. Its bytes are not bundled into any CoClaw artifact — the plugin ships as source and installs it from npm.
-
-(`@shinyoshiaki/jspack` publishes a BSD-3-Clause LICENSE file, so it is recorded directly.)
 
 ---
 

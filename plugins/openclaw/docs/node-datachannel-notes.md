@@ -1,5 +1,6 @@
 # node-datachannel 使用笔记
 
+> **已退役**：ndc 依赖 2026-04-19 摘除，`ndc-preloader.js` 与 werift 兜底 2026-07-16 整体删除（现行策略见 `webrtc-impl-strategy.md`）。本文仅供考古。
 > 记录使用 ndc 过程中遇到的问题、排查结论、重要发现和可用的测试方法。  
 > **相关文档**：
 > - [ndc 集成方案](node-datachannel-integration-plan.md) — prebuild bootstrap、werift 回退、实施差异

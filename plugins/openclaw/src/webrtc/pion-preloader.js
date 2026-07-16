@@ -9,7 +9,7 @@ const SEVERE_LOG_PATTERN = /request timeout|orphan response/;
  * 预加载 Pion WebRTC 实现：启动 pion-ipc Go 进程，返回绑定了 ipc 的 PeerConnection。
  *
  * **此函数永不 throw**——所有异常内部捕获，通过 remoteLog 报告。
- * 失败时返回 null（调用方降级到 ndc/werift）。
+ * 失败时返回 null（调用方按 impl='none' 处理，无兜底实现）。
  *
  * binary 解析由 @coclaw/pion-node 内部处理（env → npm 平台包 → PATH）。
  *

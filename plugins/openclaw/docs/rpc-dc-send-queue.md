@@ -35,10 +35,7 @@ producer ─enqueue(jsonStr)─► Queue ─consumeLoop─► RpcDcSender ─dc.
 
 ## 为什么必须自建应用层分片
 
-WebRTC DataChannel 底层基于 SCTP，但 plugin 用的两个 WebRTC 库都**不提供透明的应用层大消息分片**：
-
-- **pion-node**（主力）：`send()` 直通到 Go 侧 pion/webrtc。消息超过远端 SDP 声明的 `a=max-message-size` 时直接抛错。SCTP 传输层会把消息拆成多个 IP 包并透明重组，但 `max-message-size` 是**应用层硬上限**——超过即拒绝，不会自动切分。
-- **werift**（兜底）：SCTP 层确实按 1200 字节自动分片并透明重组，`send()` 可传任意大小消息。但 werift 在 SDP 中声明 `max-message-size: 65536`，**远端按此拒收超大消息**。即使 werift 侧不报错，远端也会丢弃。
+WebRTC DataChannel 底层基于 SCTP，但 pion-node **不提供透明的应用层大消息分片**：`send()` 直通到 Go 侧 pion/webrtc，消息超过远端 SDP 声明的 `a=max-message-size` 时直接抛错。SCTP 传输层会把消息拆成多个 IP 包并透明重组，但 `max-message-size` 是**应用层硬上限**——超过即拒绝，不会自动切分。且对端（浏览器）同样按自己声明的 max-message-size 拒收超大消息。
 
 所以分片必须在应用层做。`dc-chunking.js` 的 `buildChunks` / `createReassembler` 实现了一套 5 字节头（1 flag + 4 msgId BE）的协议：
 

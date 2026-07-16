@@ -781,7 +781,7 @@ test('WebRtcPeer: DataChannel onmessage string data → reassembler 正常解析
 	const fakeChannel = { label: 'rpc', onopen: null, onclose: null, onmessage: null };
 	pc.ondatachannel({ channel: fakeChannel });
 
-	// werift DataChannel 对 string PPID 传递 string 类型
+	// DataChannel string PPID：onmessage 可能收到 string 类型 data
 	const reqPayload = { type: 'req', id: 'ui-2', method: 'test', params: {} };
 	fakeChannel.onmessage({ data: JSON.stringify(reqPayload) });
 

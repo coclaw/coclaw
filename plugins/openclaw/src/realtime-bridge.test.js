@@ -21,17 +21,10 @@ import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } fro
 // 确定性触发、用例确定性地跑；after() 里 clear 让进程正常退出。
 const keepEventLoopAlive = setInterval(() => {}, 60_000);
 
-// singleton 测试会调用真实 preloadNdc → initLogger 注册 native TSFN，
-// 阻止进程退出。finally 中的 stop 不带 forceCleanup，cleanup ref 已丢失，
-// 需直接调 ndc cleanup 兜底释放 TSFN。
+// singleton 测试可能触发真实 preload（pion Go 进程），文件结束时兜底停掉 singleton
 after(async () => {
 	clearInterval(keepEventLoopAlive);
 	try { await stopRealtimeBridge({ forceCleanup: true }); } catch { /* best-effort */ }
-	try {
-		const ndc = await import('node-datachannel');
-		const cleanup = ndc.cleanup ?? ndc.default?.cleanup;
-		if (typeof cleanup === 'function') cleanup();
-	} catch { /* ndc 未安装则无需 cleanup */ }
 });
 
 class FakeWebSocket {
@@ -116,8 +109,8 @@ function noopLogger() {
 	return { warn() {}, info() {}, debug() {} };
 }
 
-/** 默认 preloadNdc mock：返回功能完整的 mock PeerConnection（WebRTC 可用但无 cleanup） */
-async function noopPreloadNdc() {
+/** 默认 preloadPion mock：返回功能完整的 mock PeerConnection（WebRTC 可用但无 cleanup） */
+async function mockPreloadPion() {
 	function MockPC() {
 		const pc = {
 			onicecandidate: null,
@@ -134,20 +127,14 @@ async function noopPreloadNdc() {
 		};
 		return pc;
 	}
-	return { PeerConnection: MockPC, cleanup: null, impl: 'werift' };
-}
-
-/** 默认 preloadPion mock：返回 null（pion 不可用，降级到 ndc） */
-async function noopPreloadPion() {
-	return null;
+	return { PeerConnection: MockPC, cleanup: null, impl: 'pion' };
 }
 
 function createBridge(overrides = {}) {
 	return new RealtimeBridge({
 		WebSocket: FakeWebSocket,
 		resolveGatewayAuthToken: () => '',
-		preloadPion: noopPreloadPion,
-		preloadNdc: noopPreloadNdc,
+		preloadPion: mockPreloadPion,
 		gatewayReadyTimeoutMs: 50,
 		...overrides,
 	});
@@ -3834,45 +3821,45 @@ test('RealtimeBridge should clear remote-log sender on stop', async () => {
 	}
 });
 
-// --- ndc preloader 集成测试 ---
+// --- WebRTC preload（pion 单实现，无兜底）集成测试 ---
 
-test('RealtimeBridge start() should await ndc preload before connecting', async () => {
+test('RealtimeBridge start() should await pion preload before connecting', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let preloadCalled = false;
 	const bridge = createBridge({
-		preloadNdc: async () => {
+		preloadPion: async () => {
 			preloadCalled = true;
-			return { PeerConnection: class NdcPC {}, cleanup: () => {}, impl: 'ndc' };
+			return { PeerConnection: class PionPC {}, cleanup: null, impl: 'pion' };
 		},
 	});
 
 	try {
 		await bridge.start({ logger: noopLogger() });
-		assert.ok(preloadCalled, 'preloadNdc should be called during start');
+		assert.ok(preloadCalled, 'preloadPion should be called during start');
 		// start() 完成后结果已就绪（不再是 promise）
 		assert.ok(bridge.__ndcPreloadResult);
-		assert.equal(bridge.__ndcPreloadResult.impl, 'ndc');
+		assert.equal(bridge.__ndcPreloadResult.impl, 'pion');
 	} finally {
 		await bridge.stop();
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test('RealtimeBridge stop() should NOT call ndc cleanup (deferred to process exit)', async () => {
+test('RealtimeBridge stop() should call pion cleanup and null the refs', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let cleanupCalled = false;
 	const bridge = createBridge({
-		preloadNdc: async () => ({
-			PeerConnection: class NdcPC {},
-			cleanup: () => { cleanupCalled = true; },
-			impl: 'ndc',
+		preloadPion: async () => ({
+			PeerConnection: class PionPC {},
+			cleanup: async () => { cleanupCalled = true; },
+			impl: 'pion',
 		}),
 	});
 
 	try {
 		await bridge.start({ logger: noopLogger() });
 		await bridge.stop();
-		assert.ok(!cleanupCalled, 'cleanup should NOT be called on stop (native threads stay alive)');
+		assert.ok(cleanupCalled, 'pion cleanup should be called on stop (closes Go process)');
 		assert.equal(bridge.__ndcCleanup, null);
 		assert.equal(bridge.__ndcPreloadResult, null);
 	} finally {
@@ -3880,48 +3867,43 @@ test('RealtimeBridge stop() should NOT call ndc cleanup (deferred to process exi
 	}
 });
 
-test('RealtimeBridge stop() should null cleanup ref without calling it', async () => {
+test('RealtimeBridge stop() should be a no-op cleanup when impl=none', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
-	let cleanupCalled = false;
 	const bridge = createBridge({
-		preloadNdc: async () => ({
-			PeerConnection: class NdcPC {},
-			cleanup: () => { cleanupCalled = true; },
-			impl: 'ndc',
-		}),
+		preloadPion: async () => null, // pion 不可用 → impl=none
 	});
 
 	try {
 		await bridge.start({ logger: noopLogger() });
-		await bridge.stop();
-		assert.ok(!cleanupCalled, 'cleanup should not be called');
-		assert.equal(bridge.__ndcCleanup, null, 'cleanup ref should be nulled');
-	} finally {
-		await fs.rm(dir, { recursive: true, force: true });
-	}
-});
-
-test('RealtimeBridge stop() should skip cleanup when werift fallback (no cleanup)', async () => {
-	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
-	const bridge = createBridge({
-		preloadNdc: async () => ({
-			PeerConnection: class WeriftPC {},
-			cleanup: null,
-			impl: 'werift',
-		}),
-	});
-
-	try {
-		await bridge.start({ logger: noopLogger() });
+		assert.equal(bridge.__ndcPreloadResult.impl, 'none');
 		// cleanup 为 null，stop 不应有问题
 		await bridge.stop();
 		assert.equal(bridge.__ndcCleanup, null);
+		assert.equal(bridge.__ndcPreloadResult, null);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test('RealtimeBridge start() should handle preloadNdc rejection gracefully', async () => {
+test('RealtimeBridge start() should fall to impl=none when pion preload returns null', async () => {
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	const bridge = createBridge({
+		preloadPion: async () => null,
+	});
+
+	try {
+		await bridge.start({ logger: noopLogger() });
+		// none 结果必须保持非空三字段契约（start/stop 竞态守卫直接读 .impl / .cleanup）
+		assert.deepEqual(bridge.__ndcPreloadResult, { PeerConnection: null, cleanup: null, impl: 'none' });
+		// versionPromise 已被 await：plugin 版本在 preload 返回前就绪，env 行不得退化 unknown
+		assert.match(bridge.__pluginVersion, /^\d+\.\d+\.\d+/);
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge start() should handle pion preload rejection gracefully (impl=none)', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	const warnings = [];
 	const logger = {
@@ -3929,14 +3911,13 @@ test('RealtimeBridge start() should handle preloadNdc rejection gracefully', asy
 		warn: (msg) => warnings.push(msg),
 	};
 	const bridge = createBridge({
-		preloadNdc: async () => { throw new Error('preload boom'); },
+		preloadPion: async () => { throw new Error('preload boom'); },
 	});
 
 	try {
 		await bridge.start({ logger });
 		// preload 失败被 catch 兜底，bridge 仍启动但 WebRTC 不可用
-		assert.equal(bridge.__ndcPreloadResult.impl, 'none');
-		assert.equal(bridge.__ndcPreloadResult.PeerConnection, null);
+		assert.deepEqual(bridge.__ndcPreloadResult, { PeerConnection: null, cleanup: null, impl: 'none' });
 		assert.ok(warnings.some((w) => w.includes('preload boom')));
 	} finally {
 		await bridge.stop();
@@ -3948,10 +3929,10 @@ test('RealtimeBridge start() awaits slow preload before connecting', async () =>
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
 	let preloadResolved = false;
 	const bridge = createBridge({
-		preloadNdc: async () => {
+		preloadPion: async () => {
 			await new Promise((r) => setTimeout(r, 50));
 			preloadResolved = true;
-			return { PeerConnection: class NdcPC {}, cleanup: () => {}, impl: 'ndc' };
+			return { PeerConnection: class PionPC {}, cleanup: null, impl: 'pion' };
 		},
 	});
 
@@ -3959,19 +3940,18 @@ test('RealtimeBridge start() awaits slow preload before connecting', async () =>
 		// start() 完成时 preload 一定已经完成（因为 await）
 		await bridge.start({ logger: noopLogger() });
 		assert.ok(preloadResolved, 'preload should complete before start returns');
-		assert.equal(bridge.__ndcPreloadResult.impl, 'ndc');
+		assert.equal(bridge.__ndcPreloadResult.impl, 'pion');
 	} finally {
 		await bridge.stop();
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test('RealtimeBridge start() aborts when started=false flips mid-preload (race protection)', async () => {
+test('RealtimeBridge start() aborts when started=false flips mid-preload (pion null → none)', async () => {
 	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
-	let cleanupCalled = false;
 	let resolvePreload;
 	const bridge = createBridge({
-		preloadNdc: () => new Promise((resolve) => { resolvePreload = resolve; }),
+		preloadPion: () => new Promise((resolve) => { resolvePreload = resolve; }),
 		// 跳过 plan-2 fs 预热，避免拖慢到 setTimeout(0) 也未到达 preload 阶段
 		cleanupRpcQueueResiduals: async () => {},
 		measureRpcQueueDiskCap: async () => 0,
@@ -3979,19 +3959,13 @@ test('RealtimeBridge start() aborts when started=false flips mid-preload (race p
 
 	try {
 		const startPromise = bridge.start({ logger: noopLogger() });
-		// 等待 pion preload（noopPreloadPion）完成后，ndc preload 才会被调用
+		// 等待 start → __preloadWebrtc → preloadPion() 被调用
 		await new Promise((r) => setTimeout(r, 0));
 		// preload 仍在进行中，此时调用 stop
 		bridge.started = false; // 模拟 stop() 的可观察副作用：started 翻 false（不真调 stop()，避免误触发 cleanup）
-		// resolve preload
-		resolvePreload({
-			PeerConnection: class NdcPC {},
-			cleanup: () => { cleanupCalled = true; },
-			impl: 'ndc',
-		});
+		// pion 不可用 → __preloadWebrtc 落到 none 字面量；竞态守卫须能安全读 .impl
+		resolvePreload(null);
 		await startPromise;
-		// start 应检测到 started=false，直接返回，不调用 cleanup（native threads 保持活跃）
-		assert.ok(!cleanupCalled, 'cleanup should NOT be called (native threads stay alive for reuse)');
 		assert.equal(bridge.__ndcPreloadResult, null, 'should not assign result after stop');
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -4051,7 +4025,7 @@ test('RealtimeBridge start() locally logs coclaw.env line and remoteLogs bridge.
 		const envInfo = infoLogs.find((m) => m.includes('coclaw.env '));
 		assert.ok(envInfo, 'should log coclaw.env locally via logger.info');
 		// impl 必须是已知 webrtc 实现之一；回归为 'pending' 即视为 fail
-		assert.match(envInfo, /\bimpl=(?:pion|node-datachannel\(ndc\)|werift|none)\b/);
+		assert.match(envInfo, /\bimpl=(?:pion|none)\b/);
 		// plugin 必须是语义版本；回归为 'unknown' 即视为 fail
 		assert.match(envInfo, /\bplugin=\d+\.\d+\.\d+/);
 		// openclaw 在测试环境 runtime=null 时为 'unknown'，生产环境为语义版本
@@ -4139,7 +4113,7 @@ test('RealtimeBridge ws.open re-emits coclaw.env on reconnect (after sender inje
 		const reEmitted = secondTexts.find((t) => t.startsWith('coclaw.env '));
 		assert.ok(reEmitted, 'reconnected ws.open should re-emit coclaw.env');
 		// 收紧为具体值（防回归到 pending/unknown 被静默放行）
-		assert.match(reEmitted, /\bimpl=(?:pion|node-datachannel\(ndc\)|werift|none)\b/);
+		assert.match(reEmitted, /\bimpl=(?:pion|none)\b/);
 		assert.match(reEmitted, /\bplugin=\d+\.\d+\.\d+/);
 		assert.match(reEmitted, /\bopenclaw=(?:unknown|\d+\.\d+\.\d+)/);
 		assert.match(reEmitted, /\bplatform=/);
@@ -4222,8 +4196,7 @@ test('RealtimeBridge __pushInstanceInfo should broadcast full info payload after
 			__deps: {
 				WebSocket: FakeWebSocket,
 				resolveGatewayAuthToken: () => 'tkn',
-				preloadPion: noopPreloadPion,
-				preloadNdc: noopPreloadNdc,
+				preloadPion: mockPreloadPion,
 				gatewayReadyTimeoutMs: 50,
 			},
 		});
@@ -4281,8 +4254,7 @@ test('RealtimeBridge __pushInstanceInfo should omit agentModels field when agent
 			__deps: {
 				WebSocket: FakeWebSocket,
 				resolveGatewayAuthToken: () => 'tkn',
-				preloadPion: noopPreloadPion,
-				preloadNdc: noopPreloadNdc,
+				preloadPion: mockPreloadPion,
 				gatewayReadyTimeoutMs: 50,
 			},
 		});
@@ -4362,8 +4334,7 @@ test('RealtimeBridge sock.open should re-push instance info when gateway already
 			__deps: {
 				WebSocket: FakeWebSocket,
 				resolveGatewayAuthToken: () => 'tkn',
-				preloadPion: noopPreloadPion,
-				preloadNdc: noopPreloadNdc,
+				preloadPion: mockPreloadPion,
 				gatewayReadyTimeoutMs: 50,
 			},
 		});
@@ -4437,8 +4408,7 @@ test('RealtimeBridge sock.open should NOT push instance info when gateway not re
 			__deps: {
 				WebSocket: FakeWebSocket,
 				resolveGatewayAuthToken: () => 'tkn',
-				preloadPion: noopPreloadPion,
-				preloadNdc: noopPreloadNdc,
+				preloadPion: mockPreloadPion,
 				gatewayReadyTimeoutMs: 50,
 			},
 		});
@@ -5026,8 +4996,7 @@ test('dc unicast: TTL scan clears expired entries and warns', async () => {
 	const bridge = new RealtimeBridge({
 		WebSocket: FakeWebSocket,
 		resolveGatewayAuthToken: () => '',
-		preloadPion: noopPreloadPion,
-		preloadNdc: noopPreloadNdc,
+		preloadPion: mockPreloadPion,
 		gatewayReadyTimeoutMs: 50,
 		dcReqTtlMs: 30,   // 30ms TTL
 		dcReqScanMs: 20,  // 20ms 扫描
@@ -5644,9 +5613,8 @@ test('bridge.start should bail out via 10s timeout if rpc-queues prep hangs', as
 		// hang 模拟：永不 resolve（不 reject 也不 resolve）
 		cleanupRpcQueueResiduals: () => new Promise(() => {}),
 		measureRpcQueueDiskCap: async () => 12345, // 不会被调到（cleanup 卡住）
-		// preload 注入 stub 避免 default 路径起 native ndc / pion
+		// preload 注入 stub 避免 default 路径起 native pion
 		preloadPion: async () => null,
-		preloadNdc: async () => ({ PeerConnection: null, cleanup: null, impl: 'none' }),
 	});
 	try {
 		const startPromise = bridge.start({ logger, pluginConfig: {} });
@@ -5670,10 +5638,8 @@ test('bridge.start should bail out via 10s timeout if rpc-queues prep hangs', as
 test('bridge.start should skip preload when started=false flips during cleanup/measure', async () => {
 	const dir = await writeCfg({ token: 't1', serverUrl: 'http://127.0.0.1:3000' });
 	let preloadPionCalled = false;
-	let preloadNdcCalled = false;
 	const bridge = createBridge({
 		preloadPion: async () => { preloadPionCalled = true; return null; },
-		preloadNdc: async () => { preloadNdcCalled = true; return { PeerConnection: null, cleanup: null, impl: 'none' }; },
 		// cleanup 异步——在它 await 期间手动设 started=false 模拟 stop()
 		cleanupRpcQueueResiduals: async (_d, { logger: lg }) => {
 			bridge.started = false; // 模拟 stop 在 cleanup 期间触发
@@ -5685,7 +5651,6 @@ test('bridge.start should skip preload when started=false flips during cleanup/m
 		await bridge.start({ logger: noopLogger(), pluginConfig: {} });
 		// race 守卫应在 measure 之后、preload 之前 return
 		assert.equal(preloadPionCalled, false, 'preloadPion should NOT be called after race guard');
-		assert.equal(preloadNdcCalled, false, 'preloadNdc should NOT be called after race guard');
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -6281,8 +6246,7 @@ test('端到端 wiring：restartRealtimeBridge 装配的 cb 真收到 sessions.c
 			__deps: {
 				WebSocket: FakeWebSocket,
 				resolveGatewayAuthToken: () => 'wire-tok',
-				preloadPion: noopPreloadPion,
-				preloadNdc: noopPreloadNdc,
+				preloadPion: mockPreloadPion,
 				gatewayReadyTimeoutMs: 50,
 			},
 		});

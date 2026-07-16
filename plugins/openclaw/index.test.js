@@ -11,14 +11,9 @@ import { setRuntime, getRuntime } from './src/runtime.js';
 import { stopRealtimeBridge } from './src/realtime-bridge.js';
 import { __reset as __resetRemoteLogPlugin, __buffer as __remoteLogBuffer } from './src/remote-log.js';
 
-// bridgeSvc.start() 触发真实 preloadNdc → initLogger TSFN，需在文件结束时清理
+// bridgeSvc.start() 触发真实 preload（pion Go 进程），需在文件结束时兜底停掉 singleton
 after(async () => {
 	try { await stopRealtimeBridge({ forceCleanup: true }); } catch { /* best-effort */ }
-	try {
-		const ndc = await import('node-datachannel');
-		const cleanup = ndc.cleanup ?? ndc.default?.cleanup;
-		if (typeof cleanup === 'function') cleanup();
-	} catch { /* ndc 未安装则无需 cleanup */ }
 });
 
 /** 构造包含 runtime mock 的最小 api 对象（默认 full 模式，触发完整 register 副作用） */

@@ -522,7 +522,7 @@ bridge 启动期 `cleanupResiduals` + `measureDiskCap` 任一失败时，**fbq �
 ## 故意不做的事
 
 - **跨进程重启的持久化**：插件崩溃/重启后，文件里的旧消息直接丢弃。对端 PC 已失效，陈旧消息送到新对端无意义。
-- **跨 PC 复用队列**：一个 rpc DC 对应一个队列实例；PC 重建整体重来。理论上可扩展，但 RTC 的 SCTP 发送缓冲本身就无法回收"已送入 libdatachannel/werift 但未到达对端"的数据，做不到真正的零丢失，收益不匹配复杂度。
+- **跨 PC 复用队列**：一个 rpc DC 对应一个队列实例；PC 重建整体重来。理论上可扩展，但 RTC 的 SCTP 发送缓冲本身就无法回收"已送入底层实现但未到达对端"的数据，做不到真正的零丢失，收益不匹配复杂度。
 - **消息送达保证**：与原 `RpcSendQueue` 一致，fire-and-forget。
 - **集成层运行期 statfs / 磁盘剩余检查**：完全靠 FBQ 自身的 ENOSPC 自杀式降级兜底（见 §集成方案 §磁盘真打满的兜底）。
 - **插件级总盘上限**：N 条 DC 累计占盘按 N × 单 DC `diskCap` 自然封顶；通过 remoteLog `disk-cap` drop 频率观察，超出预期再加。

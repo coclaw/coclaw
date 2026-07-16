@@ -151,7 +151,6 @@ export class RealtimeBridge {
 		this.__resolveGatewayAuthToken = deps.resolveGatewayAuthToken ?? defaultResolveGatewayAuthToken;
 		this.__loadDeviceIdentity = deps.loadDeviceIdentity ?? loadOrCreateDeviceIdentity;
 		this.__preloadPion = deps.preloadPion ?? null;
-		this.__preloadNdc = deps.preloadNdc ?? null;
 		this.__WebSocket = deps.WebSocket; // undefined=使用 ws 包, null=禁用（测试用）, 其他=自定义实现
 		this.__gatewayReadyTimeoutMs = deps.gatewayReadyTimeoutMs ?? 1500;
 		this.__dcReqTtlMs = deps.dcReqTtlMs ?? DC_REQ_TTL_MS;
@@ -1403,7 +1402,7 @@ export class RealtimeBridge {
 						// 信令消息，与 drain 内的同名日志做区分主要看 msg 文本。
 						const sigType = payload?.type ?? 'unknown';
 						const sigConn = payload?.fromConnId ?? payload?.toConnId ?? 'unknown';
-						this.logger.warn?.(`[coclaw/rtc] signaling error (or werift not found) type=${sigType} conn=${sigConn}: ${err?.message}`);
+						this.logger.warn?.(`[coclaw/rtc] signaling error type=${sigType} conn=${sigConn}: ${err?.message}`);
 						remoteLog(`rtc.signaling-error type=${sigType} conn=${sigConn} msg=${err?.message}`);
 					}
 					return;
@@ -1443,7 +1442,7 @@ export class RealtimeBridge {
 				this.__webrtcPeerReady = null;
 				if (this.webrtcPeer) {
 					try { await this.webrtcPeer.closeAll(); }
-					/* c8 ignore next 3 -- 防御性兜底，werift close 异常时不可崩溃 gateway */
+					/* c8 ignore next 3 -- 防御性兜底，closeAll 异常时不可崩溃 gateway */
 					catch (e) { this.logger.warn?.(`[coclaw/rtc] closeAll failed: ${e?.message}`); }
 					this.webrtcPeer = null;
 				}
@@ -1497,7 +1496,10 @@ export class RealtimeBridge {
 			.then((v) => { this.__pluginVersion = v; })
 			.catch(() => { this.__pluginVersion = 'unknown'; });
 
-		// 1. 尝试 pion（最高优先级）
+		// 唯一实现 pion，失败不再回退（werift 兜底已剔除：其 DataChannel 无
+		// onbufferedamountlow 回调，插件的背压/文件下载恢复挂在该回调上，werift
+		// 路径实为"连上但核心功能楔死"的负价值兜底）。impl='none' 时 RTC 不可用，
+		// 但 gateway / RPC / 自动升级链路不受影响，可发布修复版把机器捞回。
 		const preloadPionFn = this.__preloadPion
 			?? (await import('./webrtc/pion-preloader.js')).preloadPion;
 		const pionResult = await preloadPionFn({ logger: this.logger }).catch((err) => {
@@ -1509,17 +1511,10 @@ export class RealtimeBridge {
 			return pionResult;
 		}
 
-		// 2. 回退到 ndc/werift
-		const preloadNdcFn = this.__preloadNdc
-			?? (await import('./webrtc/ndc-preloader.js')).preloadNdc;
-		const [ndcResult] = await Promise.all([
-			preloadNdcFn().catch((err) => {
-				this.logger.warn?.(`[coclaw] ndc preload unexpected failure: ${err?.message}`);
-				return { PeerConnection: null, cleanup: null, impl: 'none' };
-			}),
-			versionPromise,
-		]);
-		return ndcResult;
+		// none 结果保持非空对象契约（start/stop 竞态守卫直接读 .impl / .cleanup）；
+		// 返回前须等版本预热完成，保证 __buildEnvLine 的 plugin= 字段就绪
+		await versionPromise;
+		return { PeerConnection: null, cleanup: null, impl: 'none' };
 	}
 	/* c8 ignore stop */
 
@@ -1571,7 +1566,7 @@ export class RealtimeBridge {
 		// preload 后还有一道 started 检查兜底（含 pion cleanup），这里先挡住一次无意义的 preload。
 		if (!this.started) return;
 		// 先完成 WebRTC 实现加载，再建立连接，避免 UI 发来 offer 时 RTC 包未就绪
-		// 优先级：pion → ndc → werift → none
+		// 唯一实现 pion，失败即 none（无兜底）
 		const preloadResult = await this.__preloadWebrtc();
 		// 竞态保护：若 preload 期间 stop() 已执行，不再赋值，直接返回。
 		if (!this.started) {
@@ -1583,10 +1578,9 @@ export class RealtimeBridge {
 		}
 		this.__ndcPreloadResult = preloadResult;
 		this.__ndcCleanup = preloadResult.cleanup;
-		const implLabel = preloadResult.impl === 'ndc' ? 'node-datachannel(ndc)' : preloadResult.impl;
-		this.__implLabel = implLabel; // 缓存供 ws.open 时发送
+		this.__implLabel = preloadResult.impl; // 缓存供 ws.open 时发送
 		// 启动信息只本地 log；远程发送统一由 ws.open 触发，避免重复
-		this.logger.info?.(`[coclaw] WebRTC impl: ${implLabel}`);
+		this.logger.info?.(`[coclaw] WebRTC impl: ${this.__implLabel}`);
 		this.logger.info?.(`[coclaw] ${this.__buildEnvLine()}`);
 		remoteLog('bridge.started');
 		// 启动 UI 转发 RPC 路由表周期扫描：1h 间隔扫描 24h 过期条目，避免长程 RPC 残留。
@@ -1699,8 +1693,7 @@ export class RealtimeBridge {
 			await this.webrtcPeer.closeAll().catch(() => {});
 			this.webrtcPeer = null;
 		}
-		// pion: 关闭 Go 进程（异步，快速）
-		// ndc: 不调用 cleanup()——同步 join native threads 耗时 10s+，进程退出时 OS 回收
+		// pion: 关闭 Go 进程（异步，快速）；none: cleanup 为 null，无事可做
 		const impl = this.__ndcPreloadResult?.impl;
 		if (impl === 'pion' && this.__ndcCleanup) {
 			await this.__ndcCleanup().catch(() => {});
@@ -1768,20 +1761,19 @@ export async function restartRealtimeBridge(opts) {
 
 /**
  * @param {object} [opts]
- * @param {boolean} [opts.forceCleanup] - 调用 ndc cleanup() 释放 native TSFN（仅测试用）。
- *   生产环境不调用：cleanup() 会 join native threads（无活跃 PC 时通常 sub-second，
- *   但 worst-case 阻塞 10s），且 gateway 通过 process.exit() 退出无需依赖事件循环排空。
+ * @param {boolean} [opts.forceCleanup] - ndc 时代释放 native TSFN 的历史参数（仅测试用）。
+ *   现存实现（pion/none）下恒为 no-op：pion 的 cleanup 已在 stop() 内处理（fast async），
+ *   none 无 cleanup。保留签名兼容既有测试调用方。
  */
 export async function stopRealtimeBridge({ forceCleanup = false } = {}) {
 	if (!singleton) {
 		return;
 	}
-	// pion 的 cleanup 已在 stop() 内处理（fast async），此处 forceCleanup 仅用于 ndc
 	const impl = singleton.__ndcPreloadResult?.impl;
 	const cleanupFn = (forceCleanup && impl !== 'pion') ? singleton.__ndcCleanup : null;
 	await singleton.stop();
 	singleton = null; // 置 null 后须通过 restartRealtimeBridge 重建
-	/* c8 ignore next 3 -- forceCleanup 仅 ndc 测试清理 TSFN，pion binary 存在时走 pion 路径不触发 */
+	/* c8 ignore next 3 -- 历史 ndc 分支：现存实现下 cleanupFn 恒 null，不可触发 */
 	if (typeof cleanupFn === 'function') {
 		try { cleanupFn(); } catch { /* cleanup 失败不影响 stop 结果 */ }
 	}
