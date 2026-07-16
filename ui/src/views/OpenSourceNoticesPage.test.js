@@ -18,6 +18,12 @@ vi.mock('../composables/use-notify.js', () => ({
 	}),
 }));
 
+// 用可写的 screen 对象替换 env store，便于按用例切换 ltLg（md 及以下 / lg 及以上）
+const envState = vi.hoisted(() => ({ screen: { ltLg: false } }));
+vi.mock('../stores/env.store.js', () => ({
+	useEnvStore: () => envState,
+}));
+
 vi.stubGlobal('__APP_VERSION__', '0.0.0-test');
 
 import OpenSourceNoticesPage from './OpenSourceNoticesPage.vue';
@@ -47,6 +53,7 @@ function stubCapacitor({ platform = 'android', pluginAvailable = true } = {}) {
 
 beforeEach(() => {
 	mockGet.mockResolvedValue({ data: 'NOTICES BODY' });
+	envState.screen.ltLg = false;
 });
 
 afterEach(() => {
@@ -130,4 +137,37 @@ test('原生许可界面打开失败时 notify 错误', async () => {
 
 	expect(mockNotifyError).toHaveBeenCalledWith('notices.nativeOpenFailed');
 	warnSpy.mockRestore();
+});
+
+test('md 及以下把定宽装饰分隔线截短到 30，正文与非纯分隔行不动', async () => {
+	envState.screen.ltLg = true;
+	const eq = '='.repeat(80);
+	const dash = '-'.repeat(80);
+	// 混入普通正文行、80 字符 = / - 分隔线，以及非纯分隔行（===partial）
+	const body = `MIT License text\n${eq}\n${dash}\n===partial keep\nnormal line`;
+	mockGet.mockResolvedValue({ data: body });
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	const rendered = wrapper.find('[data-testid="notices-content"]').text();
+	// 纯分隔线被收窄到 30（不再是 80）
+	expect(rendered).toContain('='.repeat(30));
+	expect(rendered).not.toContain('='.repeat(31));
+	expect(rendered).toContain('-'.repeat(30));
+	expect(rendered).not.toContain('-'.repeat(31));
+	// 普通正文与非纯分隔行原样保留
+	expect(rendered).toContain('MIT License text');
+	expect(rendered).toContain('normal line');
+	expect(rendered).toContain('===partial keep');
+});
+
+test('lg 及以上保留原始 80 字符分隔线', async () => {
+	envState.screen.ltLg = false;
+	const eq = '='.repeat(80);
+	mockGet.mockResolvedValue({ data: `head\n${eq}\ntail` });
+	const wrapper = createWrapper();
+	await flushPromises();
+
+	const rendered = wrapper.find('[data-testid="notices-content"]').text();
+	expect(rendered).toContain('='.repeat(80));
 });

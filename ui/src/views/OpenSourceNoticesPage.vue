@@ -1,9 +1,9 @@
 <template>
 	<div class="flex min-h-0 flex-1 flex-col">
 		<MobilePageHeader :title="$t('notices.title')" fallback="/about" />
-		<main class="flex-1 overflow-auto px-4 py-5 lg:px-5">
+		<main class="flex-1 overflow-auto px-4 pt-4 pb-8 lg:px-5">
 			<div class="mx-auto w-full max-w-3xl">
-				<h1 class="hidden text-xl font-semibold md:block">{{ $t('notices.title') }}</h1>
+				<h1 class="hidden text-xl font-semibold md:block md:text-base">{{ $t('notices.title') }}</h1>
 				<p class="text-sm text-toned md:mt-3">{{ $t('notices.intro') }}</p>
 				<!-- Android 原生壳：跳 Google oss-licenses 标准界面（覆盖 Maven 原生组件） -->
 				<div v-if="nativeLicensesAvailable" class="mt-4">
@@ -25,7 +25,7 @@
 					<p class="text-sm text-toned">{{ $t('notices.loadFailed') }}</p>
 					<UButton size="sm" variant="outline" color="neutral" @click="load">{{ $t('notices.retry') }}</UButton>
 				</div>
-				<pre v-else data-testid="notices-content" class="mt-4 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{{ text }}</pre>
+				<pre v-else data-testid="notices-content" class="mt-4 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{{ displayText }}</pre>
 			</div>
 		</main>
 	</div>
@@ -36,6 +36,7 @@ import axios from 'axios';
 
 import MobilePageHeader from '../components/MobilePageHeader.vue';
 import { useNotify } from '../composables/use-notify.js';
+import { useEnvStore } from '../stores/env.store.js';
 
 export default {
 	name: 'OpenSourceNoticesPage',
@@ -43,7 +44,7 @@ export default {
 		MobilePageHeader,
 	},
 	setup() {
-		return { notify: useNotify() };
+		return { notify: useNotify(), env: useEnvStore() };
 	},
 	data() {
 		const Cap = window.Capacitor;
@@ -56,6 +57,15 @@ export default {
 				&& Cap?.getPlatform?.() === 'android'
 				&& !!Cap?.isPluginAvailable?.('OssLicenses'),
 		};
+	},
+	computed: {
+		// md 及以下（含 md：此时有侧边栏、内容区更窄）把生成器产出的定宽装饰分隔线
+		// （整行 ≥30 个连续 = 或 -）截短到 30，免得 80 字符线撑爆容器、折成残行；
+		// lg 及以上放得下则原样保留。正文其余超长单行靠 whitespace-pre-wrap 折行，不受影响。
+		displayText() {
+			if (!this.env.screen.ltLg) return this.text;
+			return this.text.replace(/^([=-])\1{29,}$/gm, (_, ch) => ch.repeat(30));
+		},
 	},
 	mounted() {
 		this.load();
