@@ -47,6 +47,7 @@
 
 - 本仓库**仅使用 `pnpm`**：统一维护 `pnpm-lock.yaml`，禁止提交 `package-lock.json`
 - 通用需求优先使用工业标准级开源库，禁止造轮子；仅当无合适开源库时才自行编写并放入 `src/utils`
+- **许可红线**：禁止引入 GPL/AGPL/SSPL 等强/网络 copyleft 依赖（含其各版本变体）——本项目主体是带附加限制条款的 Apache-2.0，强 copyleft 会要求整个作品按其条款开源，直接冲突。弱 copyleft（LGPL/MPL/EPL/CDDL）不禁，但仅限不打进出货产物、或以合规方式出货（如可替换动态库）。CI 依赖许可扫描（`pnpm licenses:check`）执法：命中强 copyleft 即红，弱 copyleft 仅警告
 
 ## JavaScript 编码规范（适用于前后端及插件）
 

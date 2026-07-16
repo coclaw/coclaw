@@ -30,6 +30,7 @@
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "pnpm -r --if-present test",
 		"verify": "pnpm run check && pnpm run test",
+		"licenses:check": "node scripts/check-dep-licenses.js",
 		"changeset": "changeset",
 		"changeset:version": "changeset version",
 		"changeset:publish": "changeset publish",

@@ -47,6 +47,12 @@ jobs:
       # 生成 Prisma client（产物 gitignored，全新检出时缺失）；放在 check 之前作为保险，详见 docs/operations/ci.md
       - run: pnpm --filter @coclaw/server prisma:generate
       - run: pnpm check
+      # 依赖许可红线执法（禁强/网络 copyleft），规则见根 AGENTS.md「包管理与依赖」；
+      # 根目录脚本没有别的测试挂点，其单测随本步一起跑。
+      - name: Dependency license scan
+        run: |
+          node --test scripts/check-dep-licenses.test.js
+          pnpm licenses:check
       - name: Wait for MySQL
         run: |
           for i in $(seq 1 60); do
