@@ -9,6 +9,7 @@ import { GATEWAY_RETRY_DELAYS_MS, RealtimeBridge, __getSingletonForTest, classif
 import { readConfig, writeConfig } from './config.js';
 import { getRuntime, setRuntime } from './runtime.js';
 import { remoteLog, __reset as resetRemoteLog, __buffer as remoteLogBuffer } from './remote-log.js';
+import { __resetPluginVersion } from './plugin-version.js';
 
 // 钉住事件循环：本文件多处用例（如 __gatewayAgentRpc 的 timeout / accept_timeout 路径）
 // await 的结果只能靠产品侧 .unref() 的超时定时器兜底 resolve（unref 是生产正确行为，
@@ -3960,6 +3961,29 @@ test('RealtimeBridge start() should handle pion preload rejection gracefully (im
 		// preload 失败被 catch 兜底，bridge 仍启动但 WebRTC 不可用
 		assert.deepEqual(bridge.__ndcPreloadResult, { PeerConnection: null, cleanup: null, impl: 'none' });
 		assert.ok(warnings.some((w) => w.includes('preload boom')));
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('RealtimeBridge start() env 行同时含 impl=none 与就绪的 plugin 版本（冷版本缓存）', async () => {
+	// 双重钉死：① impl=none 机器的舰队可观测锚点（发布 runbook 靠 coclaw.env impl= 点名识别）；
+	// ② none 分支的 await versionPromise——版本缓存冷时 env 行在 start 内同步构建，
+	// 若删掉该 await，fs 读取不可能赶在同步日志语句前完成，此断言确定性变红
+	// （:3929 用例的 __pluginVersion 事后断言杀不死该变异：缓存被前序用例焐热）。
+	__resetPluginVersion();
+	const dir = await writeCfg({ serverUrl: 'http://127.0.0.1:1', token: 'tok' });
+	const infoLogs = [];
+	const logger = { ...noopLogger(), info: (m) => infoLogs.push(String(m)) };
+	const bridge = createBridge({ preloadPion: async () => null });
+
+	try {
+		await bridge.start({ logger });
+		const envInfo = infoLogs.find((m) => m.includes('coclaw.env '));
+		assert.ok(envInfo, 'should log coclaw.env locally');
+		assert.match(envInfo, /\bimpl=none\b/);
+		assert.match(envInfo, /\bplugin=\d+\.\d+\.\d+/);
 	} finally {
 		await bridge.stop();
 		await fs.rm(dir, { recursive: true, force: true });

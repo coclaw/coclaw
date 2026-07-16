@@ -831,6 +831,22 @@ systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行�
 
 **问题**：werift/ndc 剔除后现存 impl 只有 `pion` / `none`，而 `none` 根本不会构造 WebRtcPeer——这些 gate 对 pion 恒真/恒假，非 pion 分支成为不可达代码。保留原因：剔除窗口内保持 diff 最小（互审共识），且它们无害（多为可选链/条件短路）。
 
-**修复方向**：单独一轮清理——删除非 pion 分支与相关 JSDoc（`impl` 取值注释）、同步调整对应测试口径：`webrtc-peer.test.js` 默认 mock impl 仍是已死的 `'ndc'`（约 133 处），应翻成 `'pion'`、非 pion 只保留 ICE-restart reject 等防御性用例（现状是测试在给生产死代码续命）；顺带评估 `__ndcPreloadResult` / `__ndcCleanup` 遗留命名是否一并归一（改名会扩散到测试，需独立评审）。一并清：`file-manager/handler.js` 中描述 ndc 同步报错路径的注释（:456 附近）、未标退役的 `scripts/download-ndc-prebuilds.sh`（下载当前代码完全不消费的二进制）。
+**修复方向**：单独一轮清理——删除非 pion 分支与相关 JSDoc（`impl` 取值注释）、同步调整对应测试口径：`webrtc-peer.test.js` 默认 mock impl 仍是已死的 `'ndc'`（约 133 处），应翻成 `'pion'`、非 pion 只保留 ICE-restart reject 等防御性用例（现状是测试在给生产死代码续命）；顺带评估 `__ndcPreloadResult` / `__ndcCleanup` 遗留命名是否一并归一（改名会扩散到测试，需独立评审）。一并清：`file-manager/handler.js` 中描述 ndc 同步报错路径的注释（:456 附近）、未标退役的 `scripts/download-ndc-prebuilds.sh`（下载当前代码完全不消费的二进制）、`realtime-bridge.test.js` 中名不副实的用例名 "should call `__ndcCleanup`"（body 只断不抛，且现存实现下 `stopRealtimeBridge` 的 cleanupFn 恒 null）。
 
 **严重度**：低（纯清理，无行为影响）
+
+## pion preload 挂死形态会串行阻塞 scheduler 启动与网关就绪（升级链路时序耦合）
+
+**发现日期**：2026-07-16（werift 剔除 deep-review 中 codex 红线专项发现；结构预存、非剔除引入——werift 时代 pion 也是第一顺位，preload 挂死同样先卡住）
+
+**机制**（已逐条核实）：
+- `index.js` 先注册 bridge service、后注册 auto-upgrade scheduler；OpenClaw 按注册顺序**串行** `await service.start()`（上游 `src/plugins/services.ts`，装机版 2026.6.11 同构）。`bridge.start()` 无条件 await `__preloadWebrtc()`，插件层无外层超时——preload 永不 settle 时 scheduler 永不启动，自动升级检查完全不开始。
+- gateway 启动期拒绝 WS 握手（装机版含 startup-unavailable 门禁）：升级 worker 重启网关后健康轮询总窗口 5min（`worker-verify.js` `HEALTH_TOTAL_TIMEOUT_MS`）；bridge 启动慢于 5min 会被误判"新版验证失败"→ 恢复备份 + 目标版本进跳过清单（误回滚）。
+- **现实缓解（当前为何不炸）**：preload 全链有界——pion-node import 失败/binary 缺失快速失败；IPC ping 20s 超时由本插件 `pion-preloader.js` 传入（`DEFAULT_IPC_REQUEST_TIMEOUT_MS`）、pion-node 执行，挂死形态实测 ~25s << 5min。敞口只剩 import 挂死（FS 病态）与 pion-node 未来版本（`^0.4.0` 漂移）超时语义回归等病态形态。
+- 相关钉子：`rtc-isolation.test.js` 已钉"入口静态闭包禁含 native RTC 包"（坏包不会炸插件注册），但"preload promise 挂死"属运行时形态，静态扫描钉不住。
+
+**修复方向**：`start()` 对 `__preloadWebrtc()` 加外层熔断（如 `Promise.race` 超时 → 按 impl=none 继续；晚到的 pion 结果复用既有 race 守卫的 cleanup 路径防 Go 进程孤儿）。scheduler service 注册顺序前移只解决"检查不启动"一半，网关就绪门禁导致的 worker 误回滚仍需熔断兜底。E2E 补挂死形态（binary 存在但 ping 不响应 / preload 永不返回 / 启动 >5min）验证。属行为变更，需单独评审，勿与纯清理混做。
+
+**另**：`stop()` 内 pion cleanup rejection 路径（`realtime-bridge.js` `await this.__ndcCleanup().catch(() => {})`）无用例——删掉 `.catch` 无测试变红，可在补熔断时顺带钉一条。
+
+**严重度**：中低（低概率、单机、有界形态已被 20s 超时兜住；命中即该机器升级通道失效直至人工干预）

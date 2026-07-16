@@ -45,7 +45,7 @@
 - **修复不生效**：`sctpRtoMax`（移动端后台唤醒收敛）与 `interfaceFilter`（docker 伪直连过滤）仅 pion 注入。
 - **无 ICE restart**：仅 pion 放行（`webrtc-peer.js __handleOffer`），werift 只能整 PC rebuild。
 - **仅 TURN/UDP**：werift 只取第一个 `turn:` URL，UDP 受限网络下连不上——恰是最需要兜底的场景。
-- **license 卫生**：werift 传递闭包 63 包含多枚无 license 文本的包（rx.mini / ip / nano-time 等），
+- **license 卫生**：werift 传递闭包 62 包（63 个版本实体）含多枚无 license 文本的包（rx.mini / ip / nano-time 等），
   是依赖树里唯一的 Unknown license 来源。
 
 结论：保留 werift 的唯一"价值"是把"连不上（干净、易诊断）"变成"连上了但坏（脏、难诊断）"。

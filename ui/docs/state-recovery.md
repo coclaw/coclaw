@@ -102,7 +102,7 @@
 - **行为**：
   - ICE `disconnected` → 等待 ICE 自愈（5s 超时，`DISCONNECTED_TIMEOUT_MS`）
   - ICE restart（pion impl）→ 在现有 PC 上重新协商 ICE 层，DTLS/SCTP/DataChannel 保留。ICE check 失败后立即重试，总时间预算 180s（`ICE_RESTART_TIMEOUT_MS`），15s 安全网定时器补位（`ICE_RESTART_SAFETY_MS`）
-  - Plugin 为 ndc/werift impl 时 → 立即收到 `rtc:restart-rejected`（reason=`impl_unsupported`）→ 跳过 restart，直接进入 rebuild
+  - Plugin 为非 pion impl 时 → 立即收到 `rtc:restart-rejected`（reason=`impl_unsupported`）→ 跳过 restart，直接进入 rebuild（防御分支：werift/ndc 兜底已剔除，plugin 现存 impl 只有 pion/none，none 不建 peer，现实不可达）
   - Restart 超时或被 reject → `state = 'failed'` → store 窗口重试 → full rebuild（获取新 TURN 凭证，新建 PeerConnection）
 - **窗口重试预算**（`stores/claws.store.js` `__scheduleRetry`）：5 分钟时间窗口 + 失败后 10s 冷却（**首轮免冷却**）。首次进入循环开窗 + 立即 build（delay=0），让"刚进入恢复循环"的路径不被节流拖慢；窗口内后续失败排 10s 后再 build，避免快速失败死循环耗资源；窗口超时进 unreachable，等 SSE 恢复 / 用户手动重试。DC ready / 外部 reset（offline / sig offline / network online / manual / snapshot rescue）立即清窗——下次重新进循环又享受首轮免冷却。砍掉了原指数退避（1:1 关系不需要错峰，时间窗口本身就是能量上限）
 - **场景**：Web + Capacitor
