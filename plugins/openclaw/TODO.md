@@ -847,6 +847,8 @@ systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行�
 
 **修复方向**：`start()` 对 `__preloadWebrtc()` 加外层熔断（如 `Promise.race` 超时 → 按 impl=none 继续；晚到的 pion 结果复用既有 race 守卫的 cleanup 路径防 Go 进程孤儿）。scheduler service 注册顺序前移只解决"检查不启动"一半，网关就绪门禁导致的 worker 误回滚仍需熔断兜底。E2E 补挂死形态（binary 存在但 ping 不响应 / preload 永不返回 / 启动 >5min）验证。属行为变更，需单独评审，勿与纯清理混做。
 
-**另**：`stop()` 内 pion cleanup rejection 路径（`realtime-bridge.js` `await this.__ndcCleanup().catch(() => {})`）无用例——删掉 `.catch` 无测试变红，可在补熔断时顺带钉一条。
+**暂缓理由（2026-07-16 deep-review 拍板）**：预存非剔除引入（werift 时代结构相同）；现实故障形态有界（~25s << 5min），红线"pion 失败不影响自动升级"在现实形态下成立且经 E2E 实测；熔断属行为变更，剔除窗口无观察期，为理论边角引入未观察的新行为风险账不划算（与"别顺手加 pion retry"同一精神）。
+
+**另**：① `stop()` 内 pion cleanup rejection 路径（`realtime-bridge.js` `await this.__ndcCleanup().catch(() => {})`）无用例——删掉 `.catch` 无测试变红，可在补熔断时顺带钉一条。② impl=none 下每个 `rtc:*` 帧产生 2 条 remoteLog（`rtc.unavailable` + `rtc.signaling-error`），UI 重试循环（5min 窗 + 10s 冷却）下最坏 ~12 条/min、窗口过期即停；buffer 有界不炸内存，降级态逐帧可见有诊断价值——判定不必单修，若做熔断可顺带评估限频。
 
 **严重度**：中低（低概率、单机、有界形态已被 20s 超时兜住；命中即该机器升级通道失效直至人工干预）
