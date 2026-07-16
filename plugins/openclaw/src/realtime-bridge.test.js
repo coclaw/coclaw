@@ -2905,6 +2905,47 @@ test('RealtimeBridge should not create new WebRtcPeer on subsequent rtc: message
 	}
 });
 
+test('RealtimeBridge impl=none: rtc:offer 不崩溃、上报 rtc.unavailable、init 锁复位可重试', async () => {
+	// 端到端钉死本次变更设计出的核心降级态：pion 挂掉（无兜底）的机器收到 UI 信令时，
+	// gateway 不崩、可观测（rtc.unavailable + rtc.signaling-error）、init 锁复位不楔死。
+	resetRemoteLog();
+	FakeWebSocket.instances.length = 0;
+	const dir = await writeCfg({ token: 'rtc-tok', serverUrl: 'https://server.local' });
+	const warns = [];
+	const logger = { ...noopLogger(), warn: (m) => warns.push(String(m)) };
+	const bridge = createBridge({ preloadPion: async () => null });
+	try {
+		await bridge.start({ logger, pluginConfig: {} });
+		assert.equal(bridge.__ndcPreloadResult.impl, 'none');
+		const server = FakeWebSocket.instances[0];
+		// 刻意不 emit open：remoteLog 无 sender，条目留在 buffer 便于断言
+		server.emit('message', {
+			data: JSON.stringify({ type: 'rtc:offer', fromConnId: 'c_none1', payload: { sdp: 'sdp-1' } }),
+		});
+		await waitFor(() => remoteLogBuffer.some((e) => e.text.includes('rtc.signaling-error')), { label: 'first offer handled' });
+		assert.ok(
+			remoteLogBuffer.some((e) => e.text.startsWith('rtc.unavailable')),
+			'should remoteLog rtc.unavailable on init failure',
+		);
+		assert.ok(warns.some((m) => m.includes('signaling error')), 'should warn locally');
+		assert.equal(bridge.webrtcPeer, null, 'webrtcPeer must stay null');
+		assert.equal(bridge.__webrtcPeerReady, null, 'init 锁应复位（后续帧可重试而非永久楔死）');
+		// 第二帧：锁复位后仍走完整失败路径、gateway 不崩
+		const before = remoteLogBuffer.filter((e) => e.text.includes('rtc.signaling-error')).length;
+		server.emit('message', {
+			data: JSON.stringify({ type: 'rtc:offer', fromConnId: 'c_none2', payload: { sdp: 'sdp-2' } }),
+		});
+		await waitFor(
+			() => remoteLogBuffer.filter((e) => e.text.includes('rtc.signaling-error')).length > before,
+			{ label: 'second offer handled after lock reset' },
+		);
+	} finally {
+		await bridge.stop();
+		await fs.rm(dir, { recursive: true, force: true });
+		resetRemoteLog();
+	}
+});
+
 test('RealtimeBridge should dispatch rtc:ice to WebRtcPeer', async () => {
 	const { bridge, server } = await setupConnectedBridge();
 	try {

@@ -34,7 +34,13 @@ async function collectImportClosure(entryAbs) {
 		const file = queue.pop();
 		if (files.has(file)) continue;
 		files.add(file);
-		const src = await fs.readFile(file, 'utf8');
+		let src;
+		try {
+			src = await fs.readFile(file, 'utf8');
+		} catch (err) {
+			// 正则是文本级扫描：注释/字符串里带引号的相对路径也会被当 specifier 压入队列
+			throw new Error(`cannot read ${file} (a quoted path in a comment/string may have been mis-collected as an import specifier): ${err.message}`);
+		}
 		for (const m of src.matchAll(re)) {
 			const spec = m[1];
 			specs.push({ from: nodePath.basename(file), spec });

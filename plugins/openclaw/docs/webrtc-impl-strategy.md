@@ -7,9 +7,10 @@
 ## 当前事实（先把结论放前面）
 
 - **运行时实际路径**：`preloadPion()` 成功 → `impl='pion'`；失败 → `impl='none'`（RTC 不可用）。
-- **impl='none' 的语义**：bridge 照常启动、server WS 照常连接、RPC / 自动升级链路完全不受影响；
-  仅 UI 发来 RTC offer 时记 `rtc.unavailable` 并拒绝。机器可通过发布修复版 + 自动升级捞回
-  （该独立性由 `src/auto-upgrade/rtc-isolation.test.js` 钉死）。
+- **impl='none' 的语义**：bridge 照常启动、server WS 照常连接，gateway 进程 / 本地 RPC 面 /
+  自动升级链路不受影响；**所有走 DataChannel 的远程功能（chat、UI RPC、文件传输）不可用**——
+  任意 `rtc:*` 信令帧到达时记 `rtc.unavailable` 并放弃建连（不回发拒绝帧，UI 靠信令超时感知）。
+  机器可通过发布修复版 + 自动升级捞回（该独立性由 `src/auto-upgrade/rtc-isolation.test.js` 钉死）。
 - **行为分析、资源模型（如 coturn TURN 占用、ICE restart 行为）只考虑 pion**。
 
 ## 为什么是 pion 主力

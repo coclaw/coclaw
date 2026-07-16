@@ -1498,8 +1498,9 @@ export class RealtimeBridge {
 
 		// 唯一实现 pion，失败不再回退（werift 兜底已剔除：其 DataChannel 无
 		// onbufferedamountlow 回调，插件的背压/文件下载恢复挂在该回调上，werift
-		// 路径实为"连上但核心功能楔死"的负价值兜底）。impl='none' 时 RTC 不可用，
-		// 但 gateway / RPC / 自动升级链路不受影响，可发布修复版把机器捞回。
+		// 路径实为"连上但核心功能楔死"的负价值兜底）。impl='none' 时所有走 DC 的
+		// 远程功能（chat / UI RPC / 文件）不可用；gateway 进程、本地 RPC 面与
+		// 自动升级链路不受影响，可发布修复版把机器捞回。
 		const preloadPionFn = this.__preloadPion
 			?? (await import('./webrtc/pion-preloader.js')).preloadPion;
 		const pionResult = await preloadPionFn({ logger: this.logger }).catch((err) => {

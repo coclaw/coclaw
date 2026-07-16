@@ -831,6 +831,6 @@ systemd **system service** 变体下 `systemd-run` 探针（无 `--user`）行�
 
 **问题**：werift/ndc 剔除后现存 impl 只有 `pion` / `none`，而 `none` 根本不会构造 WebRtcPeer——这些 gate 对 pion 恒真/恒假，非 pion 分支成为不可达代码。保留原因：剔除窗口内保持 diff 最小（互审共识），且它们无害（多为可选链/条件短路）。
 
-**修复方向**：单独一轮清理——删除非 pion 分支与相关 JSDoc（`impl` 取值注释）、同步调整对应测试中 `impl: 'ndc'` 一类 mock 口径；顺带评估 `__ndcPreloadResult` / `__ndcCleanup` / `__preloadNdc` 遗留命名是否一并归一（改名会扩散到测试，需独立评审）。
+**修复方向**：单独一轮清理——删除非 pion 分支与相关 JSDoc（`impl` 取值注释）、同步调整对应测试口径：`webrtc-peer.test.js` 默认 mock impl 仍是已死的 `'ndc'`（约 133 处），应翻成 `'pion'`、非 pion 只保留 ICE-restart reject 等防御性用例（现状是测试在给生产死代码续命）；顺带评估 `__ndcPreloadResult` / `__ndcCleanup` 遗留命名是否一并归一（改名会扩散到测试，需独立评审）。一并清：`file-manager/handler.js` 中描述 ndc 同步报错路径的注释（:456 附近）、未标退役的 `scripts/download-ndc-prebuilds.sh`（下载当前代码完全不消费的二进制）。
 
 **严重度**：低（纯清理，无行为影响）

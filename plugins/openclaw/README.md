@@ -172,7 +172,7 @@ openclaw gateway call coclaw.upgradeHealth --json
 
 ## WebRTC 实现
 
-WebRTC 唯一实现为 **pion**——通过 `@coclaw/pion-node` SDK 驱动 Go 侧 pion-ipc 进程，实现完整 WebRTC 能力。pion 加载失败时不再兜底（`impl=none`）：RTC 不可用，但 gateway / RPC / 自动升级链路不受影响，可通过发布修复版本自动升级恢复。
+WebRTC 唯一实现为 **pion**——通过 `@coclaw/pion-node` SDK 驱动 Go 侧 pion-ipc 进程，实现完整 WebRTC 能力。pion 加载失败时不再兜底（`impl=none`）：所有依赖 WebRTC DataChannel 的远程功能（chat、UI RPC、文件传输）不可用；gateway 进程、本地 RPC 面与自动升级不受影响，可通过发布修复版本自动升级恢复。
 
 加载结果通过 `coclaw.env impl=...` 日志上报。
 

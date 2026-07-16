@@ -318,7 +318,7 @@ export function createFileHandler({ resolveWorkspace, logger, deps = {} }) {
 
 	/**
 	 * 处理 file:<transferId> DataChannel
-	 * @param {object} dc - werift DataChannel
+	 * @param {object} dc - DataChannel
 	 * @param {string} [connId] - 所属 PeerConnection 的连接 ID
 	 */
 	function handleFileChannel(dc, connId) {
