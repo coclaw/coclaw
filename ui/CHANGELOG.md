@@ -1,5 +1,16 @@
 # @coclaw/ui
 
+## 0.34.0
+
+### Minor Changes
+
+- f498aff: Add an Open Source Notices page as the central third-party license disclosure for all CoClaw clients: a generated THIRD-PARTY-NOTICES document covering the production dependency tree (reachable from the About page), an FFmpeg (LGPL-2.1) dynamic-linking and source-availability statement for the Electron desktop build, and the standard Google oss-licenses screen for Android native components. Also exclude the build-only lightningcss (MPL-2.0) packages from the desktop app bundle.
+
+### Patch Changes
+
+- f27c693: Refine the Open Source Notices page layout: align its top/bottom padding with the Add Claw page, shrink the wide-screen heading to 1rem, and on md-and-below screens (where the sidebar narrows the content area) shorten the notice text's fixed-width decorative separator lines (full rows of `=` or `-`) to 30 characters so they no longer overflow and wrap into ragged remnants. lg-and-up screens keep the original separators, and the render-time transform leaves all other body text untouched (the generator and public/third-party-notices.txt are not modified).
+- 6820434: Tighten the electron-builder file whitelist to the desktop shell's runtime dependency closure. The Electron build loads the hosted frontend at runtime, so the ui production dependency tree and its build tools (tailwind/esbuild/rollup/sass and their native variants) are never referenced by the shell. Exclude the whole node_modules tree and re-include only the shell main-process runtime closure, dropping cross-platform native variants, build tools, and peer supersets from app.asar.
+
 ## 0.33.0
 
 ### Minor Changes
