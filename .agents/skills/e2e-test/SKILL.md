@@ -29,7 +29,7 @@ pnpm e2e:ci -- --grep-invert @resilience  # 排除某类
 
 ## 测试账号
 
-- 后端测试账号（本地认证）：loginName=`test`；password=`12345678`
+- 后端测试账号（本地认证）：凭据常量定义在 `ui/e2e/helpers.js`（`TEST_LOGIN_NAME` / `TEST_PASSWORD`）
 - `globalSetup` 会自动创建该账号
 
 ## 标签分类

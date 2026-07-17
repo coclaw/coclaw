@@ -72,4 +72,4 @@
 
 - qidianchat 代码在仓库根 `ref-projects/qidianchat`，需要时可阅读
 - 对照参考文档见 `ui/docs/quasar-migration-reference.md`
-- 需要时还可以爬取运行中的 qidianchat（如用 playwright）。app 入口 `https://127.0.0.1:8443/`，SSL 证书自签名；用户名：test；密码：123456
+- 需要时还可以爬取运行中的 qidianchat（如用 playwright）。app 入口 `https://127.0.0.1:8443/`，SSL 证书自签名；登录凭据不入库，见本地 `ui/.env.local`（未跟踪；没有就向用户索取）
