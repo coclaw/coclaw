@@ -56,7 +56,8 @@ fi
 RAW="${1:?usage: release-publish.sh <version>  e.g. 0.32.11 或 v0.32.11}"
 VERSION="${RAW#v}"
 TAG="v$VERSION"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "bad version: $RAW"; exit 1; }
+# 尾部锚定：TAG 会内插进镜像监控的 jq 过滤串，畸形尾巴（引号/空格）会破坏表达式。
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "bad version: $RAW"; exit 1; }
 
 command -v gh >/dev/null 2>&1 || { echo "missing command: gh"; exit 1; }
 
@@ -104,6 +105,18 @@ echo "CI conclusion: $CONCLUSION"
 [ "$CONCLUSION" = "success" ] || { echo "CI not green ($CONCLUSION); aborting tag/release"; exit 1; }
 
 echo "=== tag ==="
+# 推 tag 前快照现存最新 publish-images run id：镜像监控只认比它新的 run，防捞历史 run（详见 images 段）。
+# 放在建本地 tag 之前，免得查询期间脚本被杀留下未推送的本地 tag；timeout+短重试抗 API 瞬时抖动。
+# 成功但无任何历史 run（首次发布）→ 0；重试后仍失败 → 留空，监控段将保守 WARN 退出，不冒归属错 run 的险。
+PUB_BASELINE_ID=""
+for _ in $(seq 1 3); do
+	if out=$(timeout 15 gh run list --workflow publish-images.yaml --limit 1 --json databaseId -q '.[0].databaseId // empty'); then
+		PUB_BASELINE_ID="${out:-0}"
+		break
+	fi
+	sleep 3
+done
+[[ "$PUB_BASELINE_ID" =~ ^[0-9]+$ ]] || PUB_BASELINE_ID=""
 # 不存在才建（`git tag -l` 命中失败也退 0，不能当存在性判断）；本次新建则记下，push 失败时回滚本地 tag。
 TAG_CREATED=false
 if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
@@ -129,15 +142,26 @@ else
 	echo "prev tag $BASE -> 预期 build_server=$BUILD_SERVER build_ui=$BUILD_UI"
 fi
 
-# 找 tag push 触发的 publish-images run（按 push 事件取最新；有注册延迟，短重试）。
+# 找本次 tag push 触发的 publish-images run。--commit 服务端过滤 + 客户端三重过滤防捞历史 run 报假阳性：
+#   headBranch == 本次 tag 名（tag 触发的 run 其 headBranch 就是 tag 名，排除其它 tag 的 run）；
+#   headSha == 本次 SHA（钉确切 commit，与 --commit 同义、留作双保险）；
+#   databaseId > 推 tag 前的快照（排除同 tag 重跑时的既有 run——push no-op 不触发新构建）。
+# 新 run 出现在 API 列表有延迟，窗口内裸「取最新」会拿到上一个 tag 的历史 run，故须过滤 + 短重试。
+# 快照比较靠「run id 随创建时间递增」——实测稳定但非公开契约；若失效只会漏掉新 run 走 WARN（fail-safe）。
+if [ -z "$PUB_BASELINE_ID" ]; then
+	echo "WARN: 推 tag 前未能快照 publish-images run 基线（API 异常）——无法可靠归属本次 tag 触发的 run，去 Actions 页核实 $TAG 的构建（tag 已推，非门禁）"
+	exit 0
+fi
 PUB_RUN_ID=""
 for _ in $(seq 1 12); do
-	PUB_RUN_ID=$(gh run list --workflow publish-images.yaml --event push --limit 1 --json databaseId -q '.[0].databaseId // empty' || true)
+	PUB_RUN_ID=$(gh run list --workflow publish-images.yaml --event push --commit "$SHA" --limit 20 \
+		--json databaseId,headBranch,headSha \
+		-q "[.[] | select(.headBranch == \"$TAG\" and .headSha == \"$SHA\" and .databaseId > $PUB_BASELINE_ID)][0].databaseId // empty" || true)
 	[ -n "$PUB_RUN_ID" ] && break
 	sleep 5
 done
 if [ -z "$PUB_RUN_ID" ]; then
-	echo "WARN: publish-images run 未找到——去 Actions 页确认是否触发/需手动补建（tag 已推，非门禁）"
+	echo "WARN: 未找到本次 $TAG@$SHA 触发的 publish-images run——若 tag 先前已存在，push 为 no-op、不会触发新构建，需手动 gh workflow run publish-images.yaml 补建；否则去 Actions 页确认（tag 已推，非门禁）"
 	exit 0
 fi
 echo "publish-images run id: $PUB_RUN_ID"

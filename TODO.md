@@ -42,11 +42,12 @@
 - `docs/README.md:74-82` "Product — 产品文档"段列出 7 个 `docs/product/*.md`，但 `docs/product/` 目录不存在，整段为坏指针。
 - 修复方向：查 git 史确认这些文档去向（恢复目录或更新路径），否则删除该段。
 
-## release-publish.sh 镜像监控可能捞到历史 run 报假阳性（2026-07-07，R5 skills 打磨终审核实，预存脚本缺陷）
+## release-publish.sh 本地已存在的同名 tag 不核对指向就直接 push（2026-07-18，镜像监控修复的 codex 二审发现，预存风险）
 
-- `scripts/release-publish.sh` 找 tag 触发的 publish-images run 时只 `gh run list --workflow publish-images.yaml --event push --limit 1`，未按 headSha/tag 过滤。
-- 触发场景：对已存在的 tag 重跑脚本（root 版本未变 / 误重跑）——push tag 是 no-op、不触发新构建，脚本会捞到上一次的历史 run 并可能报"镜像构建成功"假阳性。
-- release skill 已在文案层规避（root 版本不变时不走脚本、改手动 `gh workflow run`）；脚本侧加固：按 `--json headSha` 匹配本次 SHA，或检测 tag 已存在于远端时直接 WARN 跳过镜像段。
+- `scripts/release-publish.sh` tag 段：本地已有 `v<version>` tag 时跳过创建、直接 `git push origin $TAG`。若本地 tag 指向旧 commit 且远端恰好没有该 tag，会把旧 commit 的 tag 推上去、触发对错误 commit 的镜像构建，日志却打印 `tagged & pushed $TAG @ $SHA`（误导为本次 SHA）。
+- 镜像监控段此时会因 headSha 不匹配报 WARN「未找到本次 tag 触发的 run」（fail-safe，不会假阳性），但 tag 本身已打错，属发布正确性问题。
+- 修复方向：push 前将既有 tag 解引用（`git rev-parse "$TAG^{commit}"`）与 `$SHA` 比对，不一致即非零退出提示人工处置。
+- 暂缓理由：属 tag 段预存缺口，与本次镜像监控修复正交（护栏为最小变更未顺手改）；触发前提（本地残留指错的同名 tag 且远端无此 tag）在单人发布流下罕见。
 
 ## docs/versioning.md 与 release skill 的 root 版本口径漂移（2026-07-07，R5 skills 打磨终审核实，预存文档不一致）
 

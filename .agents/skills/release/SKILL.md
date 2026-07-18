@@ -89,7 +89,7 @@ bash scripts/release-publish.sh --decide HEAD     # 可选预演：只打印镜�
 
 镜像该建哪些（server / ui / 两者）由脚本**自动推导**——与 `publish-images.yaml` 同源（自上个 tag 起的路径 diff，根依赖变更则全建），据此调监控节奏（含 server 的 arm64 慢构建先等过拐点，仅 ui 从头短轮询）并校验实际构建。
 
-> **盲区兜底：root 版本不变（tag 已存在）**：此时**别指望脚本管镜像**——对已存在 tag 的 push 是 no-op、不会触发新构建，而脚本的镜像监控只按 push 事件取最新 run、会捞到上一次的历史 run 报假阳性"构建成功"。正确做法：手动 `git push origin main` → 等该 SHA 的 CI 绿 → `gh workflow run publish-images.yaml` 补建。手动触发**始终全建**（拿不到 tag 语义、不做选择性构建），是该盲区的可靠兜底。
+> **盲区兜底：root 版本不变（tag 已存在）**：此时**别指望脚本管镜像**——对已存在 tag 的 push 是 no-op、不会触发新构建。脚本的镜像监控只认本次 tag 触发的新 run（按 tag 名 + SHA + 新于推 tag 前的 run 快照三重过滤），此情形下会 WARN「未找到本次 tag 触发的 run」而不误报成功，但它不会替你触发构建。正确做法：手动 `git push origin main` → 等该 SHA 的 CI 绿 → `gh workflow run publish-images.yaml` 补建。手动触发**始终全建**（拿不到 tag 语义、不做选择性构建），是该盲区的可靠兜底。
 
 ### 7A. Release 判断
 
