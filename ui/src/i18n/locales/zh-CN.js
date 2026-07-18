@@ -180,7 +180,7 @@ export const zhCNMessages = {
 		serverVersion: '服务端',
 	},
 	notices: {
-		title: '开源声明',
+		title: '开源软件声明',
 		intro: 'CoClaw 基于开源软件构建。本页列出 CoClaw 客户端所含第三方组件的版权声明与许可证信息。清单基于本次构建解析到的依赖生成，平台相关的原生二进制组件可能因发布平台而异。',
 		androidNative: 'Android 原生组件许可',
 		androidNativeDesc: 'Android 原生组件的许可信息由 Google 官方 oss-licenses 工具按构建元数据收集，部分组件仅提供许可证链接或标题。',

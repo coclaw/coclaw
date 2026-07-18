@@ -180,7 +180,7 @@ export const zhTWMessages = {
 		serverVersion: '服務端',
 	},
 	notices: {
-		title: '開源聲明',
+		title: '開放原始碼授權',
 		intro: 'CoClaw 基於開源軟體構建。本頁列出 CoClaw 用戶端所含第三方元件的版權聲明與授權資訊。清單基於本次建置解析到的相依項目產生，平台相關的原生二進位元件可能因發布平台而異。',
 		androidNative: 'Android 原生元件授權',
 		androidNativeDesc: 'Android 原生元件的授權資訊由 Google 官方 oss-licenses 工具依建置中繼資料收集，部分元件僅提供授權連結或標題。',

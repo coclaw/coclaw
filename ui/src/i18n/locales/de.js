@@ -180,7 +180,7 @@ export const deMessages = {
 		serverVersion: 'Server',
 	},
 	notices: {
-		title: 'Open-Source-Hinweise',
+		title: 'Open-Source-Lizenzen',
 		intro: 'CoClaw basiert auf Open-Source-Software. Diese Seite listet Copyright-Hinweise und Lizenzinformationen der in den CoClaw-Clients enthaltenen Drittanbieter-Komponenten auf. Die Liste wird aus den für diesen Build aufgelösten Abhängigkeiten erzeugt; plattformspezifische native Binärdateien können je nach Release-Plattform variieren.',
 		androidNative: 'Lizenzen nativer Android-Komponenten',
 		androidNativeDesc: 'Die Lizenzinformationen nativer Android-Komponenten werden mit Googles offiziellem oss-licenses-Werkzeug aus den Build-Metadaten gesammelt; für manche Komponenten liegt nur ein Lizenzlink oder Titel vor.',
