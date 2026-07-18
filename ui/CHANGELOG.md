@@ -1,5 +1,11 @@
 # @coclaw/ui
 
+## 0.34.1
+
+### Patch Changes
+
+- 99ce848: Reword the open source notices page title in all locales to match each language's mainstream platform wording (e.g. license-based phrasing shipped by Google/Android and major local apps), replacing literal translations of "Open Source Notices"
+
 ## 0.34.0
 
 ### Minor Changes
