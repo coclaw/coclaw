@@ -236,7 +236,7 @@ ui/
     "updater": {
       "pubkey": "",
       "endpoints": [
-        "https://github.com/AYuaner/coclaw/releases/latest/download/latest.json"
+        "https://github.com/coclaw/coclaw/releases/latest/download/latest.json"
       ]
     }
   }

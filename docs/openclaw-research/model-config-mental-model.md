@@ -1,8 +1,8 @@
 # OpenClaw 模型配置与规则
 
 > 更新时间：2026-05-28
-> 第一阅读者：xiaohuaxi（CoClaw 维护者）。第二阅读者：Agent。
-> 目的：用最简洁的方式呈现 OpenClaw 关于"模型"这件事的完整机制，让我俩看一眼就能在脑子里立起完整的规则地图。
+> 第一阅读者：CoClaw 维护者。第二阅读者：Agent。
+> 目的：用最简洁的方式呈现 OpenClaw 关于"模型"这件事的完整机制，便于维护者与 Agent 快速建立完整的规则地图。
 > 源码定位放附录 C，需要核实/扩展时再翻；CoClaw 写凭据 SOP 见附录 E。
 
 ---
@@ -670,7 +670,7 @@ OpenRouter 在插件清单里登记了一条规则：用户引用 OpenRouter 模
 - `ensureAuthProfileStore(agentDir?, options?): AuthProfileStore` —— **位置参数**（不是 object params）
 - `listProfilesForProvider(store, provider): string[]` —— 返回 profileId 数组，按 provider 维度过滤
 
-**用户机器实测事实**（2026-05-13）
+**某测试环境实测事实**（2026-05-13）
 - openclaw v2026.5.7（npm 全局装）
 - 92 个 bundled plugins
 - `plugins.entries` 只显式写了 `openai` 和 `openclaw-coclaw`
@@ -683,7 +683,7 @@ OpenRouter 在插件清单里登记了一条规则：用户引用 OpenRouter 模
 
 > 2026-05-13 追加。本附录解释"想拿一份完整 provider 列表"时三条数据源的差异，以及实测出的数量对照；供后续需要扩展 provider UI 时参考。
 
-### D.1 三条数据源 + 实测数量（v2026.5.7，本机）
+### D.1 三条数据源 + 实测数量（v2026.5.7，实测环境）
 
 | 来源 | provider 数 | 含意 |
 |---|---|---|

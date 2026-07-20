@@ -5,10 +5,6 @@
 - `deploy/README.md` 目录结构里 compose.dev.yaml 标注「本地开发（仅 MySQL）」，实际该文件含 mysql 与 coturn 两个服务，待修正。
 - 来源：CLAUDE.md 梳理 review 中核实的预存问题，按规范不顺手修。
 
-## dual-ip-deployment-notes.md 头部"临时文档"标注与正式记录地位不符（发现日期 2026-06-10）
-
-- `deploy/docs/dual-ip-deployment-notes.md` 头部自称「临时文档，用于上下文压缩后继续工作」，但 `deploy/AGENTS.md` 两处（资产索引、TURNS 段）把它当正式记录引用，标注会误导读者低估其可信度，待修订头部状态标注。
-
 ## im.coclaw.net UI 部署改为拉 GHCR 镜像（与自托管一致）（发现日期 2026-06-20）
 
 - 背景：评估 CD 上半部分（自动化镜像构建）时，用户决定把 im.coclaw.net 的 UI 部署从「rsync 静态产物 + `static/ui/current` 软链」切到「拉 GHCR `ghcr.io/coclaw/ui` 镜像、走 `ui-init`」，与自托管用户一致。当前软链方案只是早期 UI 高频更新的产物，现已进入维护期、发版不频繁，无需该快速路径。

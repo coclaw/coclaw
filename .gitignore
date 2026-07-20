@@ -28,6 +28,9 @@ test-results/
 *.crt
 *.pem
 
+# 私有生产运维记录（真实 IP/拓扑/实例信息，仅维护机本地，永不入库）
+deploy/docs/private/
+
 # Logs & temp
 *.log
 tmp/

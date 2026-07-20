@@ -87,7 +87,7 @@ Gateway 启动时通过 `setCurrentPluginMetadataSnapshot(pluginLookUpTable, { c
 直接 patch bundled dist（每次 `openclaw` 升级需要重打）：
 
 ```bash
-F=/home/xhx/.nvm/versions/node/<version>/lib/node_modules/openclaw/dist/manifest-model-id-normalization-*.js
+F=~/.nvm/versions/node/<version>/lib/node_modules/openclaw/dist/manifest-model-id-normalization-*.js
 cp "$F" "$F.bak"
 ```
 

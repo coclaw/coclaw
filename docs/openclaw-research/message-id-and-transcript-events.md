@@ -30,10 +30,10 @@ OpenClaw 在持久化层（pi-coding-agent SessionManager）每条 message 写�
 ### 2. 实测样本
 
 ```
-{"type":"session","version":3,"id":"6a2b10ea-529e-41c1-88e2-9b1610a96d52", ...}        ← session 头：完整 UUID
-{"type":"message","id":"ab563680","parentId":"66494af6","timestamp":"2026-05-07T22:00:10.858Z","message":{"role":"user", ...}}
-{"type":"message","id":"f4258a47","parentId":"6e9911dc","timestamp":"2026-05-07T22:00:21.474Z","message":{"role":"assistant", ...}}
-{"type":"message","id":"760b805d","parentId":"f4258a47","timestamp":"2026-05-07T22:00:23.306Z","message":{"role":"toolResult","toolCallId":"call_7Nf...", ...}}
+{"type":"session","version":3,"id":"00000000-0000-4000-8000-000000000001", ...}        ← session 头：完整 UUID
+{"type":"message","id":"a0000002","parentId":"a0000001","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user", ...}}
+{"type":"message","id":"a0000004","parentId":"a0000003","timestamp":"2026-01-01T00:00:10.000Z","message":{"role":"assistant", ...}}
+{"type":"message","id":"a0000005","parentId":"a0000004","timestamp":"2026-01-01T00:00:12.000Z","message":{"role":"toolResult","toolCallId":"call_00000000...", ...}}
 ```
 
 session 头是完整 UUID（即 sessionId 自身）；其余每行 entry（`message` / `model_change` / `thinking_level_change` / `custom` / `compaction` / 等）都带 8 字符 hex id。
@@ -134,15 +134,15 @@ guardedAppend(msg):
   "event": "session.message",
   "payload": {
     "sessionKey": "agent:main:main",
-    "messageId": "ab563680",
+    "messageId": "a0000002",
     "messageSeq": 5,
     "message": {
       "role": "assistant",
       "content": [{"type": "text", "text": "Hello..."}],
       "provider": "anthropic",
       "model": "claude-sonnet-4-6",
-      "timestamp": 1776504587545,
-      "__openclaw": { "id": "ab563680", "seq": 5 }
+      "timestamp": 1767225600000,
+      "__openclaw": { "id": "a0000002", "seq": 5 }
     },
     "sessionId": "...", "kind": "...", "channel": "...", "status": "...", ...
   }

@@ -10,7 +10,7 @@
 
 ```
 [plugins] plugins.allow is empty; discovered non-bundled plugins may auto-load:
-openclaw-coclaw (/home/xhx/.openclaw/extensions/openclaw-coclaw/index.js).
+openclaw-coclaw (~/.openclaw/extensions/openclaw-coclaw/index.js).
 Set plugins.allow to explicit trusted ids.
 ```
 

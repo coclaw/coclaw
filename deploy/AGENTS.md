@@ -18,8 +18,8 @@
 - `docs/operations/deploy-ops.md` — 内部运维补充（磁盘维护、应急操作）
 - `.agents/skills/coclaw-deploy-web-routing-cache/` — Nginx 域名路由、缓存头、证书策略的唯一事实源；改 `deploy/nginx/modes/`、`includes/` 或排查缓存问题前必读（应用路由模板在 `modes/`；`templates/default.conf.template` 只是兜底 server）
 - `.agents/skills/coclaw-deploy-inspect/` — SSH 到部署机取容器日志（只读排查）
-- `deploy/docs/dual-ip-deployment-notes.md` — TURNS 双 IP 部署形态与生产配置记录
 - `deploy/docs/desktop-releases.md` — 桌面端（Electron）发布产物分发
+- `deploy/docs/dual-ip-turns-deployment.md` — 双 IP / TURNS 部署的主机网络层（双网卡策略路由）与证书运维（环境无关做法与踩坑）
 
 ## 镜像与 Compose
 
@@ -30,7 +30,9 @@
 
 ## TURNS / 双 IP（可选）
 
-coturn 可通过 TURNS（TLS on 443）穿透限制性网络，需独立 IP 或独立主机避开 nginx 的 443。变量开关见 `deploy/.env.example` 的「TURNS / 独立域名模式」段，启动逻辑在 `deploy/scripts/coturn-start.sh`；部署形态与生产配置详见 `deploy/docs/dual-ip-deployment-notes.md`（设计背景参考已归档的 `docs/designs/turn-over-tls.md`）。
+coturn 可通过 TURNS（TLS on 443）穿透限制性网络，需独立 IP 或独立主机避开 nginx 的 443。变量开关见 `deploy/.env.example` 的「TURNS / 独立域名模式」段，启动逻辑在 `deploy/scripts/coturn-start.sh`（设计背景参考已归档的 `docs/designs/turn-over-tls.md`）。
+- **通用部署机制**（可公开引用）：双网卡策略路由、certbot standalone 签发/续期、证书目录权限、coturn TURNS 启动踩坑等环境无关做法，见 `deploy/docs/dual-ip-turns-deployment.md`。
+- **真实生产配置/实例记录**（真实 IP、证书路径、部署形态、双 IP 实测）不入库，存于维护机本地 `deploy/docs/private/`（git 忽略）；维护生产 TURNS / 双 IP 前先读该目录。真实 `.env` 见 `deploy/.env`（同样 gitignore）。
 
 ## 硬约束
 
